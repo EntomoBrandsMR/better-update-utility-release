@@ -1,0 +1,29 @@
+# Dependencies — never push these, npm install recreates them
+node_modules/
+ 
+# Build output — distribute the .exe directly, don't push it to source repo
+dist/
+ 
+# Electron build cache
+.cache/
+out/
+ 
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+ 
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+ 
+# Logs
+*.log
+npm-debug.log*
+ 
+# Environment / secrets — never push these
+.env
+.env.local
+credentials.enc
