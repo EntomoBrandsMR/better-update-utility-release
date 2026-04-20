@@ -1,4 +1,4 @@
-# CRM Automator — PestPac Edition
+# Better Update Utility — PestPac Edition
 
 Universal CRM data entry automation. Drives PestPac from spreadsheet data.
 
