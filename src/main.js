@@ -92,12 +92,15 @@ ipcMain.handle('delete-profile', async (_, id) => {
 
 // ── CHROMIUM ──────────────────────────────────────────────────────────────────
 function getBundledChromiumPath() {
-  // When packaged, Chromium is in resources/chromium/
-  // When in dev, look in the ms-playwright default location
+  // When packaged, Chromium is bundled in resources/chromium/
   if (app.isPackaged) {
     const bundled = path.join(process.resourcesPath, 'chromium', 'chrome.exe');
     if (fs.existsSync(bundled)) return bundled;
   }
+  // Dev: check local chromium folder in project directory
+  const localChromium = path.join(__dirname, '..', 'chromium', 'chrome.exe');
+  if (fs.existsSync(localChromium)) return localChromium;
+
   // Dev fallback — find in ms-playwright default location
   const localAppData = process.env.LOCALAPPDATA || '';
   const playwrightDir = path.join(localAppData, 'ms-playwright');

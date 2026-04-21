@@ -1,4 +1,5 @@
 node_modules/
+chromium/
 dist/
 .cache/
 out/
