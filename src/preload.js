@@ -1,26 +1,26 @@
 const { contextBridge, ipcRenderer } = require('electron');
-
 contextBridge.exposeInMainWorld('api', {
-  // Version & updates
   getVersion:        ()      => ipcRenderer.invoke('get-version'),
   checkForUpdates:   ()      => ipcRenderer.invoke('check-for-updates'),
-  installUpdate:     (data)  => ipcRenderer.invoke('install-update', data),
+  installUpdate:     (d)     => ipcRenderer.invoke('install-update', d),
   onUpdateAvailable: (cb)    => ipcRenderer.on('update-available',  (_, d) => cb(d)),
   onUpdateProgress:  (cb)    => ipcRenderer.on('update-progress',   (_, p) => cb(p)),
   onUpdateStatus:    (cb)    => ipcRenderer.on('update-status',     (_, d) => cb(d)),
-
-  // Credential profiles
-  listProfiles:   ()        => ipcRenderer.invoke('list-profiles'),
-  saveProfile:    (profile) => ipcRenderer.invoke('save-profile', profile),
-  getProfile:     (id)      => ipcRenderer.invoke('get-profile', id),
-  deleteProfile:  (id)      => ipcRenderer.invoke('delete-profile', id),
-
-  // File I/O
-  openSpreadsheet: ()               => ipcRenderer.invoke('open-spreadsheet'),
-  saveFlow:        (data)           => ipcRenderer.invoke('save-flow', data),
-  loadFlow:        ()               => ipcRenderer.invoke('load-flow'),
-  saveLog:         (data)           => ipcRenderer.invoke('save-log', data),
-  saveScript:      (data)           => ipcRenderer.invoke('save-script', data),
-  getUserData:     ()               => ipcRenderer.invoke('get-userdata'),
-  openExternal:    (url)            => ipcRenderer.invoke('open-external', url),
+  listProfiles:      ()      => ipcRenderer.invoke('list-profiles'),
+  saveProfile:       (p)     => ipcRenderer.invoke('save-profile', p),
+  getProfile:        (id)    => ipcRenderer.invoke('get-profile', id),
+  deleteProfile:     (id)    => ipcRenderer.invoke('delete-profile', id),
+  checkChromium:     ()      => ipcRenderer.invoke('check-chromium'),
+  installChromium:   ()      => ipcRenderer.invoke('install-chromium'),
+  onChromiumProgress:(cb)    => ipcRenderer.on('chromium-progress', (_, d) => cb(d)),
+  openSpreadsheet:   ()      => ipcRenderer.invoke('open-spreadsheet'),
+  saveFlow:          (d)     => ipcRenderer.invoke('save-flow', d),
+  loadFlow:          ()      => ipcRenderer.invoke('load-flow'),
+  openLogFolder:     ()      => ipcRenderer.invoke('open-log-folder'),
+  openFile:          (p)     => ipcRenderer.invoke('open-file', p),
+  openExternal:      (url)   => ipcRenderer.invoke('open-external', url),
+  startAutomation:   (d)     => ipcRenderer.invoke('start-automation', d),
+  stopAutomation:    ()      => ipcRenderer.invoke('stop-automation'),
+  getCheckpoint:     (id)    => ipcRenderer.invoke('get-checkpoint', id),
+  onAutomationEvent: (cb)    => ipcRenderer.on('automation-event', (_, d) => cb(d)),
 });

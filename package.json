@@ -1,16 +1,17 @@
 {
-  "name": "crm-automator",
+  "name": "better-update-utility",
   "version": "1.0.0",
-  "description": "Universal CRM automation tool — PestPac",
+  "description": "Better Update Utility — PestPac automation",
+  "author": "Entomo Brands",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win --x64",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps && npx playwright install chromium"
   },
   "build": {
-    "appId": "com.yourcompany.crm-automator",
-    "productName": "CRM Automator",
+    "appId": "com.entomobands.better-update-utility",
+    "productName": "Better Update Utility",
     "directories": {
       "output": "dist"
     },
@@ -37,15 +38,24 @@
       "assets/**/*",
       "package.json"
     ],
-    "extraResources": [],
-    "nativeRebuilder": "sequential"
+    "extraResources": [
+      {
+        "from": "${env.LOCALAPPDATA}/ms-playwright/chromium-*/chrome-win",
+        "to": "chromium",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "devDependencies": {
-    "electron": "^41.2.1",
+    "electron": "^41.2.2",
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
+    "csv-parse": "^5.5.0",
     "keytar": "^7.9.0",
+    "playwright-core": "^1.59.1",
     "xlsx": "^0.18.5"
   }
 }

@@ -3,318 +3,609 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>CRM Automator — PestPac</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'"/>
+<title>Better Update Utility</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 :root {
-  --bg:#f4f4f2; --surf:#fff; --s2:#f0f0ed; --s3:#e8e8e4;
-  --bdr:#e0e0db; --bdr2:#c8c8c2;
-  --tx:#181816; --t2:#52524a; --t3:#94948a;
-  --blue:#1557a0; --blt:#e3edf8; --bmd:#aecbee;
-  --green:#2d6a0d; --glt:#e5f2de; --gmd:#9dcf76;
-  --amber:#784908; --alt:#f9ead2; --amd:#e5a640;
-  --red:#912020; --rlt:#fae7e7; --rmd:#e47878;
-  --purple:#4838b0; --plt:#edeafb; --pmd:#b8b0e8;
-  --teal:#0a6850; --tlt:#daf2ec;
-  --r:7px; --rl:11px; --tb:42px;
+  --bg: #0f0f11;
+  --surf: #18181c;
+  --surf2: #1e1e24;
+  --surf3: #25252d;
+  --bdr: #2a2a35;
+  --bdr2: #35353f;
+  --bdr3: #44444f;
+  --tx: #e8e8f0;
+  --t2: #9898a8;
+  --t3: #55556a;
+  --blue: #4a9eff;
+  --blue-dk: #1a6fd4;
+  --blt: #0d2140;
+  --bmd: #1a4a80;
+  --green: #3dd68c;
+  --green-dk: #1a8a50;
+  --glt: #0a2a18;
+  --gmd: #1a6040;
+  --amber: #f0a030;
+  --amber-dk: #a06010;
+  --alt: #2a1a05;
+  --amd: #6a4010;
+  --red: #ff5555;
+  --red-dk: #c02020;
+  --rlt: #2a0808;
+  --rmd: #6a1818;
+  --purple: #a080ff;
+  --purple-dk: #6040c0;
+  --plt: #1a1030;
+  --pmd: #3a2060;
+  --teal: #30d0c0;
+  --tlt: #081a18;
+  --r: 6px;
+  --rl: 10px;
+  --tb: 48px;
+  --sidebar: 220px;
 }
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--tx);
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;line-height:1.5}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%; overflow: hidden;
+  background: var(--bg); color: var(--tx);
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px; line-height: 1.5;
+}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bdr3); border-radius: 2px; }
 
 /* ── TOPBAR ── */
-.topbar{position:fixed;top:0;left:0;right:0;height:var(--tb);background:var(--surf);
-  border-bottom:1px solid var(--bdr);display:flex;align-items:center;
-  padding:0 16px;gap:10px;z-index:300;-webkit-app-region:drag}
-.tb-logo{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;color:var(--tx)}
-.tb-crm{font-size:11px;font-weight:600;color:var(--blue);background:var(--blt);
-  border:1px solid var(--bmd);border-radius:20px;padding:2px 9px}
-.tb-ver{font-size:10px;color:var(--t3);background:var(--s2);border:1px solid var(--bdr);
-  border-radius:20px;padding:1px 8px}
-.tb-sp{flex:1}
-.tbtn{-webkit-app-region:no-drag;display:inline-flex;align-items:center;gap:5px;
-  padding:5px 11px;border-radius:var(--r);border:1px solid var(--bdr2);
-  background:transparent;cursor:pointer;font-size:12px;color:var(--t2);
-  font-family:inherit;transition:background .1s;white-space:nowrap}
-.tbtn:hover{background:var(--s2)}
-.tbtn.pri{background:var(--blue);color:#fff;border-color:var(--blue)}
-.tbtn.pri:hover{background:#0e4589}
-.tbtn.grn{background:var(--green);color:#fff;border-color:var(--green)}
-.tbtn.grn:hover{background:#225409}
-.tbtn svg{width:12px;height:12px;flex-shrink:0}
-.tbtn:disabled{opacity:.4;cursor:not-allowed}
+.topbar {
+  height: var(--tb); background: var(--surf);
+  border-bottom: 1px solid var(--bdr);
+  display: flex; align-items: center; padding: 0 18px; gap: 10px; flex-shrink: 0;
+  position: relative;
+}
+.topbar::after {
+  content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, var(--blue) 0%, var(--purple) 50%, var(--teal) 100%);
+  opacity: 0.6;
+}
+.tb-logo {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 14px; font-weight: 700; color: var(--tx); letter-spacing: -0.3px;
+}
+.tb-logo-icon {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--blue-dk) 0%, var(--purple-dk) 100%);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 800; color: #fff; letter-spacing: -0.5px;
+  flex-shrink: 0;
+}
+.tb-crm {
+  font-size: 10px; font-weight: 600; color: var(--blue);
+  background: var(--blt); border: 1px solid var(--bmd);
+  border-radius: 20px; padding: 2px 9px;
+}
+.tb-ver {
+  font-size: 10px; color: var(--t3);
+  background: var(--surf2); border: 1px solid var(--bdr);
+  border-radius: 20px; padding: 1px 8px;
+}
+.tb-sp { flex: 1; }
+.tbtn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px; border-radius: var(--r);
+  border: 1px solid var(--bdr2); background: var(--surf2);
+  cursor: pointer; font-size: 12px; color: var(--t2);
+  font-family: inherit; transition: all .15s; white-space: nowrap;
+}
+.tbtn:hover { background: var(--surf3); color: var(--tx); border-color: var(--bdr3); }
+.tbtn.grn { background: var(--green-dk); color: #fff; border-color: var(--green-dk); }
+.tbtn.grn:hover { background: #22a060; }
+.tbtn.red { background: var(--red-dk); color: #fff; border-color: var(--red-dk); }
+.tbtn.red:hover { background: #e03030; }
+.tbtn.amb { background: var(--amber-dk); color: #fff; border-color: var(--amber-dk); }
+.tbtn.amb:hover { background: #c07020; }
+.tbtn svg { width: 12px; height: 12px; flex-shrink: 0; }
+.tbtn:disabled { opacity: .35; cursor: not-allowed; }
 
 /* ── SHELL ── */
-.shell{display:flex;height:100vh;padding-top:var(--tb)}
-.sidebar{width:214px;flex-shrink:0;background:var(--surf);
-  border-right:1px solid var(--bdr);display:flex;flex-direction:column;overflow:hidden}
-.content{flex:1;overflow-y:auto;padding:18px 22px 40px}
-.panel{display:none}
-.panel.active{display:block}
+.shell { display: flex; height: calc(100vh - var(--tb)); }
 
 /* ── SIDEBAR ── */
-.sb-sec{padding:12px 12px 4px;font-size:10px;font-weight:700;
-  color:var(--t3);text-transform:uppercase;letter-spacing:.06em}
-.nav{display:flex;align-items:center;gap:8px;padding:8px 10px 8px 12px;
-  cursor:pointer;font-size:12px;color:var(--t2);border-radius:var(--r);
-  margin:1px 6px;user-select:none;transition:background .1s}
-.nav:hover{background:var(--s2);color:var(--tx)}
-.nav.on{background:var(--blt);color:var(--blue);font-weight:600}
-.nav svg{width:13px;height:13px;flex-shrink:0}
-.nb{margin-left:auto;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px}
-.sb-sep{height:1px;background:var(--bdr);margin:6px 10px}
-.sb-foot{margin-top:auto;padding:10px 14px;border-top:1px solid var(--bdr);font-size:10px;color:var(--t3)}
+.sidebar {
+  width: var(--sidebar); flex-shrink: 0;
+  background: var(--surf); border-right: 1px solid var(--bdr);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.sb-logo-area {
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--bdr);
+  margin-bottom: 6px;
+}
+.sb-logo-area .app-name { font-size: 12px; font-weight: 700; color: var(--tx); }
+.sb-logo-area .app-sub { font-size: 10px; color: var(--t3); margin-top: 1px; }
+.sb-sec {
+  padding: 10px 14px 4px;
+  font-size: 9px; font-weight: 700; color: var(--t3);
+  text-transform: uppercase; letter-spacing: .1em;
+}
+.nav {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px 8px 14px;
+  cursor: pointer; font-size: 12px; color: var(--t2);
+  border-radius: var(--r); margin: 1px 6px;
+  user-select: none; transition: all .12s;
+}
+.nav:hover { background: var(--surf2); color: var(--tx); }
+.nav.on {
+  background: var(--blt); color: var(--blue); font-weight: 600;
+  border-left: 2px solid var(--blue); padding-left: 12px;
+}
+.nav svg { width: 13px; height: 13px; flex-shrink: 0; opacity: .7; }
+.nav.on svg { opacity: 1; }
+.nb {
+  margin-left: auto; font-size: 9px; font-weight: 700;
+  padding: 1px 6px; border-radius: 10px;
+}
+.sb-sep { height: 1px; background: var(--bdr); margin: 8px 10px; }
+.sb-foot {
+  margin-top: auto; padding: 10px 14px;
+  border-top: 1px solid var(--bdr); font-size: 10px; color: var(--t3);
+}
+
+/* ── CONTENT ── */
+.content { flex: 1; overflow-y: auto; padding: 20px 24px 40px; }
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* ── PAGE HEADER ── */
+.page-header { margin-bottom: 20px; }
+.page-title { font-size: 18px; font-weight: 700; color: var(--tx); letter-spacing: -0.4px; }
+.page-sub { font-size: 12px; color: var(--t2); margin-top: 3px; }
 
 /* ── CARDS ── */
-.card{background:var(--surf);border:1px solid var(--bdr);border-radius:var(--rl);
-  padding:16px 18px;margin-bottom:14px}
-.card-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
-.card-title{font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.06em}
-.infobox{background:var(--blt);border:1px solid var(--bmd);border-radius:var(--r);
-  padding:9px 12px;font-size:11px;color:var(--blue);margin-bottom:12px;line-height:1.6}
-.warnbox{background:var(--alt);border:1px solid var(--amd);border-radius:var(--r);
-  padding:9px 12px;font-size:11px;color:var(--amber);margin-bottom:12px;line-height:1.6}
-.errbox{background:var(--rlt);border:1px solid var(--rmd);border-radius:var(--r);
-  padding:9px 12px;font-size:11px;color:var(--red);margin-bottom:12px;line-height:1.6}
-.successbox{background:var(--glt);border:1px solid var(--gmd);border-radius:var(--r);
-  padding:9px 12px;font-size:11px;color:var(--green);margin-bottom:12px;line-height:1.6}
+.card {
+  background: var(--surf); border: 1px solid var(--bdr);
+  border-radius: var(--rl); padding: 16px 18px; margin-bottom: 14px;
+}
+.card-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 14px;
+}
+.card-title {
+  font-size: 10px; font-weight: 700; color: var(--t3);
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.infobox {
+  background: var(--blt); border: 1px solid var(--bmd);
+  border-radius: var(--r); padding: 10px 13px;
+  font-size: 11px; color: #7ab8ff; margin-bottom: 14px; line-height: 1.65;
+}
+.warnbox {
+  background: var(--alt); border: 1px solid var(--amd);
+  border-radius: var(--r); padding: 10px 13px;
+  font-size: 11px; color: #f0b060; margin-bottom: 14px; line-height: 1.65;
+}
+.errbox {
+  background: var(--rlt); border: 1px solid var(--rmd);
+  border-radius: var(--r); padding: 10px 13px;
+  font-size: 11px; color: #ff8080; margin-bottom: 14px; line-height: 1.65;
+}
+.successbox {
+  background: var(--glt); border: 1px solid var(--gmd);
+  border-radius: var(--r); padding: 10px 13px;
+  font-size: 11px; color: #60e0a0; margin-bottom: 14px; line-height: 1.65;
+}
 
 /* ── FORM ── */
-.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:10px}
-.row:last-child{margin-bottom:0}
-.fg{display:flex;flex-direction:column;gap:3px}
-.fg label{font-size:11px;font-weight:600;color:var(--t2)}
-input[type=text],input[type=number],input[type=url],input[type=password],select,textarea{
-  width:100%;padding:6px 9px;border:1px solid var(--bdr2);border-radius:var(--r);
-  background:var(--surf);color:var(--tx);font-size:12px;font-family:inherit;
-  line-height:1.4;transition:border .1s}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
-  box-shadow:0 0 0 2px rgba(21,87,160,.1)}
-.hint{font-size:10px;color:var(--t3);margin-top:2px;line-height:1.5}
-.tok{font-family:monospace;font-size:10px;background:var(--s2);
-  border:1px solid var(--bdr);border-radius:3px;padding:0 4px;color:var(--t2)}
-.cred-tok{font-family:monospace;font-size:10px;background:var(--plt);
-  border:1px solid var(--pmd);border-radius:3px;padding:0 4px;color:var(--purple)}
+.row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.row:last-child { margin-bottom: 0; }
+.fg { display: flex; flex-direction: column; gap: 4px; }
+.fg label { font-size: 11px; font-weight: 600; color: var(--t2); }
+input[type=text], input[type=number], input[type=url], input[type=password], select, textarea {
+  width: 100%; padding: 7px 10px;
+  border: 1px solid var(--bdr2); border-radius: var(--r);
+  background: var(--surf2); color: var(--tx);
+  font-size: 12px; font-family: inherit; line-height: 1.4;
+  transition: border-color .15s;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(74,158,255,.12);
+}
+select option { background: var(--surf2); }
+textarea { resize: vertical; min-height: 60px; }
+.hint { font-size: 10px; color: var(--t3); margin-top: 3px; line-height: 1.5; }
+.tok {
+  font-family: 'Consolas', monospace; font-size: 10px;
+  background: var(--surf3); border: 1px solid var(--bdr2);
+  border-radius: 3px; padding: 0 5px; color: var(--t2);
+}
+.cred-tok {
+  font-family: 'Consolas', monospace; font-size: 10px;
+  background: var(--plt); border: 1px solid var(--pmd);
+  border-radius: 3px; padding: 0 5px; color: var(--purple);
+}
 
 /* ── BUTTONS ── */
-.btn{display:inline-flex;align-items:center;gap:5px;padding:6px 12px;
-  border-radius:var(--r);border:1px solid var(--bdr2);background:transparent;
-  cursor:pointer;font-size:12px;font-weight:500;color:var(--tx);
-  font-family:inherit;transition:background .1s;white-space:nowrap}
-.btn:hover{background:var(--s2)}
-.btn.pri{background:var(--blue);color:#fff;border-color:var(--blue)}
-.btn.pri:hover{background:#0e4589}
-.btn.grn{background:var(--green);color:#fff;border-color:var(--green)}
-.btn.grn:hover{background:#225409}
-.btn.red{color:var(--red);border-color:var(--rmd)}
-.btn.red:hover{background:var(--rlt)}
-.btn.sm{padding:4px 9px;font-size:11px}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.btn svg{width:12px;height:12px;flex-shrink:0}
-.btn-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 13px; border-radius: var(--r);
+  border: 1px solid var(--bdr2); background: var(--surf2);
+  cursor: pointer; font-size: 12px; font-weight: 500;
+  color: var(--tx); font-family: inherit; transition: all .12s; white-space: nowrap;
+}
+.btn:hover { background: var(--surf3); border-color: var(--bdr3); }
+.btn.pri { background: var(--blue-dk); color: #fff; border-color: var(--blue-dk); }
+.btn.pri:hover { background: #2a7fe4; }
+.btn.grn { background: var(--green-dk); color: #fff; border-color: var(--green-dk); }
+.btn.grn:hover { background: #22a060; }
+.btn.red { color: var(--red); border-color: var(--rmd); background: transparent; }
+.btn.red:hover { background: var(--rlt); }
+.btn.red-solid { background: var(--red-dk); color: #fff; border-color: var(--red-dk); }
+.btn.sm { padding: 4px 10px; font-size: 11px; }
+.btn:disabled { opacity: .35; cursor: not-allowed; }
+.btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
 
 /* ── BADGES ── */
-.badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;white-space:nowrap}
-.bd-nav{background:var(--tlt);color:var(--teal)}
-.bd-clk{background:var(--glt);color:var(--green)}
-.bd-typ{background:var(--blt);color:var(--blue)}
-.bd-sel{background:var(--plt);color:var(--purple)}
-.bd-chk{background:var(--glt);color:#1a500a}
-.bd-clr{background:#fbeaf0;color:#8a3050}
-.bd-wt{background:var(--alt);color:var(--amber)}
-.bd-asr{background:#faeae7;color:#883018}
-.bd-lgn{background:var(--plt);color:var(--purple)}
+.badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+.bd-nav { background: var(--tlt); color: var(--teal); border: 1px solid #0a3030; }
+.bd-clk { background: var(--glt); color: var(--green); border: 1px solid #0a2818; }
+.bd-typ { background: var(--blt); color: var(--blue); border: 1px solid #0a2040; }
+.bd-sel { background: var(--plt); color: var(--purple); border: 1px solid #1a0840; }
+.bd-chk { background: var(--glt); color: #40e090; border: 1px solid #0a2818; }
+.bd-clr { background: #200818; color: #e060a0; border: 1px solid #400830; }
+.bd-wt { background: var(--alt); color: var(--amber); border: 1px solid #301808; }
+.bd-asr { background: var(--rlt); color: #ff8060; border: 1px solid #400808; }
+.bd-edit { background: #0a1a2a; color: #30d0c0; border: 1px solid #0a3030; }
 
-/* ── SELECTOR INPUT WITH PASTE ── */
-.sel-wrap{display:flex;gap:6px;align-items:flex-start}
-.sel-wrap input{flex:1}
-.paste-btn{flex-shrink:0;padding:6px 9px;border-radius:var(--r);border:1px solid var(--pmd);
-  background:var(--plt);cursor:pointer;font-size:11px;font-weight:600;color:var(--purple);
-  font-family:inherit;transition:background .1s;white-space:nowrap}
-.paste-btn:hover{background:#e0dcf8}
+/* ── SELECTOR FIELD ── */
+.sel-wrap { display: flex; gap: 6px; align-items: flex-start; }
+.sel-wrap input { flex: 1; }
+.paste-btn {
+  flex-shrink: 0; padding: 7px 10px; border-radius: var(--r);
+  border: 1px solid var(--pmd); background: var(--plt);
+  cursor: pointer; font-size: 11px; font-weight: 600;
+  color: var(--purple); font-family: inherit; transition: all .12s; white-space: nowrap;
+}
+.paste-btn:hover { background: #251545; border-color: var(--purple); }
 
 /* ── PASTE MODAL ── */
-.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:500;
-  align-items:center;justify-content:center}
-.modal-bg.open{display:flex}
-.modal{background:var(--surf);border-radius:var(--rl);padding:20px 22px;
-  width:560px;max-width:95vw;box-shadow:0 8px 32px rgba(0,0,0,.18)}
-.modal-title{font-size:14px;font-weight:700;color:var(--tx);margin-bottom:6px}
-.modal-sub{font-size:12px;color:var(--t2);margin-bottom:12px;line-height:1.6}
-.modal textarea{min-height:120px;font-family:monospace;font-size:11px;
-  background:var(--s2);border-color:var(--bdr2)}
-.modal-result{margin-top:10px;padding:10px 12px;border-radius:var(--r);
-  background:var(--glt);border:1px solid var(--gmd);font-size:12px;color:var(--green);display:none}
-.modal-result.err{background:var(--rlt);border-color:var(--rmd);color:var(--red)}
-.modal-result .sel-found{font-family:monospace;font-size:13px;font-weight:700;
-  color:var(--blue);background:var(--blt);padding:4px 8px;border-radius:4px;
-  display:block;margin-top:5px}
-.modal-result .sel-why{font-size:10px;color:var(--t2);margin-top:4px}
+.modal-bg {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.7); z-index: 500;
+  align-items: center; justify-content: center;
+}
+.modal-bg.open { display: flex; }
+.modal {
+  background: var(--surf2); border: 1px solid var(--bdr2);
+  border-radius: var(--rl); padding: 22px 24px;
+  width: 580px; max-width: 95vw;
+  box-shadow: 0 24px 60px rgba(0,0,0,.5);
+}
+.modal-title { font-size: 15px; font-weight: 700; color: var(--tx); margin-bottom: 6px; }
+.modal-sub { font-size: 12px; color: var(--t2); margin-bottom: 14px; line-height: 1.65; }
+.modal textarea {
+  min-height: 130px; font-family: 'Consolas', monospace; font-size: 11px;
+  background: var(--surf3); border-color: var(--bdr2);
+}
+.modal-result {
+  margin-top: 12px; padding: 10px 13px; border-radius: var(--r);
+  background: var(--glt); border: 1px solid var(--gmd);
+  font-size: 12px; color: #60e0a0; display: none;
+}
+.modal-result.err { background: var(--rlt); border-color: var(--rmd); color: #ff8080; }
+.sel-found {
+  font-family: 'Consolas', monospace; font-size: 13px; font-weight: 700;
+  color: var(--blue); background: var(--blt); padding: 5px 9px;
+  border-radius: 4px; display: block; margin-top: 6px;
+}
+.sel-why { font-size: 10px; color: var(--t2); margin-top: 5px; }
 
 /* ── STEPS ── */
-.step-list{display:flex;flex-direction:column;gap:5px}
-.step-card{background:var(--surf);border:1px solid var(--bdr);border-radius:var(--rl);overflow:hidden}
-.step-card.open{border-color:var(--bmd)}
-.step-card.locked{background:#f8f7ff;border-color:var(--pmd)}
-.step-hd{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;user-select:none}
-.step-hd:hover{background:var(--s2)}
-.step-card.locked .step-hd{cursor:default}
-.step-card.locked .step-hd:hover{background:transparent}
-.step-n{width:20px;height:20px;border-radius:50%;background:var(--s2);
-  display:flex;align-items:center;justify-content:center;
-  font-size:10px;font-weight:700;color:var(--t2);flex-shrink:0}
-.step-card.open .step-n{background:var(--blt);color:var(--blue)}
-.step-card.locked .step-n{background:var(--plt);color:var(--purple)}
-.lock-icon{width:13px;height:13px;color:var(--purple);flex-shrink:0}
-.step-desc{font-size:12px;color:var(--t2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.step-acts{display:flex;gap:2px;margin-left:auto;flex-shrink:0}
-.ibtn{width:26px;height:26px;border-radius:var(--r);border:none;background:transparent;
-  cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--t2)}
-.ibtn:hover{background:var(--s2);color:var(--tx)}
-.ibtn.del:hover{background:var(--rlt);color:var(--red)}
-.ibtn svg{width:13px;height:13px}
-.step-body{padding:12px 14px;border-top:1px solid var(--bdr)}
-.conn{height:12px;display:flex;justify-content:center}
-.conn::before{content:'';width:1px;background:var(--bdr2)}
+.step-list { display: flex; flex-direction: column; gap: 5px; }
+.step-card {
+  background: var(--surf2); border: 1px solid var(--bdr);
+  border-radius: var(--rl); overflow: hidden; transition: border-color .15s;
+}
+.step-card.open { border-color: var(--bmd); }
+.step-card.locked { background: var(--plt); border-color: var(--pmd); }
+.step-hd {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 13px; cursor: pointer; user-select: none;
+  transition: background .1s;
+}
+.step-hd:hover { background: var(--surf3); }
+.step-card.locked .step-hd { cursor: default; }
+.step-card.locked .step-hd:hover { background: transparent; }
+.step-n {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--surf3); display: flex; align-items: center;
+  justify-content: center; font-size: 10px; font-weight: 700;
+  color: var(--t2); flex-shrink: 0;
+}
+.step-card.open .step-n { background: var(--blt); color: var(--blue); }
+.step-card.locked .step-n { background: var(--plt); color: var(--purple); }
+.step-desc { font-size: 12px; color: var(--t2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-acts { display: flex; gap: 2px; margin-left: auto; flex-shrink: 0; }
+.ibtn {
+  width: 27px; height: 27px; border-radius: var(--r);
+  border: none; background: transparent;
+  cursor: pointer; display: flex; align-items: center;
+  justify-content: center; color: var(--t3); transition: all .1s;
+}
+.ibtn:hover { background: var(--surf3); color: var(--tx); }
+.ibtn.del:hover { background: var(--rlt); color: var(--red); }
+.ibtn svg { width: 13px; height: 13px; }
+.step-body { padding: 14px 15px; border-top: 1px solid var(--bdr); }
+.conn { height: 12px; display: flex; justify-content: center; }
+.conn::before { content: ''; width: 1px; background: var(--bdr2); }
 
 /* ── CHIPS ── */
-.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
-.chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;
-  background:var(--surf);border:1px solid var(--bdr2);font-size:11px;
-  cursor:pointer;color:var(--tx);transition:border .1s}
-.chip:hover{border-color:var(--blue);color:var(--blue)}
-.chip .cx{color:var(--t3);font-size:9px;margin-left:2px}
-.chip .cx:hover{color:var(--red)}
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; border-radius: 20px;
+  background: var(--surf3); border: 1px solid var(--bdr2);
+  font-size: 11px; cursor: pointer; color: var(--t2); transition: all .1s;
+}
+.chip:hover { border-color: var(--blue); color: var(--blue); }
+.chip .cx { color: var(--t3); font-size: 9px; margin-left: 2px; }
+.chip .cx:hover { color: var(--red); }
 
 /* ── ADD MENU ── */
-.add-menu{display:none;flex-wrap:wrap;gap:5px;padding:8px;background:var(--surf);
-  border:1px solid var(--bdr2);border-radius:var(--rl);margin-top:6px}
-.add-menu.open{display:flex}
-.add-opt{padding:5px 11px;border-radius:var(--r);border:1px solid var(--bdr);
-  background:transparent;cursor:pointer;font-size:12px;font-weight:500;
-  color:var(--tx);font-family:inherit}
-.add-opt:hover{background:var(--s2)}
+.add-menu {
+  display: none; flex-wrap: wrap; gap: 5px;
+  padding: 10px; background: var(--surf2);
+  border: 1px solid var(--bdr2); border-radius: var(--rl); margin-top: 8px;
+}
+.add-menu.open { display: flex; }
+.add-opt {
+  padding: 6px 13px; border-radius: var(--r);
+  border: 1px solid var(--bdr2); background: var(--surf3);
+  cursor: pointer; font-size: 12px; font-weight: 500;
+  color: var(--t2); font-family: inherit; transition: all .1s;
+}
+.add-opt:hover { background: var(--blt); color: var(--blue); border-color: var(--bmd); }
 
 /* ── TABLE ── */
-.tbl{width:100%;border-collapse:collapse;font-size:11px}
-.tbl th{text-align:left;padding:6px 10px;background:var(--s2);
-  border-bottom:1px solid var(--bdr);font-size:10px;font-weight:700;
-  color:var(--t2);white-space:nowrap;position:sticky;top:0;z-index:1}
-.tbl td{padding:5px 10px;border-bottom:1px solid var(--bdr);
-  vertical-align:top;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tbl tr:last-child td{border-bottom:none}
-.tbl-wrap{overflow:auto;border:1px solid var(--bdr);border-radius:var(--r);max-height:260px}
+.tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+.tbl th {
+  text-align: left; padding: 7px 10px;
+  background: var(--surf3); border-bottom: 1px solid var(--bdr);
+  font-size: 10px; font-weight: 700; color: var(--t2);
+  white-space: nowrap; position: sticky; top: 0; z-index: 1;
+}
+.tbl td {
+  padding: 6px 10px; border-bottom: 1px solid var(--bdr);
+  vertical-align: top; max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tbl tr:last-child td { border-bottom: none; }
+.tbl-wrap { overflow: auto; border: 1px solid var(--bdr); border-radius: var(--r); max-height: 260px; }
 
 /* ── VALIDATION ── */
-.vrow{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;
-  border-radius:var(--r);margin-bottom:5px;font-size:12px;line-height:1.5}
-.v-ok{background:var(--glt);color:var(--green)}
-.v-warn{background:var(--alt);color:var(--amber)}
-.v-err{background:var(--rlt);color:var(--red)}
-.vdot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0;margin-top:5px}
-.vstep{background:var(--surf);border:1px solid var(--bdr);border-left-width:3px;
-  border-radius:var(--r);padding:10px 12px;margin-bottom:6px}
-.vstep.ok{border-left-color:var(--green)}
-.vstep.warn{border-left-color:var(--amd)}
-.vstep.err{border-left-color:var(--red)}
-.vstep.locked-step{border-left-color:var(--purple);background:var(--plt)}
+.vrow {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 9px 11px; border-radius: var(--r);
+  margin-bottom: 5px; font-size: 12px; line-height: 1.5;
+}
+.v-ok { background: var(--glt); color: #60e0a0; border: 1px solid var(--gmd); }
+.v-warn { background: var(--alt); color: #f0b060; border: 1px solid var(--amd); }
+.v-err { background: var(--rlt); color: #ff8080; border: 1px solid var(--rmd); }
+.vdot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; margin-top: 5px; }
+.vstep {
+  background: var(--surf2); border: 1px solid var(--bdr);
+  border-left-width: 3px; border-radius: var(--r);
+  padding: 10px 13px; margin-bottom: 6px;
+}
+.vstep.ok { border-left-color: var(--green); }
+.vstep.warn { border-left-color: var(--amber); }
+.vstep.err { border-left-color: var(--red); }
+.vstep.locked-step { border-left-color: var(--purple); background: var(--plt); }
 
 /* ── DRY RUN ── */
-.dr-ctrl{display:flex;align-items:center;gap:10px;padding:12px 14px;
-  background:var(--surf);border:1px solid var(--bdr);border-radius:var(--rl);
-  margin-bottom:12px;position:sticky;top:0;z-index:10}
-.dr-prog{flex:1;height:5px;background:var(--bdr);border-radius:3px;overflow:hidden}
-.dr-fill{height:100%;background:var(--blue);border-radius:3px;transition:width .25s}
-.dr-step{background:var(--surf);border:1px solid var(--bdr);border-radius:var(--rl);
-  padding:13px 16px;margin-bottom:7px;transition:all .2s}
-.dr-step.dr-pending{opacity:.3}
-.dr-step.dr-current{border:2px solid var(--blue);background:var(--blt)}
-.dr-step.dr-done{border-color:var(--gmd);background:var(--glt);opacity:.75}
-.dr-step.dr-err{border:2px solid var(--red);background:var(--rlt)}
-.dr-hd{display:flex;align-items:center;gap:10px;margin-bottom:5px}
-.dr-num{width:22px;height:22px;border-radius:50%;background:var(--s2);
-  display:flex;align-items:center;justify-content:center;
-  font-size:10px;font-weight:700;color:var(--t2);flex-shrink:0}
-.dr-step.dr-current .dr-num{background:var(--blue);color:#fff}
-.dr-step.dr-done .dr-num{background:var(--green);color:#fff}
-.dr-step.dr-err .dr-num{background:var(--red);color:#fff}
-.dr-action{font-size:13px;font-weight:600;color:var(--tx)}
-.dr-detail{font-size:12px;color:var(--t2);padding-left:32px;line-height:1.8}
-.dr-val{background:var(--surf);border:1px solid var(--bmd);border-radius:4px;
-  padding:2px 7px;font-family:monospace;font-size:11px;color:var(--blue);display:inline-block;margin:1px 2px}
-.dr-cred{background:var(--plt);border:1px solid var(--pmd);border-radius:4px;
-  padding:2px 7px;font-family:monospace;font-size:11px;color:var(--purple);display:inline-block;margin:1px 2px}
-.dr-missing{background:var(--rlt);border:1px solid var(--rmd);border-radius:4px;
-  padding:2px 7px;font-family:monospace;font-size:11px;color:var(--red);display:inline-block;margin:1px 2px}
-.dr-err-box{background:var(--rlt);border:1px solid var(--rmd);border-radius:var(--r);
-  padding:8px 12px;margin-top:8px;font-size:11px;color:var(--red);line-height:1.6}
-.dr-err-box strong{display:block;font-size:12px;margin-bottom:3px}
-.row-sel{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.row-sel label{font-size:12px;color:var(--t2);white-space:nowrap}
+.dr-ctrl {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 16px; background: var(--surf);
+  border: 1px solid var(--bdr); border-radius: var(--rl);
+  margin-bottom: 14px; position: sticky; top: 0; z-index: 10;
+}
+.dr-prog { flex: 1; height: 4px; background: var(--bdr2); border-radius: 2px; overflow: hidden; }
+.dr-fill { height: 100%; background: var(--blue); border-radius: 2px; transition: width .25s; }
+.dr-step {
+  background: var(--surf2); border: 1px solid var(--bdr);
+  border-radius: var(--rl); padding: 14px 17px;
+  margin-bottom: 7px; transition: all .2s;
+}
+.dr-step.dr-pending { opacity: .3; }
+.dr-step.dr-current { border: 2px solid var(--blue); background: var(--blt); }
+.dr-step.dr-done { border-color: var(--gmd); background: var(--glt); opacity: .75; }
+.dr-step.dr-err { border: 2px solid var(--red); background: var(--rlt); }
+.dr-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.dr-num {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--surf3); display: flex; align-items: center;
+  justify-content: center; font-size: 10px; font-weight: 700;
+  color: var(--t2); flex-shrink: 0;
+}
+.dr-step.dr-current .dr-num { background: var(--blue-dk); color: #fff; }
+.dr-step.dr-done .dr-num { background: var(--green-dk); color: #fff; }
+.dr-step.dr-err .dr-num { background: var(--red-dk); color: #fff; }
+.dr-action { font-size: 13px; font-weight: 600; color: var(--tx); }
+.dr-detail { font-size: 12px; color: var(--t2); padding-left: 34px; line-height: 1.8; }
+.dr-val {
+  background: var(--surf3); border: 1px solid var(--bmd);
+  border-radius: 4px; padding: 2px 7px;
+  font-family: 'Consolas', monospace; font-size: 11px;
+  color: var(--blue); display: inline-block; margin: 1px 2px;
+}
+.dr-cred {
+  background: var(--plt); border: 1px solid var(--pmd);
+  border-radius: 4px; padding: 2px 7px;
+  font-family: 'Consolas', monospace; font-size: 11px;
+  color: var(--purple); display: inline-block; margin: 1px 2px;
+}
+.dr-missing {
+  background: var(--rlt); border: 1px solid var(--rmd);
+  border-radius: 4px; padding: 2px 7px;
+  font-family: 'Consolas', monospace; font-size: 11px;
+  color: var(--red); display: inline-block; margin: 1px 2px;
+}
+.dr-err-box {
+  background: var(--rlt); border: 1px solid var(--rmd);
+  border-radius: var(--r); padding: 9px 13px;
+  margin-top: 8px; font-size: 11px; color: #ff8080; line-height: 1.6;
+}
+.row-sel { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.row-sel label { font-size: 12px; color: var(--t2); white-space: nowrap; }
 
-/* ── LOG ── */
-.log-wrap{overflow:auto;border:1px solid var(--bdr);border-radius:var(--r);max-height:calc(100vh - 280px)}
-.log-tbl{width:100%;border-collapse:collapse;font-size:11px}
-.log-tbl th{text-align:left;padding:7px 10px;background:var(--s2);
-  border-bottom:1px solid var(--bdr);font-size:10px;font-weight:700;
-  color:var(--t2);white-space:nowrap;position:sticky;top:0;z-index:1}
-.log-tbl td{padding:6px 10px;border-bottom:1px solid var(--bdr);vertical-align:top;font-size:11px}
-.log-tbl tr.row-ok{background:#fff}
-.log-tbl tr.row-err{background:#fff8f8}
-.log-tbl tr.row-skip{background:#fffbf2}
-.s-ok{color:var(--green);font-weight:700}
-.s-err{color:var(--red);font-weight:700}
-.s-skip{color:var(--amber);font-weight:700}
-.s-partial{color:#6a4010;font-weight:700}
-.err-cell{color:var(--red);font-size:10px;line-height:1.5}
-.step-trail{color:var(--t3);font-size:10px;line-height:1.6;font-family:monospace}
+/* ── RUN PANEL ── */
+.run-panel { margin-bottom: 14px; }
+.run-prog-wrap { height: 8px; background: var(--surf3); border-radius: 4px; overflow: hidden; margin: 12px 0; }
+.run-prog-bar { height: 100%; background: linear-gradient(90deg, var(--blue-dk), var(--green-dk)); border-radius: 4px; transition: width .4s; }
+.run-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 8px; margin: 14px 0; }
+.run-stat { background: var(--surf3); border: 1px solid var(--bdr); border-radius: var(--r); padding: 10px; text-align: center; }
+.run-stat-val { font-size: 20px; font-weight: 700; line-height: 1; color: var(--tx); }
+.run-stat-lbl { font-size: 9px; color: var(--t3); text-transform: uppercase; letter-spacing: .06em; margin-top: 3px; }
+.live-log {
+  background: #0a0a0e; border: 1px solid var(--bdr);
+  border-radius: var(--r); padding: 12px;
+  font-family: 'Consolas', monospace; font-size: 11px;
+  height: 200px; overflow-y: auto; color: var(--t2); line-height: 1.7;
+}
+.live-log .log-ok { color: var(--green); }
+.live-log .log-err { color: var(--red); font-weight: 700; }
+.live-log .log-warn { color: var(--amber); }
+.live-log .log-info { color: var(--blue); }
+
+/* ── LOG TABLE ── */
+.log-wrap {
+  overflow: auto; border: 1px solid var(--bdr);
+  border-radius: var(--r); max-height: calc(100vh - 320px);
+}
+.log-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+.log-tbl th {
+  text-align: left; padding: 7px 10px;
+  background: var(--surf3); border-bottom: 1px solid var(--bdr);
+  font-size: 10px; font-weight: 700; color: var(--t2);
+  white-space: nowrap; position: sticky; top: 0; z-index: 1;
+}
+.log-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--bdr); vertical-align: top; font-size: 11px; }
+.log-tbl tr.row-ok { background: var(--surf2); }
+.log-tbl tr.row-err { background: #1a0808; }
+.log-tbl tr.row-skip { background: #1a1205; }
+.s-ok { color: var(--green); font-weight: 700; }
+.s-err { color: var(--red); font-weight: 700; }
+.s-skip { color: var(--amber); font-weight: 700; }
 
 /* ── PROFILES ── */
-.profile-card{background:var(--surf);border:1px solid var(--bdr);
-  border-radius:var(--rl);padding:14px 16px;margin-bottom:10px;transition:border .1s}
-.profile-card.active-p{border-color:var(--gmd);background:var(--glt)}
-.profile-card.editing-p{border-color:var(--bmd);background:var(--blt)}
-.profile-hd{display:flex;align-items:center;gap:10px;margin-bottom:10px}
-.profile-icon{width:34px;height:34px;border-radius:50%;background:var(--blt);
-  display:flex;align-items:center;justify-content:center;
-  font-size:14px;font-weight:700;color:var(--blue);flex-shrink:0;border:1px solid var(--bmd)}
-.profile-name{font-size:13px;font-weight:600;color:var(--tx)}
-.profile-url{font-size:11px;color:var(--t2)}
+.profile-card {
+  background: var(--surf2); border: 1px solid var(--bdr);
+  border-radius: var(--rl); padding: 15px 17px; margin-bottom: 10px;
+  transition: border-color .15s;
+}
+.profile-card.active-p { border-color: var(--gmd); background: var(--glt); }
+.profile-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.profile-icon {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--blue-dk), var(--purple-dk));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
 
-/* ── SCRIPT ── */
-.code{background:#17171a;color:#e0e0d8;border-radius:var(--rl);padding:14px;
-  font-family:'Cascadia Code',Consolas,monospace;font-size:11px;
-  line-height:1.65;overflow:auto;max-height:calc(100vh - 240px);white-space:pre}
+/* ── TOGGLE ── */
+.toggle-wrap { display: flex; align-items: center; gap: 9px; }
+.toggle {
+  width: 38px; height: 21px; border-radius: 11px;
+  background: var(--surf3); cursor: pointer;
+  position: relative; transition: background .2s;
+  flex-shrink: 0; border: 1px solid var(--bdr2);
+}
+.toggle.on { background: var(--blue-dk); border-color: var(--blue-dk); }
+.toggle::after {
+  content: ''; position: absolute; width: 15px; height: 15px;
+  border-radius: 50%; background: #fff; top: 2px; left: 2px; transition: left .2s;
+}
+.toggle.on::after { left: 19px; }
+.toggle-lbl { font-size: 12px; color: var(--t2); }
 
-/* ── UPDATE ── */
-.upd{display:none;background:var(--blt);border:1px solid var(--bmd);
-  border-radius:var(--rl);padding:12px 14px;margin-bottom:14px;gap:10px;align-items:center}
-.upd.show{display:flex}
-.upd-pg{height:4px;background:var(--bdr);border-radius:2px;margin-top:5px;display:none}
-.upd-pg.show{display:block}
-.upd-bar{height:100%;background:var(--blue);transition:width .2s}
+/* ── SETUP OVERLAY ── */
+.setup-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(10,10,14,.97); z-index: 400;
+  align-items: center; justify-content: center; flex-direction: column;
+}
+.setup-overlay.show { display: flex; }
+.setup-box {
+  background: var(--surf2); border: 1px solid var(--bdr2);
+  border-radius: 16px; padding: 40px 44px;
+  width: 480px; text-align: center;
+  box-shadow: 0 32px 80px rgba(0,0,0,.6);
+}
+.setup-icon {
+  width: 64px; height: 64px; border-radius: 16px; margin: 0 auto 20px;
+  background: linear-gradient(135deg, var(--blue-dk), var(--purple-dk));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px; font-weight: 800; color: #fff; letter-spacing: -1px;
+}
+.setup-title { font-size: 20px; font-weight: 700; color: var(--tx); margin-bottom: 8px; }
+.setup-sub { font-size: 13px; color: var(--t2); margin-bottom: 24px; line-height: 1.65; }
+.setup-prog { height: 6px; background: var(--surf3); border-radius: 3px; overflow: hidden; margin: 18px 0; display: none; }
+.setup-prog-bar { height: 100%; background: linear-gradient(90deg, var(--blue-dk), var(--purple-dk)); border-radius: 3px; width: 0; transition: width .3s; }
+.setup-log {
+  background: #0a0a0e; border-radius: var(--r); padding: 12px;
+  font-family: 'Consolas', monospace; font-size: 10px; color: var(--t2);
+  height: 130px; overflow-y: auto; text-align: left; margin-top: 14px; display: none;
+}
+
+/* ── UPDATE BANNER ── */
+.upd {
+  display: none; background: var(--blt); border: 1px solid var(--bmd);
+  border-radius: var(--rl); padding: 13px 16px;
+  margin-bottom: 16px; gap: 12px; align-items: center;
+}
+.upd.show { display: flex; }
+.upd-pg { height: 3px; background: var(--bdr2); border-radius: 2px; margin-top: 6px; display: none; }
+.upd-pg.show { display: block; }
+.upd-bar { height: 100%; background: var(--blue); transition: width .2s; }
+
+/* ── STAT GRID ── */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.stat-box { background: var(--surf3); border: 1px solid var(--bdr); border-radius: var(--r); padding: 10px; text-align: center; }
+.stat-val { font-size: 22px; font-weight: 700; line-height: 1; }
+.stat-lbl { font-size: 9px; color: var(--t3); text-transform: uppercase; letter-spacing: .06em; margin-top: 3px; }
 
 /* ── MISC ── */
-.empty{text-align:center;padding:28px;color:var(--t3);font-size:12px}
-.divider{height:1px;background:var(--bdr);margin:12px 0}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(80px,1fr));gap:8px;margin-bottom:14px}
-.stat-box{background:var(--s2);border-radius:var(--r);padding:10px;text-align:center}
-.stat-val{font-size:22px;font-weight:700;line-height:1}
-.stat-lbl{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
-::-webkit-scrollbar{width:5px;height:5px}
-::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:3px}
+.empty { text-align: center; padding: 32px; color: var(--t3); font-size: 12px; }
+.divider { height: 1px; background: var(--bdr); margin: 14px 0; }
 </style>
 </head>
 <body>
 
-<!-- TOP BAR -->
+<!-- CHROMIUM SETUP OVERLAY -->
+<div class="setup-overlay" id="setupOverlay">
+  <div class="setup-box">
+    <div class="setup-icon">BUU</div>
+    <div class="setup-title">One-time browser setup</div>
+    <div class="setup-sub">Better Update Utility needs to download its browser engine.<br>This takes about 2 minutes and only happens once.</div>
+    <button class="btn pri" id="setupStartBtn" onclick="startChromiumInstall()" style="margin:0 auto;display:flex">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 8A5 5 0 1 1 8 3M13 3v3h-3"/></svg>
+      Download browser engine
+    </button>
+    <div class="setup-prog" id="setupProg"><div class="setup-prog-bar" id="setupProgBar"></div></div>
+    <div class="setup-log" id="setupLog"></div>
+    <div id="setupDone" style="display:none;color:var(--green);font-weight:600;margin-top:14px;font-size:13px">✓ Setup complete — ready to automate</div>
+  </div>
+</div>
+
+<!-- TOPBAR -->
 <div class="topbar">
   <div class="tb-logo">
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#1557a0" stroke-width="1.5">
-      <rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/>
-      <rect x="2" y="9" width="5" height="5" rx="1"/><path d="M9 11.5h5M11.5 9v5"/>
-    </svg>
-    CRM Automator
+    <div class="tb-logo-icon">BUU</div>
+    Better Update Utility
   </div>
   <span class="tb-crm">PestPac</span>
   <span class="tb-ver" id="tbVer">v1.0.0</span>
@@ -325,9 +616,17 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
   </button>
   <button class="tbtn" onclick="loadFlow()">Load flow</button>
   <button class="tbtn" onclick="saveFlow()">Save flow</button>
-  <button class="tbtn grn" id="runBtn" onclick="confirmRun()" disabled>
+  <button class="tbtn grn" id="runBtn" onclick="startRun()" disabled>
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="3,2 14,8 3,14"/></svg>
     Run automation
+  </button>
+  <button class="tbtn red" id="stopBtn" onclick="stopRun()" style="display:none">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
+    Stop
+  </button>
+  <button class="tbtn amb" id="pauseBtn" onclick="togglePause()" style="display:none">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3v10M11 3v10"/></svg>
+    Pause
   </button>
 </div>
 
@@ -335,7 +634,12 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
 
 <!-- SIDEBAR -->
 <div class="sidebar">
-  <div class="sb-sec">Setup</div>
+  <div class="sb-logo-area">
+    <div class="app-name">Better Update Utility</div>
+    <div class="app-sub">PestPac automation tool</div>
+  </div>
+
+  <div class="sb-sec">Workflow</div>
   <div class="nav on" id="nav-import" onclick="go('import')">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 10v3h12v-3M8 2v8M5 7l3 3 3-3"/></svg>
     1. Import data
@@ -344,7 +648,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
   <div class="nav" id="nav-builder" onclick="go('builder')">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="5" height="12" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>
     2. Build steps
-    <span class="nb" id="nb-builder" style="display:none;background:var(--s3);color:var(--t2)">0</span>
+    <span class="nb" id="nb-builder" style="display:none;background:var(--surf3);color:var(--t2)">0</span>
   </div>
   <div class="nav" id="nav-validate" onclick="go('validate')">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M5.5 8l2 2 3-3"/></svg>
@@ -355,17 +659,20 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M6 5l5 3-5 3V5z"/></svg>
     4. Dry run
   </div>
+
   <div class="sb-sep"></div>
-  <div class="sb-sec">Outputs</div>
-  <div class="nav" id="nav-script" onclick="go('script')">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5l-2 3 2 3M12 5l2 3-2 3M9 3l-2 10"/></svg>
-    Script
+  <div class="sb-sec">Live</div>
+  <div class="nav" id="nav-run" onclick="go('run')">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="3,2 14,8 3,14"/></svg>
+    Run progress
+    <span class="nb" id="nb-run" style="display:none;background:var(--glt);color:var(--green)">●</span>
   </div>
   <div class="nav" id="nav-log" onclick="go('log')">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h8M2 12h10"/></svg>
     Run log
     <span class="nb" id="nb-log" style="display:none;background:var(--blt);color:var(--blue)">0</span>
   </div>
+
   <div class="sb-sep"></div>
   <div class="sb-sec">Settings</div>
   <div class="nav" id="nav-profiles" onclick="go('profiles')">
@@ -373,15 +680,15 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
     Login profiles
     <span class="nb" id="nb-profiles" style="background:var(--plt);color:var(--purple)">0</span>
   </div>
+
   <div class="sb-foot" id="sbFoot">No data loaded</div>
 </div>
 
 <!-- CONTENT -->
 <div class="content" id="mainContent">
 
-<!-- ══════════════ IMPORT ══════════════ -->
+<!-- ══ IMPORT ══ -->
 <div class="panel active" id="panel-import">
-
   <div class="upd" id="updBanner">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--blue)" stroke-width="1.5" style="flex-shrink:0"><circle cx="8" cy="8" r="6"/><path d="M8 5v4l2 1.5"/></svg>
     <div style="flex:1">
@@ -393,22 +700,25 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
     <button class="btn sm" onclick="document.getElementById('updBanner').classList.remove('show')">✕</button>
   </div>
 
+  <div class="page-header">
+    <div class="page-title">Import data</div>
+    <div class="page-sub">Upload your spreadsheet to get started</div>
+  </div>
+
   <div class="card">
     <div class="card-hd">
-      <div class="card-title">Spreadsheet import</div>
+      <div class="card-title">Spreadsheet</div>
       <button class="btn pri sm" onclick="openSpreadsheet()">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:11px;height:11px"><path d="M2 10v3h12v-3M8 2v8M5 7l3 3 3-3"/></svg>
         Choose file…
       </button>
     </div>
     <div class="infobox">
-      <strong>Expected format:</strong> First row = column headers. Must include a <span class="tok">URL</span> column — the automation navigates to that URL for each row. All other columns map to step fields using <span class="tok">{{Column name}}</span> tokens.
+      <strong>Required format:</strong> First row = column headers. Must include a <span class="tok">URL</span> column — the automation navigates to that URL for each row. All other columns become <span class="tok">{{token}}</span> values. Supports .xlsx, .xls, and .csv. Files with millions of rows are handled row-by-row — no memory limit.
     </div>
     <div id="ssStatus" style="font-size:12px;color:var(--t3);margin-bottom:10px">No spreadsheet loaded.</div>
     <div id="colSection" style="display:none">
-      <div style="font-size:11px;font-weight:700;color:var(--t2);margin-bottom:5px">
-        Detected columns — click any to copy <span class="tok">{{token}}</span>
-      </div>
+      <div style="font-size:11px;font-weight:600;color:var(--t2);margin-bottom:6px">Detected columns — click to copy <span class="tok">{{token}}</span></div>
       <div class="chips" id="colChips"></div>
     </div>
   </div>
@@ -425,30 +735,31 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
   </div>
 </div>
 
-<!-- ══════════════ BUILDER ══════════════ -->
+<!-- ══ BUILDER ══ -->
 <div class="panel" id="panel-builder">
+  <div class="page-header">
+    <div class="page-title">Build steps</div>
+    <div class="page-sub">Define what the automation does on each page</div>
+  </div>
+
   <div class="card">
     <div class="card-hd">
       <div class="card-title">Automation steps</div>
       <span style="font-size:11px;color:var(--t3)" id="stepCountLbl">0 steps</span>
     </div>
     <div class="infobox">
-      <strong>PestPac login steps are locked at the top</strong> — they run automatically using your saved profile credentials before every automation. Add your data entry steps below them.
-      Use <span class="tok">{{URL}}</span> in a Navigate step to go to each row's page, then add Type/Click/Select steps for each field.
+      <strong>PestPac login steps are locked at the top</strong> — they run automatically before every row using your saved profile. Add a <strong>Navigate</strong> step using <span class="tok">{{URL}}</span> to open each row's page, then add steps for each field you want to fill in.
     </div>
     <div class="step-list" id="stepList">
-      <div class="empty" id="stepsEmpty">Loading…</div>
+      <div class="empty" id="stepsEmpty">Loading steps…</div>
     </div>
     <div class="divider"></div>
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <button class="btn" onclick="toggleAddMenu()">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><circle cx="8" cy="8" r="6"/><path d="M8 5v6M5 8h6"/></svg>
         Add step
       </button>
-      <div style="font-size:11px;color:var(--t3)">Profile in use:
-        <strong id="activeProfileLbl" style="color:var(--purple)">None selected</strong>
-        <span style="cursor:pointer;color:var(--blue);margin-left:6px" onclick="go('profiles')">(change)</span>
-      </div>
+      <div style="font-size:11px;color:var(--t3)">Profile: <strong id="activeProfileLbl" style="color:var(--purple)">None</strong> <span style="cursor:pointer;color:var(--blue);margin-left:5px" onclick="go('profiles')">(change)</span></div>
     </div>
     <div class="add-menu" id="addMenu">
       <button class="add-opt" onclick="addStep('navigate')">Navigate</button>
@@ -459,24 +770,40 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
       <button class="add-opt" onclick="addStep('clear')">Clear field</button>
       <button class="add-opt" onclick="addStep('wait')">Wait</button>
       <button class="add-opt" onclick="addStep('assert')">Assert / verify</button>
+      <button class="add-opt" onclick="addStep('textedit')">Text edit</button>
     </div>
   </div>
+
   <div class="card">
     <div class="card-hd"><div class="card-title">Run settings</div></div>
     <div class="row">
       <div class="fg">
         <label>Delay between rows (seconds)</label>
-        <input type="number" id="rowDelay" value="1.5" min="0" step="0.1"/>
-        <div class="hint">Pause after finishing each row before starting the next</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="number" id="rowDelayMin" value="1" min="0" step="0.1" style="width:80px" oninput="syncDelayMax()"/>
+          <span style="color:var(--t3);font-size:12px">to</span>
+          <input type="number" id="rowDelayMax" value="3" min="0" step="0.1" style="width:80px"/>
+        </div>
+        <div class="hint">Random pause between min and max seconds after each row. Set both to the same value for a fixed delay.</div>
       </div>
       <div class="fg">
         <label>Error handling</label>
         <select id="errHandle">
           <option value="stop">Stop on first error</option>
-          <option value="skip">Skip row, continue to next</option>
+          <option value="skip">Skip row, continue</option>
           <option value="retry">Retry once then skip</option>
         </select>
       </div>
+      <div class="fg">
+        <label>Browser visibility</label>
+        <div class="toggle-wrap" style="margin-top:8px">
+          <button class="toggle on" id="visToggle" onclick="toggleVisibility()"></button>
+          <span class="toggle-lbl" id="visLabel">Visible — watch it work</span>
+        </div>
+        <div class="hint">Toggle off to run silently in background</div>
+      </div>
+    </div>
+    <div class="row">
       <div class="fg">
         <label>Flow notes</label>
         <input type="text" id="flowNotes" placeholder="Optional description…"/>
@@ -488,16 +815,19 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
   </div>
 </div>
 
-<!-- ══════════════ VALIDATE ══════════════ -->
+<!-- ══ VALIDATE ══ -->
 <div class="panel" id="panel-validate">
+  <div class="page-header">
+    <div class="page-title">Validate</div>
+    <div class="page-sub">Check your flow for errors before running</div>
+  </div>
   <div class="card">
     <div class="card-hd">
       <div class="card-title">Flow validation</div>
       <button class="btn pri sm" onclick="runValidation()">Run checks</button>
     </div>
-    <p style="font-size:12px;color:var(--t2);margin-bottom:12px;line-height:1.6">
-      Checks every step for missing selectors, unresolved column references, credential tokens,
-      and logical issues before you run. Fix all errors before proceeding — warnings are advisory.
+    <p style="font-size:12px;color:var(--t2);margin-bottom:14px;line-height:1.65">
+      Checks every step for missing selectors, unresolved column references, and logical issues. Fix all errors before running — warnings are advisory.
     </p>
     <div id="valSummary"></div>
     <div id="valResults"><div class="empty">Click "Run checks" to validate.</div></div>
@@ -507,135 +837,140 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
   </div>
 </div>
 
-<!-- ══════════════ DRY RUN ══════════════ -->
+<!-- ══ DRY RUN ══ -->
 <div class="panel" id="panel-dryrun">
+  <div class="page-header">
+    <div class="page-title">Dry run</div>
+    <div class="page-sub">Step through each action with real data before committing</div>
+  </div>
   <div class="card">
-    <div class="card-hd"><div class="card-title">Step-by-step dry run</div></div>
-    <p style="font-size:12px;color:var(--t2);margin-bottom:12px;line-height:1.6">
-      Select a spreadsheet row and step through the flow one action at a time.
-      Your real data is substituted in so you can verify exactly what will happen.
-      Credential values show as <span class="dr-cred" style="font-size:10px">••••••</span> for security.
-      Any configuration errors appear as <span style="color:var(--red);font-weight:600">red error cards</span> — fix them before running.
-      When satisfied, click <strong>Automate from here</strong>.
+    <p style="font-size:12px;color:var(--t2);margin-bottom:14px;line-height:1.65">
+      Select a row and step through each action to see exactly what will happen with your real data substituted in. Credentials show as <span class="dr-cred" style="font-size:10px">••••</span> for security. Red error cards indicate configuration problems — fix them before running. When satisfied, click <strong style="color:var(--green)">Automate from here</strong>.
     </p>
     <div class="row-sel">
-      <label>Preview using row:</label>
-      <select id="drRowSel" style="width:auto;max-width:340px" onchange="initDryRun()"></select>
+      <label>Preview row:</label>
+      <select id="drRowSel" style="width:auto;max-width:360px" onchange="initDryRun()"></select>
       <button class="btn sm" onclick="initDryRun()">Reset</button>
     </div>
   </div>
-
   <div class="dr-ctrl" id="drCtrl" style="display:none">
     <div class="dr-prog"><div class="dr-fill" id="drFill" style="width:0"></div></div>
     <span style="font-size:12px;color:var(--t2);white-space:nowrap" id="drInfo">Step 0 / 0</span>
     <button class="btn sm" id="drPrev" onclick="drMove(-1)" disabled>← Back</button>
     <button class="btn pri sm" id="drNext" onclick="drMove(1)">Next step →</button>
-    <button class="tbtn grn" id="drAutoBtn" style="display:none" onclick="confirmRun()">
+    <button class="tbtn grn" id="drAutoBtn" style="display:none" onclick="startRun()">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><polygon points="3,2 14,8 3,14"/></svg>
       Automate from here
     </button>
   </div>
-
   <div id="drSteps"></div>
 </div>
 
-<!-- ══════════════ SCRIPT ══════════════ -->
-<div class="panel" id="panel-script">
-  <div class="card">
-    <div class="card-hd">
-      <div class="card-title">Generated script</div>
-      <div style="display:flex;gap:6px;align-items:center">
-        <select id="scriptType" onchange="buildScript()" style="font-size:11px;padding:4px 8px;width:auto">
-          <option value="playwright">Playwright</option>
-          <option value="puppeteer">Puppeteer</option>
-        </select>
-        <button class="btn sm" onclick="saveScript()">Save .js</button>
-        <button class="btn sm" onclick="copyScript()">Copy</button>
+<!-- ══ RUN PROGRESS ══ -->
+<div class="panel" id="panel-run">
+  <div class="page-header">
+    <div class="page-title">Run progress</div>
+    <div class="page-sub">Live automation status</div>
+  </div>
+  <div class="card run-panel">
+    <div class="card-hd" style="margin-bottom:6px">
+      <div id="runStatusMsg" style="font-size:14px;font-weight:700;color:var(--t2)">Idle</div>
+      <div style="display:flex;gap:6px">
+        <button class="btn sm" id="openLogBtn" onclick="openCurrentLog()" style="display:none">Open log file</button>
+        <button class="btn sm" onclick="go('log')">View log table</button>
       </div>
     </div>
-    <div class="code" id="codeOut">// Navigate to the Script tab to generate.</div>
+    <div class="run-prog-wrap"><div class="run-prog-bar" id="runProgBar" style="width:0"></div></div>
+    <div class="run-stats">
+      <div class="run-stat"><div class="run-stat-val" id="rs-done">0</div><div class="run-stat-lbl">Done</div></div>
+      <div class="run-stat"><div class="run-stat-val" style="color:var(--green)" id="rs-ok">0</div><div class="run-stat-lbl">Success</div></div>
+      <div class="run-stat"><div class="run-stat-val" style="color:var(--red)" id="rs-err">0</div><div class="run-stat-lbl">Errors</div></div>
+      <div class="run-stat"><div class="run-stat-val" style="color:var(--amber)" id="rs-skip">0</div><div class="run-stat-lbl">Skipped</div></div>
+      <div class="run-stat"><div class="run-stat-val" id="rs-rate">—</div><div class="run-stat-lbl">Rows/min</div></div>
+      <div class="run-stat"><div class="run-stat-val" id="rs-eta">—</div><div class="run-stat-lbl">Est. left</div></div>
+      <div class="run-stat"><div class="run-stat-val" id="rs-pct">0%</div><div class="run-stat-lbl">Complete</div></div>
+    </div>
+    <div style="font-size:11px;font-weight:600;color:var(--t3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Live output</div>
+    <div class="live-log" id="liveLog"></div>
   </div>
 </div>
 
-<!-- ══════════════ LOG ══════════════ -->
+<!-- ══ LOG ══ -->
 <div class="panel" id="panel-log">
+  <div class="page-header">
+    <div class="page-title">Run log</div>
+    <div class="page-sub">Detailed record of every row processed</div>
+  </div>
   <div class="card">
     <div class="card-hd">
-      <div class="card-title">Run log</div>
+      <div class="card-title">Log entries</div>
       <div style="display:flex;gap:6px">
-        <button class="btn grn sm" onclick="exportLog()">Export Excel</button>
-        <button class="btn red sm" onclick="clearLog()">Clear</button>
+        <button class="btn grn sm" onclick="openLogsFolder()">Open logs folder</button>
+        <button class="btn sm" id="openLastLogBtn" onclick="openCurrentLog()" style="display:none">Open current log</button>
+        <button class="btn red sm" onclick="clearLogTable()">Clear table</button>
       </div>
     </div>
+    <p style="font-size:12px;color:var(--t2);margin-bottom:14px;line-height:1.65">
+      The full Excel log saves to your logs folder continuously during a run. This table shows the last 500 entries.
+    </p>
     <div id="logStats" class="stat-grid" style="display:none"></div>
     <div class="log-wrap">
       <table class="log-tbl">
         <thead><tr>
           <th style="width:36px">#</th>
-          <th style="width:80px">Time</th>
+          <th style="width:70px">Time</th>
           <th style="width:44px">Row</th>
           <th style="width:72px">Status</th>
-          <th style="width:180px">URL</th>
+          <th style="width:60px">Duration</th>
+          <th>URL</th>
           <th>Fields written</th>
           <th>Failed step</th>
-          <th>Error detail</th>
+          <th>Error</th>
         </tr></thead>
         <tbody id="logBody">
-          <tr><td colspan="8" style="text-align:center;color:var(--t3);padding:24px;font-size:12px">
-            No log entries yet.
-          </td></tr>
+          <tr><td colspan="9" style="text-align:center;color:var(--t3);padding:28px;font-size:12px">No log entries yet. Run the automation to populate this log.</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 </div>
 
-<!-- ══════════════ PROFILES ══════════════ -->
+<!-- ══ PROFILES ══ -->
 <div class="panel" id="panel-profiles">
+  <div class="page-header">
+    <div class="page-title">Login profiles</div>
+    <div class="page-sub">Manage your PestPac credentials — stored securely in Windows Credential Manager</div>
+  </div>
   <div class="card">
     <div class="card-hd">
-      <div class="card-title">PestPac login profiles</div>
+      <div class="card-title">PestPac accounts</div>
       <button class="btn pri sm" onclick="newProfile()" id="newProfileBtn">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:11px;height:11px"><circle cx="8" cy="8" r="6"/><path d="M8 5v6M5 8h6"/></svg>
         Add profile
       </button>
     </div>
     <div class="infobox">
-      Credentials are stored encrypted on your computer using the OS credential vault (Windows Credential Manager).
-      They are <strong>never stored in plain text</strong> and never leave your machine.
-      Use <span class="cred-tok">{{CRED:companyKey}}</span> <span class="cred-tok">{{CRED:username}}</span> <span class="cred-tok">{{CRED:password}}</span> tokens in steps — the script substitutes real values at runtime.
+      Credentials are stored in <strong>Windows Credential Manager</strong> — never in plain text, never in any file, never sent anywhere. Up to 10 profiles supported.
+      Use <span class="cred-tok">{{CRED:companyKey}}</span> <span class="cred-tok">{{CRED:username}}</span> <span class="cred-tok">{{CRED:password}}</span> tokens in steps to reference saved credentials at runtime.
     </div>
-    <div id="profileList"><div class="empty">No profiles yet. Add one to get started.</div></div>
+    <div id="profileList"><div class="empty">No profiles yet. Click "Add profile" to get started.</div></div>
   </div>
 
-  <!-- Edit form (hidden until add/edit) -->
   <div class="card" id="profileForm" style="display:none">
-    <div class="card-hd">
-      <div class="card-title" id="profileFormTitle">New profile</div>
+    <div class="card-hd"><div class="card-title" id="profileFormTitle">New profile</div></div>
+    <div class="row">
+      <div class="fg"><label>Profile name</label><input type="text" id="pName" placeholder="e.g. Main office, Branch 2"/></div>
+      <div class="fg"><label>PestPac login URL</label><input type="url" id="pUrl" value="https://login.pestpac.com/"/></div>
     </div>
     <div class="row">
-      <div class="fg"><label>Profile name</label>
-        <input type="text" id="pName" placeholder="e.g. Main office, Branch 2"/>
-      </div>
-      <div class="fg"><label>PestPac login URL</label>
-        <input type="url" id="pUrl" value="https://login.pestpac.com/" placeholder="https://login.pestpac.com/"/>
-      </div>
-    </div>
-    <div class="row">
-      <div class="fg"><label>Company key (6 characters)</label>
-        <input type="password" id="pCompanyKey" placeholder="••••••" maxlength="6" autocomplete="off"/>
-      </div>
-      <div class="fg"><label>Username</label>
-        <input type="text" id="pUsername" placeholder="Your PestPac username" autocomplete="off"/>
-      </div>
-      <div class="fg"><label>Password</label>
-        <input type="password" id="pPassword" placeholder="••••••••" autocomplete="off"/>
-      </div>
+      <div class="fg"><label>Company key (6 characters)</label><input type="password" id="pCompanyKey" placeholder="••••••" maxlength="6" autocomplete="off"/></div>
+      <div class="fg"><label>Username</label><input type="text" id="pUsername" placeholder="Your PestPac username" autocomplete="off"/></div>
+      <div class="fg"><label>Password</label><input type="password" id="pPassword" placeholder="••••••••" autocomplete="off"/></div>
     </div>
     <div class="btn-row">
       <button class="btn grn" onclick="saveProfile()">Save profile</button>
       <button class="btn" onclick="cancelProfile()">Cancel</button>
-      <button class="btn red sm" id="deleteProfileBtn" onclick="deleteProfile()" style="display:none">Delete profile</button>
+      <button class="btn red" id="deleteProfileBtn" onclick="deleteProfile()" style="display:none">Delete profile</button>
     </div>
   </div>
 </div>
@@ -643,20 +978,18 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
 </div><!-- /content -->
 </div><!-- /shell -->
 
-<!-- ── PASTE MODAL ── -->
+<!-- PASTE MODAL -->
 <div class="modal-bg" id="pasteModal">
   <div class="modal">
     <div class="modal-title">Paste HTML — auto-detect selector</div>
-    <div class="modal-sub">
-      Right-click any field in PestPac → Inspect → right-click the highlighted line → <strong>Copy → Copy outerHTML</strong>. Paste it below.
-    </div>
+    <div class="modal-sub">Right-click any field in PestPac → Inspect → right-click the highlighted line → <strong>Copy → Copy outerHTML</strong>. Paste it below and the best selector is extracted automatically.</div>
     <textarea id="pasteInput" placeholder="Paste outerHTML here…" oninput="parsePaste()"></textarea>
     <div class="modal-result" id="pasteResult">
       <span id="pasteResultText"></span>
       <span class="sel-found" id="pasteSelFound"></span>
       <span class="sel-why" id="pasteSelWhy"></span>
     </div>
-    <div class="btn-row" style="margin-top:12px">
+    <div class="btn-row" style="margin-top:14px">
       <button class="btn pri" onclick="applyPaste()" id="pasteApplyBtn" disabled>Use this selector</button>
       <button class="btn" onclick="closePasteModal()">Cancel</button>
     </div>
@@ -664,95 +997,87 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
 </div>
 
 <script>
-// ════════════════════════════════════════════════════════════════════
-// STATE
-// ════════════════════════════════════════════════════════════════════
 const API = window.api || {};
-let cols = [];
-let ssRows = [], ssHeaders = [], ssName = '';
-let steps = [];
-let nid = 1;
-let logEntries = [];
-let profiles = [];
-let activeProfileId = null;
-let editingProfileId = null;
-let pendingInsertId = null;   // step id waiting for paste/token insert
-let pendingInsertField = null;// which field ('selector','value','url',etc)
-let pasteFoundSel = '';
-let drPos = 0;
-let updInfo = null;
+let cols = [], ssRows = [], ssHeaders = [], ssName = '', ssPath = '', ssRowCount = 0;
+let steps = [], nid = 1;
+let profiles = [], activeProfileId = null, editingProfileId = null;
+let pendingInsertId = null, pendingInsertField = null, pasteFoundSel = '';
+let drPos = 0, updInfo = null, headless = false;
+let isRunning = false, isPaused = false;
+let currentLogPath = null, runStartTime = null, runRowsDone = 0, runTotal = 0;
+let logEntries = [], runOk = 0, runErr = 0, runSkip = 0;
 
-// ════════════════════════════════════════════════════════════════════
-// PESTPAC LOCKED LOGIN STEPS
-// ════════════════════════════════════════════════════════════════════
-const PESTPAC_LOGIN_STEPS = [
-  { id:'pp1', type:'navigate', locked:true,
-    url:'https://login.pestpac.com/',
-    waitAfter:'load',
-    _label:'Navigate to PestPac login' },
-  { id:'pp2', type:'type', locked:true,
-    selector:'input[name="uid"]',
-    value:'{{CRED:companyKey}}',
-    clearFirst:'yes',
-    _label:'Enter company key' },
-  { id:'pp3', type:'click', locked:true,
-    selector:'button[data-testid="CompanyKeyForm-loginBtn"]',
-    waitFor:'input[name="username"]',
-    _label:'Click Continue' },
-  { id:'pp4', type:'type', locked:true,
-    selector:'input[name="username"]',
-    value:'{{CRED:username}}',
-    clearFirst:'yes',
-    _label:'Enter username' },
-  { id:'pp5', type:'type', locked:true,
-    selector:'input[name="password"]',
-    value:'{{CRED:password}}',
-    clearFirst:'yes',
-    _label:'Enter password' },
-  { id:'pp6', type:'click', locked:true,
-    selector:'button[data-testid="loginBtn"]',
-    waitFor:'a[href*="AutoLogin"]',
-    _label:'Click Log in & wait for dashboard' },
+const LOGIN_STEPS = [
+  {id:'pp1',type:'navigate',locked:true,url:'https://login.pestpac.com/',waitAfter:'load',_label:'Navigate to PestPac login'},
+  {id:'pp2',type:'type',locked:true,selector:'input[name="uid"]',value:'{{CRED:companyKey}}',clearFirst:'yes',_label:'Enter company key'},
+  {id:'pp3',type:'click',locked:true,selector:'button[data-testid="CompanyKeyForm-loginBtn"]',waitFor:'input[name="username"]',_label:'Click Continue'},
+  {id:'pp4',type:'type',locked:true,selector:'input[name="username"]',value:'{{CRED:username}}',clearFirst:'yes',_label:'Enter username'},
+  {id:'pp5',type:'type',locked:true,selector:'input[name="password"]',value:'{{CRED:password}}',clearFirst:'yes',_label:'Enter password'},
+  {id:'pp6',type:'click',locked:true,selector:'button[data-testid="loginBtn"]',waitFor:'a[href*="AutoLogin"]',_label:'Click Log in — wait for dashboard'},
 ];
 
-// ════════════════════════════════════════════════════════════════════
-// INIT
-// ════════════════════════════════════════════════════════════════════
-window.addEventListener('DOMContentLoaded', async () => {
-  if (API.getVersion) {
-    const v = await API.getVersion();
-    document.getElementById('tbVer').textContent = 'v' + v;
-  }
-  if (API.onUpdateAvailable) {
-    API.onUpdateAvailable(info => {
-      updInfo = info;
-      document.getElementById('updBanner').classList.add('show');
-      document.getElementById('updTitle').textContent = `Update available — v${info.version}`;
-      document.getElementById('updSub').textContent = 'Click Install to download and apply.';
-    });
-    API.onUpdateProgress(p => {
-      document.getElementById('updPg').classList.add('show');
-      document.getElementById('updBar').style.width = p + '%';
-      const b = document.getElementById('updBtn');
-      b.textContent = p + '%'; b.disabled = true;
-    });
-    API.onUpdateStatus(s => {
-      if (s.type === 'up-to-date') alert('You\'re on the latest version (v' + s.version + ').');
-      else if (s.type === 'error') alert('Update check failed: ' + s.message);
-      else if (s.type === 'not-configured') alert('Auto-update not configured yet.\nSee README.md for setup instructions.');
-    });
-  }
+function allSteps() { return [...LOGIN_STEPS, ...steps]; }
 
-  steps = [];
-  nid = 1;
-  await loadProfiles();
-  renderSteps();
-  seedExampleSteps();
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    if (API.getVersion) document.getElementById('tbVer').textContent = 'v' + await API.getVersion();
+    if (API.onUpdateAvailable) {
+      API.onUpdateAvailable(info => {
+        updInfo = info;
+        document.getElementById('updBanner').classList.add('show');
+        document.getElementById('updTitle').textContent = 'Update available — v' + info.version;
+        document.getElementById('updSub').textContent = 'Click Install to download and apply.';
+      });
+      API.onUpdateProgress(p => {
+        document.getElementById('updPg').classList.add('show');
+        document.getElementById('updBar').style.width = p + '%';
+        const b = document.getElementById('updBtn'); b.textContent = p + '%'; b.disabled = true;
+      });
+      API.onUpdateStatus(s => {
+        if (s.type === 'up-to-date') alert('You\'re on the latest version (v' + s.version + ').');
+        else if (s.type === 'error') alert('Update check failed: ' + s.message);
+        else if (s.type === 'not-configured') alert('Auto-update not configured yet.\nSee README.md for GitHub setup instructions.');
+      });
+    }
+    if (API.onRunEvent) API.onRunEvent(handleRunEvent);
+    await loadProfiles();
+    seedExampleSteps();
+    if (API.checkChromium) {
+      const result = await API.checkChromium();
+      if (!result.installed) document.getElementById('setupOverlay').classList.add('show');
+    }
+  } catch(e) {
+    console.error('Init error:', e);
+  }
 });
 
-// ════════════════════════════════════════════════════════════════════
-// NAVIGATION
-// ════════════════════════════════════════════════════════════════════
+async function startChromiumInstall() {
+  const btn = document.getElementById('setupStartBtn');
+  btn.disabled = true; btn.textContent = 'Downloading…';
+  document.getElementById('setupProg').style.display = 'block';
+  document.getElementById('setupLog').style.display = 'block';
+  if (API.onChromiumProgress) {
+    API.onChromiumProgress(msg => {
+      const log = document.getElementById('setupLog');
+      log.textContent += msg; log.scrollTop = log.scrollHeight;
+      const m = msg.match(/(\d+)%/);
+      if (m) document.getElementById('setupProgBar').style.width = m[1] + '%';
+    });
+  }
+  if (API.installChromium) {
+    const result = await API.installChromium();
+    if (result.ok) {
+      document.getElementById('setupProgBar').style.width = '100%';
+      document.getElementById('setupDone').style.display = 'block';
+      btn.textContent = '✓ Complete';
+      setTimeout(() => document.getElementById('setupOverlay').classList.remove('show'), 1500);
+    } else {
+      btn.textContent = 'Retry'; btn.disabled = false;
+      alert('Setup failed. Check your internet connection and try again.');
+    }
+  }
+}
+
 function go(id) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav').forEach(n => n.classList.remove('on'));
@@ -760,114 +1085,63 @@ function go(id) {
   const nav = document.getElementById('nav-' + id);
   if (nav) nav.classList.add('on');
   document.getElementById('mainContent').scrollTop = 0;
-  if (id === 'script') buildScript();
   if (id === 'validate') runValidation();
   if (id === 'dryrun') setupDryRun();
 }
 
-// ════════════════════════════════════════════════════════════════════
-// SPREADSHEET
-// ════════════════════════════════════════════════════════════════════
 async function openSpreadsheet() {
-  let wb, name;
-  if (API.openSpreadsheet) {
-    const r = await API.openSpreadsheet();
-    if (!r) return;
-    wb = XLSX.read(r.buffer, { type:'base64' });
-    name = r.name;
-  } else {
-    // browser fallback
-    await new Promise(res => {
-      const inp = document.createElement('input');
-      inp.type = 'file'; inp.accept = '.xlsx,.xls,.csv';
-      inp.onchange = e => {
-        const f = e.target.files[0]; if (!f) { res(); return; }
-        name = f.name;
-        const reader = new FileReader();
-        reader.onload = ev => { wb = XLSX.read(ev.target.result, {type:'array'}); res(); };
-        reader.readAsArrayBuffer(f);
-      };
-      inp.click();
-    });
-    if (!wb) return;
-  }
-
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
-  if (!raw.length) { alert('Spreadsheet is empty.'); return; }
-
-  ssHeaders = raw[0].map(String).filter(h => h.trim());
-  ssRows = raw.slice(1).filter(r => r.some(c => c !== ''));
-  ssName = name;
+  const result = API.openSpreadsheet ? await API.openSpreadsheet() : null;
+  if (!result) return;
+  ssPath = result.filePath; ssName = result.name;
+  const data = API.readHeaders ? await API.readHeaders(ssPath) : null;
+  if (!data) return;
+  ssHeaders = data.headers; ssRows = data.preview || []; ssRowCount = data.rowCount || 0;
   cols = [...ssHeaders];
-
-  const hasURL = ssHeaders.some(h => h.toLowerCase() === 'url');
-  if (!hasURL) alert('Warning: No "URL" column found. Add one so the automation knows where to navigate for each row.');
-
-  document.getElementById('ssStatus').innerHTML =
-    `<strong style="color:var(--tx)">${name}</strong> &nbsp;·&nbsp; ${ssRows.length} rows &nbsp;·&nbsp; ${ssHeaders.length} columns`;
-  document.getElementById('nb-import').style.display = 'none';
-  document.getElementById('sbFoot').textContent = ssRows.length + ' rows loaded';
+  if (!ssHeaders.some(h => h.toLowerCase() === 'url'))
+    alert('Warning: No "URL" column found. Add one so the automation knows where to navigate for each row.');
+  const rowLabel = ssRowCount > 0 ? ssRowCount.toLocaleString() + ' rows' : 'row count unknown (CSV)';
+  document.getElementById('ssStatus').innerHTML = '<strong style="color:var(--tx)">' + ssName + '</strong> &nbsp;·&nbsp; ' + rowLabel + ' &nbsp;·&nbsp; ' + ssHeaders.length + ' columns';
+  document.getElementById('sbFoot').textContent = ssRowCount > 0 ? ssRowCount.toLocaleString() + ' rows' : 'Loaded';
   document.getElementById('colSection').style.display = 'block';
   document.getElementById('previewCard').style.display = 'block';
-  document.getElementById('previewMeta').textContent = `${ssRows.length} rows · showing first 8`;
-
-  renderColChips();
-  renderPreview();
-  renderSteps();
-  refreshRunBtn();
+  document.getElementById('previewMeta').textContent = 'showing first ' + ssRows.length + ' rows';
+  renderColChips(); renderPreview(); renderSteps(); refreshRunBtn();
 }
 
 function renderColChips() {
   document.getElementById('colChips').innerHTML = cols.map(c =>
-    `<div class="chip" onclick="copyToken('${esc2(c)}')">
-      <span class="tok">{{${c}}}</span>
-      <span class="cx" onclick="event.stopPropagation();removeCol('${esc2(c)}')">✕</span>
-    </div>`
+    '<div class="chip" onclick="copyToken(\'' + esc2(c) + '\')">' +
+    '<span class="tok">{{' + c + '}}</span>' +
+    '<span class="cx" onclick="event.stopPropagation();removeCol(\'' + esc2(c) + '\')">✕</span>' +
+    '</div>'
   ).join('');
 }
-
 function removeCol(c) { cols = cols.filter(x => x !== c); renderColChips(); }
-
 function copyToken(col) {
-  const token = `{{${col}}}`;
+  const token = '{{' + col + '}}';
   if (pendingInsertId !== null) {
-    const inp = document.getElementById(`fi-${pendingInsertId}-${pendingInsertField}`);
+    const inp = document.getElementById('fi-' + pendingInsertId + '-' + pendingInsertField);
     if (inp) {
       const pos = inp.selectionStart || inp.value.length;
-      inp.value = inp.value.slice(0,pos) + token + inp.value.slice(pos);
+      inp.value = inp.value.slice(0, pos) + token + inp.value.slice(pos);
       const s = steps.find(x => x.id === pendingInsertId);
       if (s) s[pendingInsertField] = inp.value;
-      inp.focus();
-      inp.setSelectionRange(pos+token.length, pos+token.length);
+      inp.focus(); inp.setSelectionRange(pos + token.length, pos + token.length);
       return;
     }
   }
-  navigator.clipboard?.writeText(token);
+  navigator.clipboard && navigator.clipboard.writeText(token);
 }
-
 function renderPreview() {
-  const show = ssRows.slice(0,8);
-  let html = '<table class="tbl"><thead><tr>' +
-    ssHeaders.map(h=>`<th title="${h}">${h}</th>`).join('') +
-    '</tr></thead><tbody>';
-  show.forEach(row => {
-    html += '<tr>' + ssHeaders.map((_,i)=>
-      `<td title="${String(row[i]||'')}">${row[i]??''}</td>`
-    ).join('') + '</tr>';
-  });
-  if (ssRows.length > 8)
-    html += `<tr><td colspan="${ssHeaders.length}" style="text-align:center;color:var(--t3);padding:8px">…and ${ssRows.length-8} more rows</td></tr>`;
+  if (!ssRows.length) return;
+  let html = '<table class="tbl"><thead><tr>' + ssHeaders.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>';
+  ssRows.forEach(row => { html += '<tr>' + ssHeaders.map((_, i) => '<td>' + (row[i] !== undefined ? row[i] : '') + '</td>').join('') + '</tr>'; });
   html += '</tbody></table>';
   document.getElementById('previewTbl').innerHTML = html;
 }
 
-// ════════════════════════════════════════════════════════════════════
-// PASTE HTML → AUTO SELECTOR
-// ════════════════════════════════════════════════════════════════════
-function openPasteModal(stepId, field) {
-  pendingInsertId = stepId;
-  pendingInsertField = field;
+function openPasteModal(sid, field) {
+  pendingInsertId = sid; pendingInsertField = field;
   document.getElementById('pasteInput').value = '';
   document.getElementById('pasteResult').style.display = 'none';
   document.getElementById('pasteApplyBtn').disabled = true;
@@ -875,1190 +1149,355 @@ function openPasteModal(stepId, field) {
   document.getElementById('pasteModal').classList.add('open');
   setTimeout(() => document.getElementById('pasteInput').focus(), 50);
 }
-
-function closePasteModal() {
-  document.getElementById('pasteModal').classList.remove('open');
-}
-
+function closePasteModal() { document.getElementById('pasteModal').classList.remove('open'); }
 function extractSelector(html) {
-  // Parse the HTML string and find the best stable selector
-  const div = document.createElement('div');
-  div.innerHTML = html.trim();
-  const el = div.firstElementChild;
-  if (!el) return null;
-
+  const div = document.createElement('div'); div.innerHTML = html.trim();
+  const el = div.firstElementChild; if (!el) return null;
   const tag = el.tagName.toLowerCase();
-
-  // Priority 1: data-testid (put there specifically for automation)
   const testid = el.getAttribute('data-testid');
-  if (testid) return { sel: `[data-testid="${testid}"]`, why: 'data-testid attribute — best possible, made for automation' };
-
-  // Priority 2: name attribute (stable form field identifier)
+  if (testid) return { sel: '[data-testid="' + testid + '"]', why: 'data-testid — best possible, built for automation' };
   const name = el.getAttribute('name');
-  if (name) return { sel: `${tag}[name="${name}"]`, why: 'name attribute — stable, doesn\'t change with page redesigns' };
-
-  // Priority 3: id, but only if NOT a React dynamic id like :r0:
+  if (name) return { sel: tag + '[name="' + name + '"]', why: 'name attribute — stable across page redesigns' };
   const id = el.getAttribute('id');
-  if (id && !id.match(/^:r\d+:$/)) return { sel: `#${CSS.escape(id)}`, why: 'id attribute — unique identifier for this element' };
-
-  // Priority 4: placeholder
+  if (id && !id.match(/^:r\d+:$/)) return { sel: '#' + CSS.escape(id), why: 'id attribute — unique identifier' };
   const ph = el.getAttribute('placeholder');
-  if (ph && ph.trim()) return { sel: `${tag}[placeholder="${ph}"]`, why: 'placeholder attribute — readable but may change if UI text changes' };
-
-  // Priority 5: type + value
-  const type = el.getAttribute('type');
-  const val = el.getAttribute('value');
-  if (type && val) return { sel: `${tag}[type="${type}"][value="${val}"]`, why: 'type + value combination' };
-
-  // Priority 6: data-tidal or other data attrs
+  if (ph && ph.trim()) return { sel: tag + '[placeholder="' + ph + '"]', why: 'placeholder text' };
+  const type = el.getAttribute('type'), val = el.getAttribute('value');
+  if (type && val) return { sel: tag + '[type="' + type + '"][value="' + val + '"]', why: 'type + value combination' };
   for (const attr of el.attributes) {
-    if (attr.name.startsWith('data-') && attr.name !== 'data-gtm-form-interact-field-id') {
-      return { sel: `${tag}[${attr.name}="${attr.value}"]`, why: `${attr.name} attribute` };
-    }
+    if (attr.name.startsWith('data-') && attr.name !== 'data-gtm-form-interact-field-id')
+      return { sel: tag + '[' + attr.name + '="' + attr.value + '"]', why: attr.name + ' data attribute' };
   }
-
-  // Priority 7: href contains for links
-  if (tag === 'a') {
-    const href = el.getAttribute('href');
-    if (href) {
-      const chunk = href.split('?')[0].split('/').filter(Boolean).pop();
-      if (chunk) return { sel: `a[href*="${chunk}"]`, why: 'href partial match — works even if token changes' };
-    }
-  }
-
-  // Priority 8: type only
-  if (type) return { sel: `${tag}[type="${type}"]`, why: `WARNING: only type="${type}" found — may match multiple elements. Verify it works.` };
-
-  return { sel: tag, why: 'WARNING: only tag name found — very broad, likely matches many elements. Manual refinement needed.' };
+  if (tag === 'a') { const href = el.getAttribute('href'); if (href) { const chunk = href.split('?')[0].split('/').filter(Boolean).pop(); if (chunk) return { sel: 'a[href*="' + chunk + '"]', why: 'partial href match' }; } }
+  if (type) return { sel: tag + '[type="' + type + '"]', why: 'WARNING: type only — may match multiple elements' };
+  return { sel: tag, why: 'WARNING: tag name only — very broad' };
 }
-
 function parsePaste() {
   const html = document.getElementById('pasteInput').value.trim();
-  const result = document.getElementById('pasteResult');
-  const applyBtn = document.getElementById('pasteApplyBtn');
-
-  if (!html) { result.style.display = 'none'; applyBtn.disabled = true; return; }
-
+  const res = document.getElementById('pasteResult'); const btn = document.getElementById('pasteApplyBtn');
+  if (!html) { res.style.display = 'none'; btn.disabled = true; return; }
   const found = extractSelector(html);
-  if (!found) {
-    result.className = 'modal-result err';
-    result.style.display = 'block';
-    document.getElementById('pasteResultText').textContent = 'Could not parse HTML. Make sure you pasted a complete element tag.';
-    document.getElementById('pasteSelFound').textContent = '';
-    document.getElementById('pasteSelWhy').textContent = '';
-    applyBtn.disabled = true;
-    pasteFoundSel = '';
-    return;
-  }
-
-  pasteFoundSel = found.sel;
-  result.className = 'modal-result';
-  result.style.display = 'block';
+  if (!found) { res.className = 'modal-result err'; res.style.display = 'block'; document.getElementById('pasteResultText').textContent = 'Could not parse. Paste a complete HTML element tag.'; document.getElementById('pasteSelFound').textContent = ''; btn.disabled = true; pasteFoundSel = ''; return; }
+  pasteFoundSel = found.sel; res.className = 'modal-result'; res.style.display = 'block';
   document.getElementById('pasteResultText').textContent = 'Selector found:';
   document.getElementById('pasteSelFound').textContent = found.sel;
-  document.getElementById('pasteSelWhy').textContent = '→ Using: ' + found.why;
-  applyBtn.disabled = false;
+  document.getElementById('pasteSelWhy').textContent = '→ ' + found.why;
+  btn.disabled = false;
 }
-
 function applyPaste() {
   if (!pasteFoundSel) return;
   if (pendingInsertId !== null && pendingInsertField) {
     const s = steps.find(x => x.id === pendingInsertId);
     if (s) s[pendingInsertField] = pasteFoundSel;
-    const inp = document.getElementById(`fi-${pendingInsertId}-${pendingInsertField}`);
+    const inp = document.getElementById('fi-' + pendingInsertId + '-' + pendingInsertField);
     if (inp) inp.value = pasteFoundSel;
   }
-  closePasteModal();
-  renderSteps();
+  closePasteModal(); renderSteps();
 }
 
-// ════════════════════════════════════════════════════════════════════
-// STEP METADATA
-// ════════════════════════════════════════════════════════════════════
 const SM = {
-  navigate: { label:'Navigate', badge:'bd-nav',
-    desc: s => s._label || (s.url ? `Navigate to ${s.url}` : 'Navigate to URL') },
-  click:    { label:'Click',    badge:'bd-clk',
-    desc: s => s._label || (s.selector ? `Click ${s.selector}` : 'Click an element') },
-  type:     { label:'Type',     badge:'bd-typ',
-    desc: s => s._label || (s.value ? `Type "${s.value}" → ${s.selector||'?'}` : 'Type into a field') },
-  select:   { label:'Select',   badge:'bd-sel',
-    desc: s => s.value ? `Select "${s.value}" in ${s.selector||'?'}` : 'Select dropdown option' },
-  checkbox: { label:'Checkbox', badge:'bd-chk',
-    desc: s => {
-      const a = s.checkAction||'check';
-      if (a==='conditional') return `Checkbox ${s.selector||'?'} — read from ${s.condCol||'column'}`;
-      return `${a==='check'?'Check':a==='uncheck'?'Uncheck':'Toggle'} ${s.selector||'?'}`;
-    }},
-  clear:    { label:'Clear',    badge:'bd-clr',
-    desc: s => s.selector ? `Clear ${s.selector}` : 'Clear a field' },
-  wait:     { label:'Wait',     badge:'bd-wt',
-    desc: s => {
-      if (s.waitType==='random') return `Wait ${s.waitMin||1}s – ${s.waitMax||3}s (random)`;
-      if (s.waitType==='element') return `Wait for "${s.waitSel||'?'}"`;
-      if (s.waitType==='navigation') return 'Wait for page navigation';
-      return `Wait ${s.waitSec||1}s`;
-    }},
-  assert:   { label:'Assert',   badge:'bd-asr',
-    desc: s => s.selector ? `Verify "${s.selector}"` : 'Verify element exists' },
+  navigate: { label:'Navigate', badge:'bd-nav', desc: s => s._label || (s.url ? 'Navigate to ' + s.url : 'Navigate to URL') },
+  click:    { label:'Click',    badge:'bd-clk', desc: s => s._label || (s.selector ? 'Click ' + s.selector : 'Click an element') },
+  type:     { label:'Type',     badge:'bd-typ', desc: s => s._label || (s.value ? 'Type "' + s.value + '" → ' + (s.selector||'?') : 'Type into a field') },
+  select:   { label:'Select',   badge:'bd-sel', desc: s => s.value ? 'Select "' + s.value + '" in ' + (s.selector||'?') : 'Select dropdown' },
+  checkbox: { label:'Checkbox', badge:'bd-chk', desc: s => { const a = s.checkAction||'check'; if(a==='conditional') return 'Checkbox ' + (s.selector||'?') + ' — from ' + (s.condCol||'column'); return (a==='check'?'Check':a==='uncheck'?'Uncheck':'Toggle') + ' ' + (s.selector||'?'); } },
+  clear:    { label:'Clear',    badge:'bd-clr', desc: s => s.selector ? 'Clear ' + s.selector : 'Clear a field' },
+  wait:     { label:'Wait',     badge:'bd-wt',  desc: s => { if(s.waitType==='random') return 'Wait ' + (s.waitMin||1) + 's–' + (s.waitMax||3) + 's (random)'; if(s.waitType==='element') return 'Wait for "' + (s.waitSel||'?') + '"'; if(s.waitType==='navigation') return 'Wait for navigation'; return 'Wait ' + (s.waitSec||1) + 's'; } },
+  assert:   { label:'Assert',   badge:'bd-asr', desc: s => s.selector ? 'Verify "' + s.selector + '"' : 'Verify element' },
+  textedit: { label:'Text edit', badge:'bd-edit', desc: s => {
+    const modes = {
+      'partial-remove-word':'Contains partial → remove word',
+      'exact-remove':'Exact match → remove',
+      'partial-remove-piece':'Contains partial → remove piece',
+      'partial-replace-piece':'Contains partial → replace piece',
+      'find-replace':'Find and replace',
+      'remove-after':'Remove everything after character',
+      'remove-before':'Remove everything before character',
+      'trim':'Trim whitespace',
+      'remove-extra-spaces':'Remove extra spaces',
+      'regex':'Regex find and replace',
+    };
+    return (modes[s.editMode]||'Text edit') + ' in ' + (s.selector||'?');
+  }},
 };
-
-// ════════════════════════════════════════════════════════════════════
-// RENDER STEPS
-// ════════════════════════════════════════════════════════════════════
-function allSteps() { return [...PESTPAC_LOGIN_STEPS, ...steps]; }
 
 function renderSteps() {
   const list = document.getElementById('stepList');
   document.getElementById('stepsEmpty').style.display = 'none';
-  Array.from(list.querySelectorAll('.step-card,.conn')).forEach(e=>e.remove());
-
+  Array.from(list.querySelectorAll('.step-card,.conn')).forEach(e => e.remove());
   const all = allSteps();
-  if (!all.length) { document.getElementById('stepsEmpty').style.display='block'; return; }
-
+  if (!all.length) { document.getElementById('stepsEmpty').style.display = 'block'; return; }
   all.forEach((s, i) => {
-    if (i > 0) { const d=document.createElement('div'); d.className='conn'; list.appendChild(d); }
-    const m = SM[s.type];
-    const card = document.createElement('div');
-    card.className = 'step-card' + (s.open?' open':'') + (s.locked?' locked':'');
-    card.innerHTML = `
-      <div class="step-hd" onclick="${s.locked?'':'toggleStep('+s.id+')'}">
-        <div class="step-n">${i+1}</div>
-        ${s.locked?`<svg class="lock-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="7" width="8" height="7" rx="1"/><path d="M5 7V5a3 3 0 0 1 6 0v2"/></svg>`:''}
-        <span class="badge ${m.badge}">${m.label}</span>
-        <span class="step-desc">${m.desc(s)}</span>
-        ${s.locked
-          ? `<span style="font-size:10px;color:var(--purple);margin-left:auto;padding-right:4px">PestPac login — locked</span>`
-          : `<div class="step-acts">
-              <button class="ibtn" onclick="mv(event,${s.id},-1)" title="Move up"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 12V4M4 7l4-4 4 4"/></svg></button>
-              <button class="ibtn" onclick="mv(event,${s.id},1)" title="Move down"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4v8M12 9l-4 4-4-4"/></svg></button>
-              <button class="ibtn del" onclick="delStep(event,${s.id})" title="Delete"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M6 4V2h4v2M5 4l.5 9h5L11 4"/></svg></button>
-            </div>`}
-      </div>
-      ${!s.locked && s.open ? `<div class="step-body">${bodyHTML(s)}</div>` : ''}`;
+    if (i > 0) { const d = document.createElement('div'); d.className = 'conn'; list.appendChild(d); }
+    const m = SM[s.type]; const card = document.createElement('div');
+    card.className = 'step-card' + (s.open ? ' open' : '') + (s.locked ? ' locked' : '');
+    card.innerHTML =
+      '<div class="step-hd" onclick="' + (s.locked ? '' : 'toggleStep(' + s.id + ')') + '">' +
+        '<div class="step-n">' + (i+1) + '</div>' +
+        (s.locked ? '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--purple)" stroke-width="1.5"><rect x="4" y="7" width="8" height="7" rx="1"/><path d="M5 7V5a3 3 0 0 1 6 0v2"/></svg>' : '') +
+        '<span class="badge ' + m.badge + '">' + m.label + '</span>' +
+        '<span class="step-desc">' + m.desc(s) + '</span>' +
+        (s.locked
+          ? '<span style="font-size:10px;color:var(--purple);margin-left:auto;padding-right:4px;opacity:.7">PestPac login — locked</span>'
+          : '<div class="step-acts">' +
+              '<button class="ibtn" onclick="mv(event,' + s.id + ',-1)" title="Move up"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 12V4M4 7l4-4 4 4"/></svg></button>' +
+              '<button class="ibtn" onclick="mv(event,' + s.id + ',1)" title="Move down"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4v8M12 9l-4 4-4-4"/></svg></button>' +
+              '<button class="ibtn del" onclick="delStep(event,' + s.id + ')" title="Delete"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M6 4V2h4v2M5 4l.5 9h5L11 4"/></svg></button>' +
+            '</div>') +
+      '</div>' +
+      (!s.locked && s.open ? '<div class="step-body">' + bodyHTML(s) + '</div>' : '');
     list.appendChild(card);
   });
-
   const n = steps.length;
-  document.getElementById('stepCountLbl').textContent = `${PESTPAC_LOGIN_STEPS.length} locked + ${n} custom step${n!==1?'s':''}`;
+  document.getElementById('stepCountLbl').textContent = LOGIN_STEPS.length + ' locked + ' + n + ' custom step' + (n!==1?'s':'');
   document.getElementById('nb-builder').textContent = n;
   document.getElementById('nb-builder').style.display = n ? '' : 'none';
   refreshRunBtn();
 }
 
-// ════════════════════════════════════════════════════════════════════
-// STEP BODY HTML
-// ════════════════════════════════════════════════════════════════════
 function selField(sid, field, value, placeholder, label) {
-  return `<div class="fg">
-    <label>${label}</label>
-    <div class="sel-wrap">
-      <input type="text" id="fi-${sid}-${field}" value="${esc(value)}"
-        placeholder="${placeholder}"
-        oninput="u(${sid},'${field}',this.value)"
-        onfocus="pendingInsertId=${sid};pendingInsertField='${field}'"/>
-      <button class="paste-btn" onclick="openPasteModal(${sid},'${field}')" title="Paste outerHTML to auto-detect selector">Paste HTML</button>
-    </div>
-  </div>`;
+  return '<div class="fg"><label>' + label + '</label>' +
+    '<div class="sel-wrap">' +
+    '<input type="text" id="fi-' + sid + '-' + field + '" value="' + esc(value) + '" placeholder="' + placeholder + '" oninput="u(' + sid + ',\'' + field + '\',this.value)" onfocus="pendingInsertId=' + sid + ';pendingInsertField=\'' + field + '\'"/>' +
+    '<button class="paste-btn" onclick="openPasteModal(' + sid + ',\'' + field + '\')">Paste HTML</button>' +
+    '</div></div>';
 }
-
 function valField(sid, field, value, placeholder, label) {
-  return `<div class="fg">
-    <label>${label}</label>
-    <div class="sel-wrap">
-      <input type="text" id="fi-${sid}-${field}" value="${esc(value)}"
-        placeholder="${placeholder}"
-        oninput="u(${sid},'${field}',this.value)"
-        onfocus="pendingInsertId=${sid};pendingInsertField='${field}'"/>
-    </div>
-    <div class="hint">Use <span class="tok">{{Column}}</span> tokens or <span class="cred-tok">{{CRED:field}}</span> tokens</div>
-  </div>`;
+  return '<div class="fg"><label>' + label + '</label>' +
+    '<div class="sel-wrap">' +
+    '<input type="text" id="fi-' + sid + '-' + field + '" value="' + esc(value) + '" placeholder="' + placeholder + '" oninput="u(' + sid + ',\'' + field + '\',this.value)" onfocus="pendingInsertId=' + sid + ';pendingInsertField=\'' + field + '\'"/>' +
+    '</div>' +
+    '<div class="hint">Use <span class="tok">{{Column}}</span> or <span class="cred-tok">{{CRED:field}}</span> tokens</div>' +
+    '</div>';
 }
-
 function tokenBar(sid, field) {
-  const colBtns = cols.map(c =>
-    `<span class="chip" onclick="pendingInsertId=${sid};pendingInsertField='${field}';copyToken('${esc2(c)}')">
-      <span class="tok">{{${c}}}</span>
-    </span>`
-  ).join('');
-  return `<div style="margin-bottom:10px">
-    <div style="font-size:10px;font-weight:700;color:var(--t2);margin-bottom:4px">INSERT COLUMN TOKEN</div>
-    <div class="chips">${colBtns}</div>
-  </div>`;
+  return '<div style="margin-bottom:10px">' +
+    '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert column token</div>' +
+    '<div class="chips">' + cols.map(c => '<span class="chip" onclick="pendingInsertId=' + sid + ';pendingInsertField=\'' + field + '\';copyToken(\'' + esc2(c) + '\')"><span class="tok">{{' + c + '}}</span></span>').join('') + '</div>' +
+    '</div>';
 }
 
 function bodyHTML(s) {
-  if (s.type === 'navigate') return `
-    ${tokenBar(s.id,'url')}
-    <div class="row">
-      ${valField(s.id,'url',s.url||'','{{URL}} or https://…','URL')}
-      <div class="fg"><label>Wait after navigate</label>
-        <select onchange="u(${s.id},'waitAfter',this.value)">
-          <option ${!s.waitAfter||s.waitAfter==='load'?'selected':''} value="load">Wait for page load</option>
-          <option ${s.waitAfter==='networkidle'?'selected':''} value="networkidle">Wait for network idle</option>
-          <option ${s.waitAfter==='none'?'selected':''} value="none">No wait</option>
-        </select>
-      </div>
-    </div>`;
+  if(s.type==='navigate') return tokenBar(s.id,'url') + '<div class="row">' + valField(s.id,'url',s.url||'','{{URL}} or https://…','URL') + '<div class="fg"><label>Wait after navigate</label><select onchange="u(' + s.id + ',\'waitAfter\',this.value)"><option ' + (!s.waitAfter||s.waitAfter==='load'?'selected':'') + ' value="load">Wait for page load</option><option ' + (s.waitAfter==='networkidle'?'selected':'') + ' value="networkidle">Wait for network idle</option><option ' + (s.waitAfter==='none'?'selected':'') + ' value="none">No wait</option></select></div></div>';
 
-  if (s.type === 'click') return `
-    <div class="row">
-      ${selField(s.id,'selector',s.selector||'','#save-btn, button[type="submit"]','CSS selector')}
-      <div class="fg"><label>Wait for element after click (optional)</label>
-        <div class="sel-wrap">
-          <input type="text" id="fi-${s.id}-waitFor" value="${esc(s.waitFor)}"
-            placeholder=".success-toast, #confirm"
-            oninput="u(${s.id},'waitFor',this.value)"
-            onfocus="pendingInsertId=${s.id};pendingInsertField='waitFor'"/>
-          <button class="paste-btn" onclick="openPasteModal(${s.id},'waitFor')" title="Paste outerHTML">Paste HTML</button>
-        </div>
-      </div>
-    </div>`;
+  if(s.type==='click') return '<div class="row">' + selField(s.id,'selector',s.selector||'','button[type="submit"]','CSS selector') + '<div class="fg"><label>Wait for element after click (optional)</label><div class="sel-wrap"><input type="text" id="fi-' + s.id + '-waitFor" value="' + esc(s.waitFor) + '" placeholder=".success-toast" oninput="u(' + s.id + ',\'waitFor\',this.value)" onfocus="pendingInsertId=' + s.id + ';pendingInsertField=\'waitFor\'"/><button class="paste-btn" onclick="openPasteModal(' + s.id + ',\'waitFor\')">Paste HTML</button></div></div></div>';
 
-  if (s.type === 'type') return `
-    ${tokenBar(s.id,'value')}
-    <div class="row">
-      ${selField(s.id,'selector',s.selector||'','input[name="firstName"]','CSS selector')}
-      ${valField(s.id,'value',s.value||'','{{First name}}','Value to type')}
-    </div>
-    <div class="row">
-      <div class="fg"><label>Clear field first?</label>
-        <select onchange="u(${s.id},'clearFirst',this.value)">
-          <option ${s.clearFirst!=='no'?'selected':''} value="yes">Yes — clear before typing</option>
-          <option ${s.clearFirst==='no'?'selected':''} value="no">No — append to existing</option>
-        </select>
-      </div>
-      <div class="fg"><label>Typing delay (ms per character)</label>
-        <input type="number" value="${s.typeDelay||0}" min="0" max="300"
-          oninput="u(${s.id},'typeDelay',this.value)"/>
-        <div class="hint">0 = instant. 50–100ms simulates human typing.</div>
-      </div>
-    </div>`;
+  if(s.type==='type') return tokenBar(s.id,'value') + '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="firstName"]','CSS selector') + valField(s.id,'value',s.value||'','{{First name}}','Value to type') + '</div><div class="row"><div class="fg"><label>Clear field first?</label><select onchange="u(' + s.id + ',\'clearFirst\',this.value)"><option ' + (s.clearFirst!=='no'?'selected':'') + ' value="yes">Yes — clear before typing</option><option ' + (s.clearFirst==='no'?'selected':'') + ' value="no">No — append</option></select></div><div class="fg"><label>Typing delay (ms/char)</label><input type="number" value="' + (s.typeDelay||0) + '" min="0" max="300" oninput="u(' + s.id + ',\'typeDelay\',this.value)"/><div class="hint">0 = instant. 50–100ms simulates human typing.</div></div></div>';
 
-  if (s.type === 'select') return `
-    ${tokenBar(s.id,'value')}
-    <div class="row">
-      ${selField(s.id,'selector',s.selector||'','select[name="status"]','CSS selector')}
-      ${valField(s.id,'value',s.value||'','{{Status}} or Active','Option to select')}
-    </div>
-    <div class="hint" style="margin-top:4px">Matches by visible label text or option value attribute</div>`;
+  if(s.type==='select') return tokenBar(s.id,'value') + '<div class="row">' + selField(s.id,'selector',s.selector||'','select[name="status"]','CSS selector') + valField(s.id,'value',s.value||'','{{Status}} or Active','Option to select') + '</div>';
 
-  if (s.type === 'checkbox') return `
-    <div class="row">
-      ${selField(s.id,'selector',s.selector||'','input[name="optIn"]','CSS selector')}
-      <div class="fg"><label>Action</label>
-        <select onchange="u(${s.id},'checkAction',this.value);renderSteps()">
-          <option ${!s.checkAction||s.checkAction==='check'?'selected':''} value="check">Always check</option>
-          <option ${s.checkAction==='uncheck'?'selected':''} value="uncheck">Always uncheck</option>
-          <option ${s.checkAction==='toggle'?'selected':''} value="toggle">Toggle (flip current state)</option>
-          <option ${s.checkAction==='conditional'?'selected':''} value="conditional">Conditional — read from column</option>
-        </select>
-      </div>
-    </div>
-    ${s.checkAction==='conditional'?`
-    ${tokenBar(s.id,'condCol')}
-    <div class="row">
-      ${valField(s.id,'condCol',s.condCol||'','{{Opt in}}','Column to read')}
-      <div class="fg"><label>Truthy values (comma separated)</label>
-        <input type="text" value="${esc(s.truthyVals)||'yes,true,1,x'}"
-          oninput="u(${s.id},'truthyVals',this.value)"/>
-        <div class="hint">Case-insensitive. Box is checked if cell matches any of these.</div>
-      </div>
-    </div>`:``}`;
+  if(s.type==='checkbox') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="optIn"]','CSS selector') + '<div class="fg"><label>Action</label><select onchange="u(' + s.id + ',\'checkAction\',this.value);renderSteps()"><option ' + (!s.checkAction||s.checkAction==='check'?'selected':'') + ' value="check">Always check</option><option ' + (s.checkAction==='uncheck'?'selected':'') + ' value="uncheck">Always uncheck</option><option ' + (s.checkAction==='toggle'?'selected':'') + ' value="toggle">Toggle</option><option ' + (s.checkAction==='conditional'?'selected':'') + ' value="conditional">Conditional — from column</option></select></div></div>' + (s.checkAction==='conditional' ? tokenBar(s.id,'condCol') + '<div class="row">' + valField(s.id,'condCol',s.condCol||'','{{Opt in}}','Column to read') + '<div class="fg"><label>Truthy values (comma separated)</label><input type="text" value="' + (esc(s.truthyVals)||'yes,true,1,x') + '" oninput="u(' + s.id + ',\'truthyVals\',this.value)"/><div class="hint">Case-insensitive. Checks box if cell matches any of these.</div></div></div>' : '');
 
-  if (s.type === 'clear') return `
-    <div class="row">
-      ${selField(s.id,'selector',s.selector||'','input[name="notes"]','CSS selector')}
-    </div>`;
+  if(s.type==='clear') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="notes"]','CSS selector') + '</div>';
 
-  if (s.type === 'wait') return `
-    <div class="row">
-      <div class="fg"><label>Wait type</label>
-        <select onchange="u(${s.id},'waitType',this.value);renderSteps()">
-          <option ${!s.waitType||s.waitType==='fixed'?'selected':''} value="fixed">Fixed duration</option>
-          <option ${s.waitType==='random'?'selected':''} value="random">Random range (avoids bot detection)</option>
-          <option ${s.waitType==='element'?'selected':''} value="element">Wait for element to appear</option>
-          <option ${s.waitType==='navigation'?'selected':''} value="navigation">Wait for page navigation</option>
-        </select>
-        <div class="hint">All times are in <strong>seconds</strong> — converted to ms in the generated script</div>
-      </div>
-      ${(!s.waitType||s.waitType==='fixed')?`
-      <div class="fg"><label>Duration (seconds)</label>
-        <input type="number" value="${s.waitSec||1}" min="0" step="0.1"
-          oninput="u(${s.id},'waitSec',this.value)"/>
-        <div class="hint">e.g. 1.5 = 1,500ms</div>
-      </div>`:''}
-      ${s.waitType==='random'?`
-      <div class="fg"><label>Min seconds</label>
-        <input type="number" value="${s.waitMin||1}" min="0" step="0.1"
-          oninput="u(${s.id},'waitMin',this.value)"/>
-      </div>
-      <div class="fg"><label>Max seconds</label>
-        <input type="number" value="${s.waitMax||3}" min="0" step="0.1"
-          oninput="u(${s.id},'waitMax',this.value)"/>
-        <div class="hint">Random pause in this range — helps avoid bot detection</div>
-      </div>`:''}
-      ${s.waitType==='element'?`
-      <div class="fg"><label>CSS selector to wait for</label>
-        <div class="sel-wrap">
-          <input type="text" id="fi-${s.id}-waitSel" value="${esc(s.waitSel)}"
-            placeholder=".success-banner"
-            oninput="u(${s.id},'waitSel',this.value)"
-            onfocus="pendingInsertId=${s.id};pendingInsertField='waitSel'"/>
-          <button class="paste-btn" onclick="openPasteModal(${s.id},'waitSel')" title="Paste outerHTML">Paste HTML</button>
-        </div>
-        <div class="hint">Pauses until this element appears in the DOM</div>
-      </div>`:''}
-    </div>`;
+  if(s.type==='wait') return '<div class="row"><div class="fg"><label>Wait type</label><select onchange="u(' + s.id + ',\'waitType\',this.value);renderSteps()"><option ' + (!s.waitType||s.waitType==='fixed'?'selected':'') + ' value="fixed">Fixed duration</option><option ' + (s.waitType==='random'?'selected':'') + ' value="random">Random range</option><option ' + (s.waitType==='element'?'selected':'') + ' value="element">Wait for element</option><option ' + (s.waitType==='navigation'?'selected':'') + ' value="navigation">Wait for navigation</option></select><div class="hint">All times in <strong>seconds</strong> — converted to ms in the script</div></div>' +
+    ((!s.waitType||s.waitType==='fixed') ? '<div class="fg"><label>Duration (seconds)</label><input type="number" value="' + (s.waitSec||1) + '" min="0" step="0.1" oninput="u(' + s.id + ',\'waitSec\',this.value)"/></div>' : '') +
+    (s.waitType==='random' ? '<div class="fg"><label>Min (seconds)</label><input type="number" value="' + (s.waitMin||1) + '" min="0" step="0.1" oninput="u(' + s.id + ',\'waitMin\',this.value)"/></div><div class="fg"><label>Max (seconds)</label><input type="number" value="' + (s.waitMax||3) + '" min="0" step="0.1" oninput="u(' + s.id + ',\'waitMax\',this.value)"/><div class="hint">Random pause — reduces bot detection risk</div></div>' : '') +
+    (s.waitType==='element' ? '<div class="fg"><label>CSS selector to wait for</label><div class="sel-wrap"><input type="text" id="fi-' + s.id + '-waitSel" value="' + esc(s.waitSel) + '" placeholder=".success-banner" oninput="u(' + s.id + ',\'waitSel\',this.value)" onfocus="pendingInsertId=' + s.id + ';pendingInsertField=\'waitSel\'"/><button class="paste-btn" onclick="openPasteModal(' + s.id + ',\'waitSel\')">Paste HTML</button></div></div>' : '') +
+    '</div>';
 
-  if (s.type === 'assert') return `
-    <div class="row">
-      ${selField(s.id,'selector',s.selector||'','.toast-success','CSS selector to verify')}
-      <div class="fg"><label>Expected text content (optional)</label>
-        <input type="text" id="fi-${s.id}-expected" value="${esc(s.expected)}"
-          placeholder="Record saved"
-          oninput="u(${s.id},'expected',this.value)"/>
-      </div>
-    </div>
-    <div class="row">
-      <div class="fg"><label>On assertion failure</label>
-        <select onchange="u(${s.id},'onFail',this.value)">
-          <option ${!s.onFail||s.onFail==='stop'?'selected':''} value="stop">Stop automation</option>
-          <option ${s.onFail==='skip'?'selected':''} value="skip">Skip row, continue</option>
-          <option ${s.onFail==='log'?'selected':''} value="log">Log error and continue</option>
-        </select>
-      </div>
-    </div>`;
+  if(s.type==='assert') return '<div class="row">' + selField(s.id,'selector',s.selector||'','.toast-success','CSS selector to verify') + '<div class="fg"><label>Expected text (optional)</label><input type="text" id="fi-' + s.id + '-expected" value="' + esc(s.expected) + '" placeholder="Record saved" oninput="u(' + s.id + ',\'expected\',this.value)"/></div></div><div class="row"><div class="fg"><label>On failure</label><select onchange="u(' + s.id + ',\'onFail\',this.value)"><option ' + (!s.onFail||s.onFail==='stop'?'selected':'') + ' value="stop">Stop automation</option><option ' + (s.onFail==='skip'?'selected':'') + ' value="skip">Skip row</option><option ' + (s.onFail==='log'?'selected':'') + ' value="log">Log and continue</option></select></div></div>';
+  if(s.type==='textedit') {
+    const mode = s.editMode||'find-replace';
+    const modeOpts = [
+      ['find-replace','Find and replace (anywhere)'],
+      ['exact-remove','Exact match — remove exact text'],
+      ['partial-remove-word','Contains partial — remove whole word'],
+      ['partial-remove-piece','Contains partial — remove matching piece only'],
+      ['partial-replace-piece','Contains partial — replace matching piece'],
+      ['remove-after','Remove everything after a character'],
+      ['remove-before','Remove everything before a character'],
+      ['trim','Trim leading and trailing whitespace'],
+      ['remove-extra-spaces','Collapse extra spaces to single space'],
+      ['regex','Regex find and replace (advanced)'],
+    ];
+    const needsSearch = ['find-replace','exact-remove','partial-remove-word','partial-remove-piece','partial-replace-piece','regex'].includes(mode);
+    const needsReplace = ['find-replace','partial-replace-piece','regex'].includes(mode);
+    const needsChar = ['remove-after','remove-before'].includes(mode);
+    return tokenBar(s.id,'value') +
+      '<div class="row">' +
+        selField(s.id,'selector',s.selector||'','input[name="email"], .notes-field','CSS selector — field to edit') +
+        '<div class="fg"><label>Edit mode</label>' +
+          '<select onchange="u(' + s.id + ',\'editMode\',this.value);renderSteps()">' +
+          modeOpts.map(([v,l]) => '<option ' + (mode===v?'selected':'') + ' value="' + v + '">' + l + '</option>').join('') +
+          '</select>' +
+        '</div>' +
+      '</div>' +
+      (needsSearch ? '<div class="row">' +
+        valField(s.id,'searchVal',s.searchVal||'','@pestnow.com or {{Column}}', mode==='regex'?'Regex pattern':'Search for') +
+        (needsReplace ? valField(s.id,'replaceVal',s.replaceVal||'','@pestpro.com or leave empty to remove','Replace with (leave empty to remove)') : '') +
+      '</div>' : '') +
+      (needsChar ? '<div class="row">' +
+        '<div class="fg"><label>Character</label>' +
+          '<input type="text" id="fi-' + s.id + '-charVal" value="' + esc(s.charVal) + '" placeholder="e.g. @" oninput="u(' + s.id + ',\'charVal\',this.value)" style="max-width:80px"/>' +
+          '<div class="hint">The character to split on. Everything ' + (mode==='remove-after'?'after':'before') + ' this character will be removed.</div>' +
+        '</div>' +
+      '</div>' : '') +
+      '<div class="row"><div class="fg"><label>Case sensitive?</label>' +
+        '<select onchange="u(' + s.id + ',\'caseSensitive\',this.value)">' +
+          '<option ' + (s.caseSensitive!=='yes'?'selected':'') + ' value="no">No — ignore case</option>' +
+          '<option ' + (s.caseSensitive==='yes'?'selected':'') + ' value="yes">Yes — exact case only</option>' +
+        '</select>' +
+      '</div>' +
+      (mode==='regex' ? '<div class="fg"><label>Regex flags</label>' +
+        '<input type="text" value="' + esc(s.regexFlags||'gi') + '" placeholder="gi" oninput="u(' + s.id + ',\'regexFlags\',this.value)"/>' +
+        '<div class="hint">g = replace all, i = case-insensitive, m = multiline. Default: gi</div>' +
+      '</div>' : '') +
+      '</div>' +
+      (mode==='regex' ? '<div class="infobox" style="margin-top:10px">See the <strong>Text Manipulation & Regex Guide</strong> for pattern examples and help writing your own. Test patterns at <strong>regex101.com</strong> before running.</div>' : '');
+  }
   return '';
 }
 
-// ════════════════════════════════════════════════════════════════════
-// STEP HELPERS
-// ════════════════════════════════════════════════════════════════════
 function esc(v) { return (v||'').toString().replace(/"/g,'&quot;'); }
-function esc2(v){ return (v||'').toString().replace(/'/g,"\\'"); }
-function toggleStep(id){ const s=steps.find(x=>x.id===id); if(s){s.open=!s.open;renderSteps();} }
-function u(id,f,v){ const s=steps.find(x=>x.id===id); if(s) s[f]=v; }
-function delStep(e,id){ e.stopPropagation(); steps=steps.filter(s=>s.id!==id); renderSteps(); }
-function mv(e,id,d){
-  e.stopPropagation();
-  const i=steps.findIndex(s=>s.id===id); const ni=i+d;
-  if(ni<0||ni>=steps.length) return;
-  [steps[i],steps[ni]]=[steps[ni],steps[i]]; renderSteps();
+function esc2(v) { return (v||'').toString().replace(/'/g,"\\'"); }
+function toggleStep(id) { const s=steps.find(x=>x.id===id); if(s){s.open=!s.open;renderSteps();} }
+function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s) s[f]=v; }
+function delStep(e,id) { e.stopPropagation(); steps=steps.filter(s=>s.id!==id); renderSteps(); }
+function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id); const ni=i+d; if(ni<0||ni>=steps.length)return; [steps[i],steps[ni]]=[steps[ni],steps[i]]; renderSteps(); }
+function addStep(type) { steps.push({id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
+function toggleAddMenu() { document.getElementById('addMenu').classList.toggle('open'); }
+function syncDelayMax() {
+  const min = parseFloat(document.getElementById('rowDelayMin').value||1);
+  const maxEl = document.getElementById('rowDelayMax');
+  if (parseFloat(maxEl.value) < min) maxEl.value = min;
 }
-function addStep(type){
-  steps.push({id:nid++,type,open:true,checkAction:'check',waitType:'fixed'});
-  document.getElementById('addMenu').classList.remove('open');
-  renderSteps();
-}
-function toggleAddMenu(){ document.getElementById('addMenu').classList.toggle('open'); }
+function toggleVisibility() { headless=!headless; const btn=document.getElementById('visToggle'); const lbl=document.getElementById('visLabel'); btn.classList.toggle('on',!headless); lbl.textContent=headless?'Hidden — runs in background':'Visible — watch it work'; }
 
-// ════════════════════════════════════════════════════════════════════
-// PROFILES
-// ════════════════════════════════════════════════════════════════════
-async function loadProfiles() {
-  if (API.listProfiles) profiles = await API.listProfiles();
-  renderProfiles();
-}
-
-function renderProfiles() {
-  document.getElementById('nb-profiles').textContent = profiles.length;
-  const list = document.getElementById('profileList');
-  if (!profiles.length) {
-    list.innerHTML = '<div class="empty">No profiles yet. Click "Add profile" to create one.</div>';
-    document.getElementById('activeProfileLbl').textContent = 'None — add a profile first';
-    return;
-  }
-  list.innerHTML = profiles.map(p => `
-    <div class="profile-card ${activeProfileId===p.id?'active-p':''}">
-      <div class="profile-hd">
-        <div class="profile-icon">${(p.name||'?').slice(0,2).toUpperCase()}</div>
-        <div>
-          <div class="profile-name">${p.name||'Unnamed'}</div>
-          <div class="profile-url">${p.loginUrl||'https://login.pestpac.com/'}</div>
-        </div>
-        <div style="margin-left:auto;display:flex;gap:6px">
-          ${activeProfileId===p.id
-            ? `<span style="font-size:11px;font-weight:600;color:var(--green);padding:4px 8px">✓ Active</span>`
-            : `<button class="btn grn sm" onclick="setActiveProfile('${p.id}')">Use this</button>`}
-          <button class="btn sm" onclick="editProfile('${p.id}')">Edit</button>
-        </div>
-      </div>
-      <div style="font-size:11px;color:var(--t2)">
-        Company key: <span style="font-family:monospace">••••••</span> &nbsp;·&nbsp;
-        Username: <span style="font-family:monospace">${p.username||'(not set)'}</span>
-      </div>
-    </div>`).join('');
-
-  const active = profiles.find(p => p.id === activeProfileId);
-  document.getElementById('activeProfileLbl').textContent = active ? active.name : 'None selected';
-
-  // max 10
-  document.getElementById('newProfileBtn').disabled = profiles.length >= 10;
-}
-
-function setActiveProfile(id) {
-  activeProfileId = id;
-  renderProfiles();
-  refreshRunBtn();
-}
-
-function newProfile() {
-  editingProfileId = null;
-  document.getElementById('profileFormTitle').textContent = 'New profile';
-  document.getElementById('pName').value = '';
-  document.getElementById('pUrl').value = 'https://login.pestpac.com/';
-  document.getElementById('pCompanyKey').value = '';
-  document.getElementById('pUsername').value = '';
-  document.getElementById('pPassword').value = '';
-  document.getElementById('deleteProfileBtn').style.display = 'none';
-  document.getElementById('profileForm').style.display = 'block';
-  document.getElementById('pName').focus();
-}
-
-async function editProfile(id) {
-  editingProfileId = id;
-  document.getElementById('profileFormTitle').textContent = 'Edit profile';
-  const p = API.getProfile ? await API.getProfile(id) : profiles.find(x=>x.id===id);
-  if (!p) return;
-  document.getElementById('pName').value = p.name||'';
-  document.getElementById('pUrl').value = p.loginUrl||'https://login.pestpac.com/';
-  document.getElementById('pCompanyKey').value = p.companyKey||'';
-  document.getElementById('pUsername').value = p.username||'';
-  document.getElementById('pPassword').value = p.password||'';
-  document.getElementById('deleteProfileBtn').style.display = '';
-  document.getElementById('profileForm').style.display = 'block';
-  document.getElementById('pName').focus();
-}
-
-async function saveProfile() {
-  const name = document.getElementById('pName').value.trim();
-  if (!name) { alert('Please enter a profile name.'); return; }
-  const companyKey = document.getElementById('pCompanyKey').value.trim();
-  if (!companyKey) { alert('Please enter the company key.'); return; }
-  const username = document.getElementById('pUsername').value.trim();
-  if (!username) { alert('Please enter the username.'); return; }
-  const password = document.getElementById('pPassword').value;
-  if (!password) { alert('Please enter the password.'); return; }
-
-  const profile = {
-    id: editingProfileId || ('p_' + Date.now()),
-    name,
-    loginUrl: document.getElementById('pUrl').value.trim() || 'https://login.pestpac.com/',
-    companyKey, username, password
-  };
-
-  if (API.saveProfile) await API.saveProfile(profile);
-  else {
-    const i = profiles.findIndex(p=>p.id===profile.id);
-    if (i>=0) profiles[i]=profile; else profiles.push(profile);
-  }
-  await loadProfiles();
-  document.getElementById('profileForm').style.display = 'none';
-  if (!activeProfileId) setActiveProfile(profile.id);
-}
-
-async function deleteProfile() {
-  if (!editingProfileId) return;
-  if (!confirm('Delete this profile? This cannot be undone.')) return;
-  if (API.deleteProfile) await API.deleteProfile(editingProfileId);
-  else profiles = profiles.filter(p=>p.id!==editingProfileId);
-  if (activeProfileId === editingProfileId) activeProfileId = null;
-  await loadProfiles();
-  document.getElementById('profileForm').style.display = 'none';
-}
-
-function cancelProfile() {
-  document.getElementById('profileForm').style.display = 'none';
-}
-
-// ════════════════════════════════════════════════════════════════════
-// VALIDATION
-// ════════════════════════════════════════════════════════════════════
 function runValidation() {
-  const items = [];
-  let errs = 0, warns = 0;
-
-  // Profile check
-  if (!activeProfileId) {
-    items.push({t:'err', msg:'No login profile selected. Go to Login Profiles and select one.'});
-    errs++;
-  } else {
-    const p = profiles.find(x=>x.id===activeProfileId);
-    items.push({t:'ok', msg:`Login profile "${p?.name||activeProfileId}" is active.`});
+  const items=[],all=allSteps();
+  let errs=0,warns=0;
+  if(!activeProfileId){items.push({t:'err',msg:'No login profile selected. Go to Login Profiles.'});errs++;}
+  else{const p=profiles.find(x=>x.id===activeProfileId);items.push({t:'ok',msg:'Profile "' + (p&&p.name?p.name:activeProfileId) + '" active.'});}
+  if(!ssPath){items.push({t:'warn',msg:'No spreadsheet loaded.'});warns++;}
+  else{items.push({t:'ok',msg:'Spreadsheet: ' + (ssRowCount>0?ssRowCount.toLocaleString()+' rows':ssName) + ', ' + ssHeaders.length + ' columns.'});if(!cols.some(c=>c.toLowerCase()==='url')){items.push({t:'err',msg:'No "URL" column found.'});errs++;}}
+  if(!steps.length){items.push({t:'warn',msg:'No custom steps defined.'});warns++;}
+  if(!steps.some(s=>s.type==='navigate')){items.push({t:'warn',msg:'No Navigate step — add one with {{URL}}.'});warns++;}
+  all.filter(s=>!s.locked).forEach(s=>{
+    const i=all.indexOf(s);const n=i+1;const issues=[];
+    if(s.type==='navigate'&&!s.url){issues.push({t:'err',msg:'No URL.'});errs++;}
+    if(s.type==='click'&&!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
+    if(s.type==='type'){if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}if(!s.value){issues.push({t:'warn',msg:'Value is empty.'});warns++;}}
+    if(s.type==='select'){if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}if(!s.value){issues.push({t:'warn',msg:'No option value.'});warns++;}}
+    if(s.type==='checkbox'&&!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
+    if(s.type==='clear'&&!s.selector){issues.push({t:'warn',msg:'No CSS selector.'});warns++;}
+    if(s.type==='wait'&&s.waitType==='element'&&!s.waitSel){issues.push({t:'warn',msg:'No wait selector.'});warns++;}
+    if(s.type==='wait'&&s.waitType==='random'&&parseFloat(s.waitMin||1)>=parseFloat(s.waitMax||3)){issues.push({t:'warn',msg:'Min must be less than max.'});warns++;}
+    if(s.type==='assert'&&!s.selector){issues.push({t:'err',msg:'No selector to verify.'});errs++;}
+    if(s.type==='textedit'){
+    if(!s.selector){errs.push('No CSS selector.');errs.length>0&&(warns++);}
+    const m=s.editMode||'find-replace';
+    if(['find-replace','exact-remove','partial-remove-word','partial-remove-piece','partial-replace-piece','regex'].includes(m)&&!s.searchVal){errs.push('No search value defined.');}
+    if(m==='remove-after'&&!s.charVal){errs.push('No character defined to split on.');}
+    if(m==='remove-before'&&!s.charVal){errs.push('No character defined to split on.');}
   }
-
-  // Spreadsheet
-  if (!ssRows.length) {
-    items.push({t:'warn', msg:'No spreadsheet loaded — validation limited without real data.'});
-    warns++;
-  } else {
-    items.push({t:'ok', msg:`Spreadsheet: ${ssRows.length} rows, ${ssHeaders.length} columns.`});
-    if (!cols.some(c=>c.toLowerCase()==='url')) {
-      items.push({t:'err', msg:'No "URL" column in spreadsheet. Each row needs a URL to navigate to.'});
-      errs++;
-    }
-  }
-
-  // Steps
-  const custom = steps;
-  if (!custom.length) {
-    items.push({t:'warn', msg:'No custom steps defined. Add Navigate and data entry steps.'});
-    warns++;
-  }
-
-  const hasNav = custom.some(s=>s.type==='navigate');
-  if (!hasNav) {
-    items.push({t:'warn', msg:'No Navigate step found. Add one with {{URL}} to open each row\'s page.'});
-    warns++;
-  }
-
-  // Per-step validation
-  const all = allSteps();
-  all.forEach((s, i) => {
-    const n = i+1;
-    const issues = [];
-
-    if (s.locked) {
-      // Locked steps are pre-validated — just note them
-      return;
-    }
-
-    if (s.type==='navigate' && !s.url) {
-      issues.push({t:'err', msg:'No URL defined.'});  errs++;
-    }
-    if (s.type==='click' && !s.selector) {
-      issues.push({t:'err', msg:'No CSS selector.'});  errs++;
-    }
-    if (s.type==='type') {
-      if (!s.selector) { issues.push({t:'err', msg:'No CSS selector.'}); errs++; }
-      if (!s.value)    { issues.push({t:'warn', msg:'Value is empty — will type nothing.'}); warns++; }
-    }
-    if (s.type==='select') {
-      if (!s.selector) { issues.push({t:'err', msg:'No CSS selector.'}); errs++; }
-      if (!s.value)    { issues.push({t:'warn', msg:'No option value specified.'}); warns++; }
-    }
-    if (s.type==='checkbox') {
-      if (!s.selector) { issues.push({t:'err', msg:'No CSS selector.'}); errs++; }
-      if (s.checkAction==='conditional'&&!s.condCol) { issues.push({t:'warn',msg:'Conditional mode but no column set.'}); warns++; }
-    }
-    if (s.type==='clear' && !s.selector) {
-      issues.push({t:'warn', msg:'No CSS selector.'}); warns++;
-    }
-    if (s.type==='wait'&&s.waitType==='element'&&!s.waitSel) {
-      issues.push({t:'warn',msg:'Wait-for-element but no selector set.'}); warns++;
-    }
-    if (s.type==='wait'&&s.waitType==='random') {
-      if (parseFloat(s.waitMin||1)>=parseFloat(s.waitMax||3)) {
-        issues.push({t:'warn',msg:`Min (${s.waitMin||1}s) must be less than max (${s.waitMax||3}s).`}); warns++;
-      }
-    }
-    if (s.type==='assert'&&!s.selector) {
-      issues.push({t:'err',msg:'No selector to verify.'}); errs++;
-    }
-
-    // Token reference check
-    [s.value, s.url, s.condCol].filter(Boolean).forEach(v => {
-      [...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m => {
-        const ref = m[1];
-        if (ref.startsWith('CRED:')) return; // cred tokens are always valid
-        if (!cols.includes(ref)) {
-          issues.push({t:'err', msg:`References {{${ref}}} but that column doesn't exist in the spreadsheet.`}); errs++;
-        }
-      });
-    });
-
-    const worst = issues.length
-      ? (issues.some(x=>x.t==='err')?'err':issues.some(x=>x.t==='warn')?'warn':'ok')
-      : 'ok';
-    items.push({ isStep:true, stepNum:n, type:s.type, locked:s.locked,
-      label:SM[s.type].label, desc:SM[s.type].desc(s), issues, worst });
+    [s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')&&!cols.includes(ref)){issues.push({t:'err',msg:'{{' + ref + '}} not in spreadsheet.'});errs++;}});});
+    const worst=issues.length?(issues.some(x=>x.t==='err')?'err':issues.some(x=>x.t==='warn')?'warn':'ok'):'ok';
+    items.push({isStep:true,stepNum:n,type:s.type,label:SM[s.type].label,desc:SM[s.type].desc(s),issues,worst});
   });
-
-  // Badge
-  const badge = document.getElementById('nb-validate');
-  if (errs) { badge.style.display=''; badge.textContent=errs+'e'; badge.style.background='var(--rlt)'; badge.style.color='var(--red)'; }
-  else if (warns) { badge.style.display=''; badge.textContent=warns+'w'; badge.style.background='var(--alt)'; badge.style.color='var(--amber)'; }
-  else { badge.style.display='none'; }
-
-  // Summary stats
-  const stepItems = items.filter(x=>x.isStep);
-  const cleanSteps = stepItems.filter(x=>x.worst==='ok').length;
-  document.getElementById('valSummary').innerHTML = `
-    <div class="stat-grid" style="grid-template-columns:repeat(5,1fr)">
-      <div class="stat-box"><div class="stat-val">${all.length}</div><div class="stat-lbl">Total steps</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--purple)">${PESTPAC_LOGIN_STEPS.length}</div><div class="stat-lbl">Login steps</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--green)">${cleanSteps}</div><div class="stat-lbl">Clean</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--red)">${errs}</div><div class="stat-lbl">Errors</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--amber)">${warns}</div><div class="stat-lbl">Warnings</div></div>
-    </div>`;
-
-  // Results
-  let html = '';
-  // Global items
-  items.filter(x=>!x.isStep).forEach(item => {
-    html += `<div class="vrow v-${item.t}"><div class="vdot"></div><span>${item.msg}</span></div>`;
-  });
-  // Step items
-  items.filter(x=>x.isStep).forEach(item => {
-    html += `<div class="vstep ${item.worst}${item.locked?' locked-step':''}">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:${item.issues.length?'6px':'0'}">
-        <span class="badge ${SM[item.type].badge}">${item.label}</span>
-        <span style="font-size:11px;color:var(--t2)">Step ${item.stepNum}${item.locked?' (locked login step)':''}: ${item.desc}</span>
-        ${!item.issues.length?'<span style="font-size:10px;font-weight:700;color:var(--green);margin-left:auto">✓ OK</span>':''}
-      </div>
-      ${item.issues.map(iss=>`<div class="vrow v-${iss.t}" style="margin-bottom:3px"><div class="vdot"></div><span>${iss.msg}</span></div>`).join('')}
-    </div>`;
-  });
-
-  document.getElementById('valResults').innerHTML = html || '<div class="empty">No issues found.</div>';
-  document.getElementById('valNext').style.display = errs === 0 ? '' : 'none';
+  const badge=document.getElementById('nb-validate');
+  if(errs){badge.style.display='';badge.textContent=errs+'e';badge.style.background='var(--rlt)';badge.style.color='var(--red)';}
+  else if(warns){badge.style.display='';badge.textContent=warns+'w';badge.style.background='var(--alt)';badge.style.color='var(--amber)';}
+  else{badge.style.display='none';}
+  document.getElementById('valSummary').innerHTML='<div class="stat-grid" style="grid-template-columns:repeat(5,1fr)"><div class="stat-box"><div class="stat-val">' + all.length + '</div><div class="stat-lbl">Total</div></div><div class="stat-box"><div class="stat-val" style="color:var(--purple)">' + LOGIN_STEPS.length + '</div><div class="stat-lbl">Login</div></div><div class="stat-box"><div class="stat-val" style="color:var(--green)">' + (all.filter(s=>!s.locked).length-items.filter(x=>x.isStep&&x.worst==='err').length) + '</div><div class="stat-lbl">Clean</div></div><div class="stat-box"><div class="stat-val" style="color:var(--red)">' + errs + '</div><div class="stat-lbl">Errors</div></div><div class="stat-box"><div class="stat-val" style="color:var(--amber)">' + warns + '</div><div class="stat-lbl">Warnings</div></div></div>';
+  let html='';
+  items.filter(x=>!x.isStep).forEach(item=>{html+='<div class="vrow v-' + item.t + '"><div class="vdot"></div><span>' + item.msg + '</span></div>';});
+  items.filter(x=>x.isStep).forEach(item=>{html+='<div class="vstep ' + item.worst + '"><div style="display:flex;align-items:center;gap:8px;margin-bottom:' + (item.issues.length?'6px':'0') + '"><span class="badge ' + SM[item.type].badge + '">' + item.label + '</span><span style="font-size:11px;color:var(--t2)">Step ' + item.stepNum + ': ' + item.desc + '</span>' + (!item.issues.length?'<span style="font-size:10px;font-weight:700;color:var(--green);margin-left:auto">✓ OK</span>':'') + '</div>' + item.issues.map(iss=>'<div class="vrow v-' + iss.t + '" style="margin-bottom:3px"><div class="vdot"></div><span>' + iss.msg + '</span></div>').join('') + '</div>';});
+  document.getElementById('valResults').innerHTML=html||'<div class="empty">No issues found.</div>';
+  document.getElementById('valNext').style.display=errs===0?'':'none';
 }
 
-// ════════════════════════════════════════════════════════════════════
-// DRY RUN
-// ════════════════════════════════════════════════════════════════════
 function setupDryRun() {
-  const sel = document.getElementById('drRowSel');
-  sel.innerHTML = '';
-  if (!ssRows.length) {
-    sel.innerHTML = '<option>No spreadsheet loaded</option>';
-  } else {
-    const urlIdx = ssHeaders.findIndex(h=>h.toLowerCase()==='url');
-    ssRows.forEach((row,i)=>{
-      const label = urlIdx>=0 ? `Row ${i+1} — ${row[urlIdx]||'(no URL)'}` : `Row ${i+1}`;
-      sel.innerHTML += `<option value="${i}">${label}</option>`;
-    });
-  }
+  const sel=document.getElementById('drRowSel');sel.innerHTML='';
+  if(!ssRows.length){sel.innerHTML='<option>No spreadsheet loaded</option>';}
+  else{const urlIdx=ssHeaders.findIndex(h=>h.toLowerCase()==='url');ssRows.forEach((row,i)=>{const label=urlIdx>=0?'Row ' + (i+1) + ' — ' + (row[urlIdx]||'(no URL)'):'Row ' + (i+1);sel.innerHTML+='<option value="' + i + '">' + label + '</option>';});}
   initDryRun();
 }
-
-function resolveValue(val, row) {
-  if (!val) return {text:'(empty)', type:'empty'};
-  let resolved = val;
-  let hasCred = false, hasMissing = false;
-
-  resolved = resolved.replace(/\{\{CRED:([^}]+)\}\}/g, (_, field) => {
-    hasCred = true;
-    return `__CRED__${field}__`;
-  });
-  resolved = resolved.replace(/\{\{([^}]+)\}\}/g, (_, col) => {
-    const idx = ssHeaders.indexOf(col);
-    if (idx < 0) { hasMissing = true; return `__MISSING__${col}__`; }
-    return row[idx] ?? '';
-  });
-
-  return { text: resolved, hasCred, hasMissing, raw: val };
-}
-
-function renderResolvedValue(resolved) {
-  if (!resolved) return '<span class="dr-missing">(empty)</span>';
-  let html = resolved.text;
-  html = html.replace(/__CRED__([^_]+)__/g, (_,f)=>`<span class="dr-cred">••••••</span>`);
-  html = html.replace(/__MISSING__([^_]+)__/g, (_,col)=>`<span class="dr-missing">{{${col}}} — MISSING</span>`);
-  // Escape remaining
-  html = html.replace(/&(?![a-z#\d]+;)/g,'&amp;');
-  return `<span class="dr-val">${html}</span>`;
-}
-
-function buildDryRunErrors(s, row) {
-  const errs = [];
-  if ((s.type==='click'||s.type==='type'||s.type==='select'||s.type==='checkbox'||s.type==='clear'||s.type==='assert') && !s.selector)
-    errs.push('No CSS selector defined for this step.');
-  if (s.type==='navigate' && !s.url)
-    errs.push('No URL defined for this step.');
-  if (s.type==='type' && !s.value)
-    errs.push('Value is empty — this step will type nothing.');
-  if (s.type==='wait'&&s.waitType==='element'&&!s.waitSel)
-    errs.push('Wait type is "element" but no selector is set.');
-
-  // Check for missing columns
-  [s.value, s.url, s.condCol].filter(Boolean).forEach(v => {
-    [...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m => {
-      const ref = m[1];
-      if (!ref.startsWith('CRED:') && !ssHeaders.includes(ref))
-        errs.push(`Column "{{${ref}}}" not found in spreadsheet.`);
-    });
-  });
-  return errs;
-}
-
-function stepDryRunDetail(s, row) {
-  const errs = buildDryRunErrors(s, row);
-  let detail = '';
-
-  if (s.type === 'navigate') {
-    const r = resolveValue(s.url, row);
-    detail = `Navigate browser to: ${renderResolvedValue(r)}`;
-  } else if (s.type === 'click') {
-    detail = `Click element: <span class="dr-val">${s.selector||'?'}</span>`;
-    if (s.waitFor) detail += `<br>Then wait for: <span class="dr-val">${s.waitFor}</span>`;
-  } else if (s.type === 'type') {
-    const r = resolveValue(s.value, row);
-    detail = `Target field: <span class="dr-val">${s.selector||'?'}</span><br>`;
-    detail += `${s.clearFirst!=='no'?'Clear field, then type: ':'Type: '}${renderResolvedValue(r)}`;
-    if (s.typeDelay>0) detail += ` <span style="color:var(--t3);font-size:10px">(${s.typeDelay}ms/char)</span>`;
-  } else if (s.type === 'select') {
-    const r = resolveValue(s.value, row);
-    detail = `Dropdown: <span class="dr-val">${s.selector||'?'}</span><br>Select option: ${renderResolvedValue(r)}`;
-  } else if (s.type === 'checkbox') {
-    const a = s.checkAction||'check';
-    detail = `Checkbox: <span class="dr-val">${s.selector||'?'}</span><br>`;
-    if (a === 'conditional') {
-      const r = resolveValue(s.condCol, row);
-      const tv = (s.truthyVals||'yes,true,1,x').split(',').map(x=>x.trim().toLowerCase());
-      const cellVal = String(r.text||'').trim().toLowerCase();
-      const willCheck = tv.includes(cellVal);
-      detail += `Column value: ${renderResolvedValue(r)} → will <strong>${willCheck?'CHECK':'UNCHECK'}</strong>`;
-    } else {
-      detail += `Action: <strong>${a.toUpperCase()}</strong>`;
-    }
-  } else if (s.type === 'clear') {
-    detail = `Clear field: <span class="dr-val">${s.selector||'?'}</span>`;
-  } else if (s.type === 'wait') {
-    if (s.waitType==='random') detail = `Random wait: <span class="dr-val">${s.waitMin||1}s</span> to <span class="dr-val">${s.waitMax||3}s</span>`;
-    else if (s.waitType==='element') detail = `Wait for element to appear: <span class="dr-val">${s.waitSel||'?'}</span>`;
-    else if (s.waitType==='navigation') detail = `Wait for page to navigate`;
-    else detail = `Wait <span class="dr-val">${s.waitSec||1} seconds</span>`;
-  } else if (s.type === 'assert') {
-    detail = `Verify element exists: <span class="dr-val">${s.selector||'?'}</span>`;
-    if (s.expected) detail += `<br>Expected text: <span class="dr-val">${s.expected}</span>`;
-    detail += `<br>On failure: <strong>${s.onFail||'stop'}</strong>`;
+function resolveTokens(val,row){if(!val)return{text:'(empty)',type:'empty'};let text=val,hasCred=false,hasMissing=false;text=text.replace(/\{\{CRED:([^}]+)\}\}/g,(_,f)=>{hasCred=true;return '__CRED__' + f + '__';});text=text.replace(/\{\{([^}]+)\}\}/g,(_,col)=>{const idx=ssHeaders.indexOf(col);if(idx<0){hasMissing=true;return '__MISSING__' + col + '__';}return row[idx]!==undefined?row[idx]:'';});return{text,hasCred,hasMissing,raw:val};}
+function renderResolved(r){if(!r)return '<span style="color:var(--t3)">(empty)</span>';let h=r.text.replace(/&/g,'&amp;').replace(/</g,'&lt;');h=h.replace(/__CRED__([^_]+)__/g,()=>'<span class="dr-cred">••••••</span>');h=h.replace(/__MISSING__([^_]+)__/g,(_,c)=>'<span class="dr-missing">{{' + c + '}} — NOT FOUND</span>');return '<span class="dr-val">' + h + '</span>';}
+function stepErrors(s,row){const errs=[];if((s.type==='click'||s.type==='type'||s.type==='select'||s.type==='checkbox'||s.type==='clear'||s.type==='assert')&&!s.selector)errs.push('No CSS selector defined.');if(s.type==='navigate'&&!s.url)errs.push('No URL defined.');if(s.type==='type'&&!s.value)errs.push('Value is empty.');if(s.type==='wait'&&s.waitType==='element'&&!s.waitSel)errs.push('No wait selector set.');[s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')&&!ssHeaders.includes(ref))errs.push('Column "{{' + ref + '}}" not in spreadsheet.');});});return errs;}
+function stepDetail(s,row){const errs=stepErrors(s,row);let detail='';
+  if(s.type==='navigate'){const r=resolveTokens(s.url,row);detail='Navigate to: ' + renderResolved(r);}
+  else if(s.type==='click'){detail='Click: <span class="dr-val">' + (s.selector||'?') + '</span>';if(s.waitFor)detail+='<br>Wait for: <span class="dr-val">' + s.waitFor + '</span>';}
+  else if(s.type==='type'){const r=resolveTokens(s.value,row);detail='Field: <span class="dr-val">' + (s.selector||'?') + '</span><br>' + (s.clearFirst!=='no'?'Clear, then type: ':'Type: ') + renderResolved(r);}
+  else if(s.type==='select'){const r=resolveTokens(s.value,row);detail='Dropdown: <span class="dr-val">' + (s.selector||'?') + '</span><br>Select: ' + renderResolved(r);}
+  else if(s.type==='checkbox'){const a=s.checkAction||'check';detail='Checkbox: <span class="dr-val">' + (s.selector||'?') + '</span><br>';if(a==='conditional'){const r=resolveTokens(s.condCol,row);const tv=(s.truthyVals||'yes,true,1,x').split(',').map(x=>x.trim().toLowerCase());const willCheck=tv.includes(String(r.text||'').trim().toLowerCase());detail+='Column: ' + renderResolved(r) + ' → will <strong>' + (willCheck?'CHECK':'UNCHECK') + '</strong>';}else{detail+='Action: <strong>' + a.toUpperCase() + '</strong>';}}
+  else if(s.type==='clear'){detail='Clear field: <span class="dr-val">' + (s.selector||'?') + '</span>';}
+  else if(s.type==='wait'){if(s.waitType==='random')detail='Random wait: <span class="dr-val">' + (s.waitMin||1) + 's</span> to <span class="dr-val">' + (s.waitMax||3) + 's</span>';else if(s.waitType==='element')detail='Wait for: <span class="dr-val">' + (s.waitSel||'?') + '</span>';else if(s.waitType==='navigation')detail='Wait for page navigation';else detail='Wait <span class="dr-val">' + (s.waitSec||1) + ' seconds</span>';}
+  else if(s.type==='textedit'){
+    const modes={'find-replace':'Find and replace','exact-remove':'Exact remove','partial-remove-word':'Remove whole word','partial-remove-piece':'Remove piece','partial-replace-piece':'Replace piece','remove-after':'Remove after char','remove-before':'Remove before char','trim':'Trim whitespace','remove-extra-spaces':'Collapse spaces','regex':'Regex replace'};
+    const m=s.editMode||'find-replace';
+    detail='Field: <span class="dr-val">'+(s.selector||'?')+'</span><br>Mode: <strong>'+(modes[m]||m)+'</strong>';
+    if(s.searchVal)detail+='<br>Search: <span class="dr-val">'+s.searchVal+'</span>';
+    if(s.replaceVal!==undefined&&['find-replace','partial-replace-piece','regex'].includes(m))detail+='<br>Replace with: <span class="dr-val">'+(s.replaceVal||'(remove)')+'</span>';
+    if(s.charVal&&['remove-after','remove-before'].includes(m))detail+='<br>Character: <span class="dr-val">'+s.charVal+'</span>';
   }
-
-  const errHtml = errs.length
-    ? `<div class="dr-err-box"><strong>⚠ Configuration error${errs.length>1?'s':''} — fix before running:</strong>${errs.map(e=>`<div>• ${e}</div>`).join('')}</div>`
-    : '';
-
-  return { detail, errs, errHtml };
+    else if(s.type==='assert'){detail='Verify exists: <span class="dr-val">' + (s.selector||'?') + '</span>';if(s.expected)detail+='<br>Expected: <span class="dr-val">' + s.expected + '</span>';detail+='<br>On failure: <strong>' + (s.onFail||'stop') + '</strong>';}
+  const errHtml=errs.length?'<div class="dr-err-box"><strong>⚠ ' + errs.length + ' error' + (errs.length>1?'s':'') + ' — fix before running:</strong>' + errs.map(e=>'<div>• ' + e + '</div>').join('') + '</div>':'';
+  return{detail,errs,errHtml};
 }
+function initDryRun(){drPos=-1;const rowIdx=parseInt(document.getElementById('drRowSel').value||'0');const row=ssRows[rowIdx]||[];const all=allSteps();document.getElementById('drCtrl').style.display=all.length?'':'none';document.getElementById('drAutoBtn').style.display='none';document.getElementById('drNext').textContent='Next step →';document.getElementById('drNext').disabled=false;document.getElementById('drPrev').disabled=true;const container=document.getElementById('drSteps');container.innerHTML='';if(!all.length){container.innerHTML='<div class="empty">No steps defined.</div>';return;}all.forEach((s,i)=>{const m=SM[s.type];const{detail,errs,errHtml}=stepDetail(s,row);const div=document.createElement('div');div.className='dr-step dr-pending';div.id='drs-' + i;div.innerHTML='<div class="dr-hd"><div class="dr-num">' + (i+1) + '</div><span class="badge ' + m.badge + '">' + m.label + '</span><span class="dr-action" style="margin-left:4px">' + (s._label||m.desc(s)) + '</span>' + (s.locked?'<span style="font-size:10px;color:var(--purple);margin-left:auto;opacity:.7">🔒 login</span>':'') + (errs.length?'<span style="font-size:10px;color:var(--red);font-weight:700;margin-left:auto">⚠ ' + errs.length + ' error' + (errs.length>1?'s':'') + '</span>':'') + '</div><div class="dr-detail">' + detail + errHtml + '</div>';container.appendChild(div);});updateDrProgress(all.length);}
+function drMove(dir){const all=allSteps();const rowIdx=parseInt(document.getElementById('drRowSel').value||'0');const row=ssRows[rowIdx]||[];const prev=drPos;drPos=Math.max(-1,Math.min(all.length-1,drPos+dir));if(prev>=0){const c=document.getElementById('drs-' + prev);if(c){const{errs}=stepDetail(all[prev],row);c.className='dr-step ' + (errs.length?'dr-err':'dr-done');}}if(drPos>=0){const c=document.getElementById('drs-' + drPos);if(c){c.className='dr-step dr-current';c.scrollIntoView({behavior:'smooth',block:'nearest'});}}all.forEach((_,i)=>{if(i<drPos){const c=document.getElementById('drs-' + i);if(c&&!c.classList.contains('dr-err')){const{errs}=stepDetail(all[i],row);c.className='dr-step ' + (errs.length?'dr-err':'dr-done');}}if(i>drPos){const c=document.getElementById('drs-' + i);if(c)c.className='dr-step dr-pending';}});document.getElementById('drPrev').disabled=drPos<=0;const atEnd=drPos>=all.length-1;document.getElementById('drNext').textContent=atEnd?'✓ Complete':'Next step →';document.getElementById('drNext').disabled=atEnd;document.getElementById('drAutoBtn').style.display=atEnd?'':'none';updateDrProgress(all.length);}
+function updateDrProgress(total){const pct=total>0?Math.round(((drPos+1)/total)*100):0;document.getElementById('drFill').style.width=pct+'%';document.getElementById('drInfo').textContent='Step ' + Math.max(0,drPos+1) + ' / ' + total;}
 
-function initDryRun() {
-  drPos = -1;
-  const sel = document.getElementById('drRowSel');
-  const rowIdx = parseInt(sel.value||'0');
-  const row = ssRows[rowIdx] || [];
-  const all = allSteps();
-
-  document.getElementById('drCtrl').style.display = all.length ? '' : 'none';
-  document.getElementById('drAutoBtn').style.display = 'none';
-  document.getElementById('drNext').textContent = 'Next step →';
-  document.getElementById('drNext').disabled = false;
-  document.getElementById('drPrev').disabled = true;
-
-  // Build all step cards as pending
-  const container = document.getElementById('drSteps');
-  container.innerHTML = '';
-
-  if (!all.length) {
-    container.innerHTML = '<div class="empty">No steps defined. Build your flow first.</div>';
-    return;
-  }
-
-  all.forEach((s,i) => {
-    const m = SM[s.type];
-    const { detail, errs, errHtml } = stepDryRunDetail(s, row);
-    const div = document.createElement('div');
-    div.className = 'dr-step dr-pending';
-    div.id = `drs-${i}`;
-    div.innerHTML = `
-      <div class="dr-hd">
-        <div class="dr-num">${i+1}</div>
-        <span class="badge ${m.badge}">${m.label}</span>
-        <span class="dr-action" style="margin-left:4px">${s._label||m.desc(s)}</span>
-        ${s.locked?`<span style="font-size:10px;color:var(--purple);margin-left:auto">🔒 login</span>`:''}
-        ${errs.length?`<span style="font-size:10px;color:var(--red);font-weight:700;margin-left:auto">⚠ ${errs.length} error${errs.length>1?'s':''}</span>`:''}
-      </div>
-      <div class="dr-detail" id="drd-${i}">${detail}${errHtml}</div>`;
-    container.appendChild(div);
-  });
-
-  updateDrProgress(all.length);
-}
-
-function drMove(dir) {
-  const all = allSteps();
-  const sel = document.getElementById('drRowSel');
-  const rowIdx = parseInt(sel.value||'0');
-  const row = ssRows[rowIdx] || [];
-
-  const prev = drPos;
-  drPos = Math.max(-1, Math.min(all.length-1, drPos+dir));
-
-  // Update previous card state
-  if (prev >= 0) {
-    const prevCard = document.getElementById(`drs-${prev}`);
-    if (prevCard) {
-      const { errs } = stepDryRunDetail(all[prev], row);
-      prevCard.className = errs.length ? 'dr-step dr-err' : 'dr-step dr-done';
-    }
-  }
-
-  // Update current card
-  if (drPos >= 0) {
-    const card = document.getElementById(`drs-${drPos}`);
-    if (card) {
-      card.className = 'dr-step dr-current';
-      card.scrollIntoView({ behavior:'smooth', block:'nearest' });
-    }
-  }
-
-  // Mark all before drPos as done/err
-  all.forEach((s,i) => {
-    if (i < drPos) {
-      const c = document.getElementById(`drs-${i}`);
-      if (c && !c.classList.contains('dr-err')) {
-        const { errs } = stepDryRunDetail(s, row);
-        c.className = errs.length ? 'dr-step dr-err' : 'dr-step dr-done';
-      }
-    }
-    if (i > drPos) {
-      const c = document.getElementById(`drs-${i}`);
-      if (c) c.className = 'dr-step dr-pending';
-    }
-  });
-
-  document.getElementById('drPrev').disabled = drPos <= 0;
-
-  const atEnd = drPos >= all.length - 1;
-  const nextBtn = document.getElementById('drNext');
-  const autoBtn = document.getElementById('drAutoBtn');
-  nextBtn.textContent = atEnd ? '✓ Complete' : 'Next step →';
-  nextBtn.disabled = atEnd;
-  autoBtn.style.display = atEnd ? '' : 'none';
-
-  updateDrProgress(all.length);
-}
-
-function updateDrProgress(total) {
-  const pct = total > 0 ? Math.round(((drPos+1)/total)*100) : 0;
-  document.getElementById('drFill').style.width = pct + '%';
-  document.getElementById('drInfo').textContent = `Step ${Math.max(0,drPos+1)} / ${total}`;
-}
-
-// ════════════════════════════════════════════════════════════════════
-// SCRIPT GENERATION
-// ════════════════════════════════════════════════════════════════════
-function buildScript() {
-  const type = document.getElementById('scriptType')?.value || 'playwright';
-  const rowDelayMs = Math.round(parseFloat(document.getElementById('rowDelay')?.value||1.5)*1000);
-  const errHandle = document.getElementById('errHandle')?.value || 'stop';
-  const isPW = type === 'playwright';
-
-  const s2ms = sec => Math.round(parseFloat(sec||1)*1000);
-  const tokenReplace = val => {
-    if (!val) return "''";
-    return '`' + val
-      .replace(/\{\{CRED:companyKey\}\}/g, '${credentials.companyKey}')
-      .replace(/\{\{CRED:username\}\}/g,   '${credentials.username}')
-      .replace(/\{\{CRED:password\}\}/g,   '${credentials.password}')
-      .replace(/\{\{([^}]+)\}\}/g,         '${row["$1"]}') + '`';
-  };
-
-  const stepCode = (s, ind='      ') => {
-    if (s.type==='navigate') {
-      const url = tokenReplace(s.url);
-      const opt = s.waitAfter==='networkidle' ? (isPW?",{waitUntil:'networkidle'}":',{waitUntil:\'networkidle2\'}') : '';
-      return `${ind}await page.goto(${url}${opt});`;
-    }
-    if (s.type==='click') {
-      let c = isPW ? `${ind}await page.click(${JSON.stringify(s.selector||'')});` : `${ind}await page.click(${JSON.stringify(s.selector||'')});`;
-      if (s.waitFor) c += `\n${ind}await page.waitForSelector(${JSON.stringify(s.waitFor)});`;
-      return c;
-    }
-    if (s.type==='type') {
-      const sel = JSON.stringify(s.selector||'');
-      const val = tokenReplace(s.value);
-      let c = '';
-      if (s.clearFirst!=='no') c += isPW ? `${ind}await page.fill(${sel},'');\n` : `${ind}await page.$eval(${sel},el=>el.value='');\n`;
-      if (parseInt(s.typeDelay||0)>0) c += `${ind}await page.type(${sel},${val},{delay:${s.typeDelay}});`;
-      else c += isPW ? `${ind}await page.fill(${sel},${val});` : `${ind}await page.type(${sel},${val});`;
-      return c;
-    }
-    if (s.type==='select') {
-      return isPW
-        ? `${ind}await page.selectOption(${JSON.stringify(s.selector||'')},{label:${tokenReplace(s.value)}});`
-        : `${ind}await page.select(${JSON.stringify(s.selector||'')},${tokenReplace(s.value)});`;
-    }
-    if (s.type==='checkbox') {
-      const sel = JSON.stringify(s.selector||'');
-      if (s.checkAction==='check')   return isPW?`${ind}await page.check(${sel});`:`${ind}await page.$eval(${sel},el=>{if(!el.checked)el.click();});`;
-      if (s.checkAction==='uncheck') return isPW?`${ind}await page.uncheck(${sel});`:`${ind}await page.$eval(${sel},el=>{if(el.checked)el.click();});`;
-      if (s.checkAction==='toggle')  return `${ind}await page.click(${sel});`;
-      if (s.checkAction==='conditional') {
-        const tv = JSON.stringify((s.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase()));
-        return [
-          `${ind}{ const _v=String(${tokenReplace(s.condCol)}).trim().toLowerCase();`,
-          `${ind}  const _ok=${tv}.includes(_v);`,
-          isPW ? `${ind}  if(_ok)await page.check(${sel});else await page.uncheck(${sel}); }`
-               : `${ind}  await page.$eval(${sel},(el,c)=>{if(el.checked!==c)el.click();},_ok); }`
-        ].join('\n');
-      }
-    }
-    if (s.type==='clear') return isPW?`${ind}await page.fill(${JSON.stringify(s.selector||'')},'');`:`${ind}await page.$eval(${JSON.stringify(s.selector||'')},el=>el.value='');`;
-    if (s.type==='wait') {
-      if (s.waitType==='random') {
-        const mn=s2ms(s.waitMin||1), mx=s2ms(s.waitMax||3);
-        return `${ind}await page.waitForTimeout(Math.floor(Math.random()*(${mx}-${mn}+1))+${mn});`;
-      }
-      if (s.waitType==='element') return `${ind}await page.waitForSelector(${JSON.stringify(s.waitSel||'')});`;
-      if (s.waitType==='navigation') return `${ind}await page.waitForNavigation();`;
-      return `${ind}await page.waitForTimeout(${s2ms(s.waitSec||1)});`;
-    }
-    if (s.type==='assert') {
-      let c = `${ind}await page.waitForSelector(${JSON.stringify(s.selector||'')});`;
-      if (s.expected) {
-        const exp = JSON.stringify(s.expected);
-        c += '\n' + (isPW
-          ? `${ind}{ const _t=await page.locator(${JSON.stringify(s.selector)}).textContent(); if(!_t.includes(${exp})) throw new Error('Assert failed: expected '+${exp}); }`
-          : `${ind}{ const _el=await page.$(${JSON.stringify(s.selector)}); const _t=await _el.evaluate(e=>e.textContent); if(!_t.includes(${exp})) throw new Error('Assert failed: expected '+${exp}); }`);
-      }
-      return c;
-    }
-    return `${ind}// Unknown step: ${s.type}`;
-  };
-
-  const allS = allSteps();
-  const errBlock = errHandle==='stop'
-    ? `      process.exit(1);`
-    : errHandle==='retry'
-    ? `      // Retry once\n      try {\n${allS.map(s=>stepCode(s,'        ')).join('\n')}\n        log[log.length-1].status='ok (retry)';\n      } catch(e2) {\n        log[log.length-1].error='Retry failed: '+e2.message;\n      }`
-    : `      // Skip row`;
-
-  const script = `${isPW?"const {chromium}=require('playwright');":"const puppeteer=require('puppeteer');"}
-const XLSX=require('xlsx');
-const fs=require('fs');
-const path=require('path');
-const readline=require('readline');
-
-// ─── CONFIG ────────────────────────────────────────────────
-const SPREADSHEET=process.argv[2]||'./data.xlsx';
-const ROW_DELAY_MS=${rowDelayMs};
-const LOG_PATH='./pestpac-log-'+new Date().toISOString().slice(0,10)+'.xlsx';
-// ───────────────────────────────────────────────────────────
-
-// Credentials are loaded from the OS at runtime — never hardcoded
-async function getCredentials() {
-  let keytar;
-  try { keytar=require('keytar'); } catch(e) { keytar=null; }
-  if (keytar) {
-    const companyKey = await keytar.getPassword('CRMAutomator','${activeProfileId||'PROFILE_ID'}:companyKey')||'';
-    const username   = await keytar.getPassword('CRMAutomator','${activeProfileId||'PROFILE_ID'}:username')||'';
-    const password   = await keytar.getPassword('CRMAutomator','${activeProfileId||'PROFILE_ID'}:password')||'';
-    return {companyKey,username,password};
-  }
-  // Fallback: prompt at runtime (never stored in script)
-  const rl=readline.createInterface({input:process.stdin,output:process.stdout});
-  const ask=q=>new Promise(r=>rl.question(q,r));
-  const companyKey=await ask('Company key: ');
-  const username=await ask('Username: ');
-  const password=await ask('Password: ');
-  rl.close();
-  return {companyKey,username,password};
-}
-
-async function main() {
-  const wb=XLSX.readFile(SPREADSHEET);
-  const ws=wb.Sheets[wb.SheetNames[0]];
-  const rows=XLSX.utils.sheet_to_json(ws);
-  console.log('Loaded',rows.length,'rows from',SPREADSHEET);
-
-  const credentials=await getCredentials();
-  const log=[];
-
-  const browser=await ${isPW?'chromium.launch({headless:false})':'puppeteer.launch({headless:false})'};
-  const ${isPW?'context=await browser.newContext();\n  const page=await context.newPage()':'page=await browser.newPage()'};
-
-  for(let ri=0;ri<rows.length;ri++){
-    const row=rows[ri];
-    console.log('\\nRow',ri+1,'/',rows.length);
-    const logEntry={row:ri+1,timestamp:new Date().toISOString(),url:row.URL||'',status:'ok',error:'',failedStep:'',fieldsWritten:''};
-    const written=[];
-    try {
-${allS.map(s=>{
-  const code = stepCode(s,'      ');
-  const label = JSON.stringify(s._label||SM[s.type].desc(s));
-  return `      // Step: ${s._label||SM[s.type].desc(s)}\n${code}\n      written.push(${label});`;
-}).join('\n')}
-      logEntry.fieldsWritten=written.join(' | ');
-      console.log('  ✓ Row',ri+1,'complete');
-    } catch(err) {
-      logEntry.status='error';
-      logEntry.error=err.message;
-      logEntry.failedStep=written[written.length-1]||'unknown';
-      logEntry.fieldsWritten=written.slice(0,-1).join(' | ');
-      console.error('  ✗ Row',ri+1,'failed:',err.message);
-${errBlock}
-    }
-    log.push(logEntry);
-    if(ri<rows.length-1) await page.waitForTimeout(ROW_DELAY_MS);
-  }
-
-  await browser.close();
-
-  // Write Excel log
-  const logWb=XLSX.utils.book_new();
-  const logWs=XLSX.utils.json_to_sheet(log);
-  XLSX.utils.book_append_sheet(logWb,logWs,'Run log');
-  XLSX.writeFile(logWb,LOG_PATH);
-  console.log('\\nDone. Log saved to',LOG_PATH);
-}
-
-main().catch(e=>{console.error('Fatal:',e);process.exit(1);});`;
-
-  document.getElementById('codeOut').textContent = script;
-}
-
-// ════════════════════════════════════════════════════════════════════
-// FLOW SAVE / LOAD
-// ════════════════════════════════════════════════════════════════════
-async function saveFlow() {
-  const json = JSON.stringify({
-    version:'1.0', cols, steps, activeProfileId,
-    config:{
-      rowDelay:document.getElementById('rowDelay')?.value,
-      errHandle:document.getElementById('errHandle')?.value,
-      flowNotes:document.getElementById('flowNotes')?.value
-    }
-  },null,2);
-  if (API.saveFlow) { const p=await API.saveFlow({json}); if(p) alert('Flow saved to '+p); }
-  else { const a=document.createElement('a'); a.href='data:application/json;charset=utf-8,'+encodeURIComponent(json); a.download='crm-flow.json'; a.click(); }
-}
-
-async function loadFlow() {
-  let json;
-  if (API.loadFlow) { json=await API.loadFlow(); if(!json) return; }
-  else {
-    json=await new Promise(res=>{
-      const inp=document.createElement('input'); inp.type='file'; inp.accept='.json';
-      inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};
-      inp.click();
-    });
-    if (!json) return;
-  }
-  const data=JSON.parse(json);
-  cols=data.cols||[]; steps=data.steps||[]; activeProfileId=data.activeProfileId||null;
-  nid=steps.reduce((mx,s)=>Math.max(mx,s.id+1),1);
-  const c=data.config||{};
-  if(c.rowDelay&&document.getElementById('rowDelay')) document.getElementById('rowDelay').value=c.rowDelay;
-  if(c.errHandle&&document.getElementById('errHandle')) document.getElementById('errHandle').value=c.errHandle;
-  if(c.flowNotes&&document.getElementById('flowNotes')) document.getElementById('flowNotes').value=c.flowNotes;
-  renderColChips(); renderSteps(); renderProfiles();
-}
-
-async function saveScript() {
-  const script=document.getElementById('codeOut').textContent;
-  const type=document.getElementById('scriptType')?.value||'playwright';
-  if(API.saveScript){const p=await API.saveScript({script,type});if(p)alert('Script saved to '+p);}
-}
-function copyScript(){navigator.clipboard?.writeText(document.getElementById('codeOut').textContent);alert('Copied to clipboard.');}
-
-// ════════════════════════════════════════════════════════════════════
-// LOG
-// ════════════════════════════════════════════════════════════════════
-function addLogEntry(entry) {
-  logEntries.push(entry);
-  const tbody=document.getElementById('logBody');
-  if(tbody.querySelector('td[colspan]')) tbody.innerHTML='';
-  const tr=document.createElement('tr');
-  const statusClass=entry.status==='ok'?'s-ok':entry.status==='error'?'s-err':'s-skip';
-  const rowClass=entry.status==='ok'?'row-ok':entry.status==='error'?'row-err':'row-skip';
-  tr.className=rowClass;
-  tr.innerHTML=`
-    <td>${logEntries.length}</td>
-    <td style="white-space:nowrap">${new Date(entry.timestamp).toLocaleTimeString()}</td>
-    <td>${entry.row}</td>
-    <td class="${statusClass}">${entry.status}</td>
-    <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${entry.url||''}">${entry.url||''}</td>
-    <td style="font-size:10px;color:var(--t2);line-height:1.6">${entry.fieldsWritten||''}</td>
-    <td style="font-size:10px;color:var(--red)">${entry.failedStep||''}</td>
-    <td class="err-cell">${entry.error||''}</td>`;
-  tbody.appendChild(tr);
-  const nb=document.getElementById('nb-log');
-  nb.style.display=''; nb.textContent=logEntries.length;
-  updateLogStats();
-}
-window.__logEntry = addLogEntry;
-
-function updateLogStats() {
-  const ok=logEntries.filter(e=>e.status==='ok').length;
-  const err=logEntries.filter(e=>e.status==='error').length;
-  const skip=logEntries.filter(e=>e.status==='skip').length;
-  document.getElementById('logStats').style.display='';
-  document.getElementById('logStats').innerHTML=`
-    <div class="stat-box"><div class="stat-val">${logEntries.length}</div><div class="stat-lbl">Total</div></div>
-    <div class="stat-box"><div class="stat-val" style="color:var(--green)">${ok}</div><div class="stat-lbl">Success</div></div>
-    <div class="stat-box"><div class="stat-val" style="color:var(--red)">${err}</div><div class="stat-lbl">Errors</div></div>
-    <div class="stat-box"><div class="stat-val" style="color:var(--amber)">${skip}</div><div class="stat-lbl">Skipped</div></div>
-    <div class="stat-box"><div class="stat-val" style="color:var(--blue)">${logEntries.length?Math.round(ok/logEntries.length*100):0}%</div><div class="stat-lbl">Success rate</div></div>`;
-}
-
-async function exportLog() {
-  if(!logEntries.length){alert('No log entries to export.');return;}
-  const wb=XLSX.utils.book_new();
-
-  // Summary sheet
-  const summary=[
-    {Metric:'Total rows processed',Value:logEntries.length},
-    {Metric:'Successful',Value:logEntries.filter(e=>e.status==='ok').length},
-    {Metric:'Errors',Value:logEntries.filter(e=>e.status==='error').length},
-    {Metric:'Skipped',Value:logEntries.filter(e=>e.status==='skip').length},
-    {Metric:'Success rate',Value:logEntries.length?Math.round(logEntries.filter(e=>e.status==='ok').length/logEntries.length*100)+'%':'N/A'},
-    {Metric:'Export time',Value:new Date().toLocaleString()},
-  ];
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summary),'Summary');
-
-  // Detail sheet — all entries
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(logEntries),'All rows');
-
-  // Errors only sheet
-  const errs=logEntries.filter(e=>e.status==='error');
-  if(errs.length) XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(errs),'Errors only');
-
-  const buf=XLSX.write(wb,{type:'array',bookType:'xlsx'});
-  const name=`pestpac-log-${new Date().toISOString().slice(0,10)}.xlsx`;
-  if(API.saveLog){const p=await API.saveLog({buffer:Array.from(buf),suggestedName:name});if(p)alert('Log saved to '+p);}
-  else{const blob=new Blob([buf],{type:'application/octet-stream'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();}
-}
-
-function clearLog(){if(!confirm('Clear all log entries?'))return;logEntries=[];document.getElementById('logBody').innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--t3);padding:24px;font-size:12px">No log entries yet.</td></tr>';document.getElementById('nb-log').style.display='none';document.getElementById('logStats').style.display='none';}
-
-// ════════════════════════════════════════════════════════════════════
-// UPDATES & RUN
-// ════════════════════════════════════════════════════════════════════
-async function checkUpdates(){if(API.checkForUpdates)await API.checkForUpdates();else alert('Update checks only work in the desktop app.');}
-async function doUpdate(){if(!updInfo||!API.installUpdate)return;document.getElementById('updBtn').disabled=true;const r=await API.installUpdate({downloadUrl:updInfo.downloadUrl});if(!r.ok)alert('Update failed: '+r.error);}
-
-function refreshRunBtn(){
-  const ok=steps.length>0&&activeProfileId;
-  document.getElementById('runBtn').disabled=!ok;
-}
-
-function confirmRun(){
+async function startRun(){
   if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
   if(!steps.length){alert('No steps defined. Build your flow first.');go('builder');return;}
-  if(!ssRows.length){alert('No spreadsheet loaded. Import data first.');go('import');return;}
-  if(confirm(`Start full automation?\n\n• Profile: ${profiles.find(p=>p.id===activeProfileId)?.name}\n• ${ssRows.length} rows\n• ${allSteps().length} steps per row\n\nThis will open a browser and begin entering data.`)){
-    buildScript();
-    go('script');
-    alert('Script generated. Save it and run it with:\n\nnpx playwright install chromium\nnode crm-automation-playwright.js data.xlsx');
-  }
+  if(!ssPath){alert('No spreadsheet loaded. Import data first.');go('import');return;}
+  const confirmed=confirm('Start full automation?\n\n• Profile: ' + (profiles.find(p=>p.id===activeProfileId)||{}).name + '\n• Spreadsheet: ' + ssName + (ssRowCount>0?' ('+ssRowCount.toLocaleString()+' rows)':'') + '\n• Steps per row: ' + allSteps().length + '\n• Browser: ' + (headless?'Hidden (background)':'Visible') + '\n• Error handling: ' + (document.getElementById('errHandle')||{}).value + '\n\nThis will log into PestPac and begin entering data. Continue?');
+  if(!confirmed)return;
+  const flowJson=JSON.stringify({allSteps:allSteps(),config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value}});
+  runOk=0;runErr=0;runSkip=0;runRowsDone=0;runTotal=ssRowCount||0;runStartTime=Date.now();
+  updateRunStats(0,0,0,0);
+  document.getElementById('liveLog').innerHTML='';
+  document.getElementById('runStatusMsg').textContent='Starting…';
+  document.getElementById('runStatusMsg').style.color='var(--blue)';
+  document.getElementById('runBtn').style.display='none';
+  document.getElementById('stopBtn').style.display='';
+  document.getElementById('pauseBtn').style.display='';
+  document.getElementById('nb-run').style.display='';
+  isRunning=true;isPaused=false;
+  go('run');
+  if(API.startRun){const result=await API.startRun({flowJson,spreadsheetPath:ssPath,profileId:activeProfileId,headless,startRow:0,rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value});if(!result.ok){alert('Failed to start: ' + result.error);runStopped();return;}currentLogPath=result.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';}
 }
+async function stopRun(){if(!confirm('Stop the automation? The current row will be abandoned and the log saved.'))return;if(API.stopRun)await API.stopRun();runStopped();}
+async function togglePause(){if(isPaused){if(API.resumeRun)await API.resumeRun();isPaused=false;document.getElementById('pauseBtn').textContent='⏸ Pause';document.getElementById('runStatusMsg').textContent='Running…';document.getElementById('runStatusMsg').style.color='var(--green)';}else{if(API.pauseRun)await API.pauseRun();isPaused=true;document.getElementById('pauseBtn').textContent='▶ Resume';document.getElementById('runStatusMsg').textContent='Paused';document.getElementById('runStatusMsg').style.color='var(--amber)';}}
+function runStopped(){isRunning=false;isPaused=false;document.getElementById('runBtn').style.display='';document.getElementById('stopBtn').style.display='none';document.getElementById('pauseBtn').style.display='none';document.getElementById('nb-run').style.display='none';document.getElementById('runStatusMsg').textContent='Stopped';document.getElementById('runStatusMsg').style.color='var(--red)';}
 
-// ════════════════════════════════════════════════════════════════════
-// SEED EXAMPLE
-// ════════════════════════════════════════════════════════════════════
-function seedExampleSteps(){
-  steps=[
-    {id:nid++,type:'navigate',url:'{{URL}}',waitAfter:'load',open:false},
-    {id:nid++,type:'type',selector:'input[name="firstName"]',value:'{{First name}}',clearFirst:'yes',open:false},
-    {id:nid++,type:'type',selector:'input[name="lastName"]',value:'{{Last name}}',clearFirst:'yes',open:false},
-    {id:nid++,type:'wait',waitType:'random',waitMin:0.5,waitMax:1.5,open:false},
-    {id:nid++,type:'click',selector:"button[type='submit']",open:false},
-    {id:nid++,type:'assert',selector:'a[href*="AutoLogin"]',expected:'',onFail:'log',open:false},
-  ];
-  renderSteps();
+function handleRunEvent(evt){
+  if(evt.type==='total-rows'){runTotal=evt.total;updateRunStats(runRowsDone,runOk,runErr,runSkip);}
+  else if(evt.type==='status'){addLiveLog(evt.message,'info');document.getElementById('runStatusMsg').textContent=evt.message;document.getElementById('runStatusMsg').style.color='var(--blue)';}
+  else if(evt.type==='row-start'){addLiveLog('Row ' + evt.rowNum + ': ' + (evt.url||''),'info');document.getElementById('runStatusMsg').textContent='Processing row ' + evt.rowNum + (runTotal>0?' / '+runTotal.toLocaleString():'') + '…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
+  else if(evt.type==='row-done'){runRowsDone++;runOk++;addLiveLog('✓ Row ' + evt.rowNum + ' complete (' + evt.duration + 'ms)','ok');addLogTableEntry({row:evt.rowNum,timestamp:new Date().toISOString(),status:'ok',duration:evt.duration,url:'',fieldsWritten:'',failedStep:'',error:''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
+  else if(evt.type==='row-error'){runRowsDone++;runErr++;addLiveLog('✗ Row ' + evt.rowNum + ' FAILED: ' + evt.error + ' (step: ' + evt.failedStep + ')','err');addLogTableEntry({row:evt.rowNum,timestamp:new Date().toISOString(),status:'error',duration:0,url:'',fieldsWritten:'',failedStep:evt.failedStep,error:evt.error});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
+  else if(evt.type==='retry'){addLiveLog('↺ Retrying row ' + evt.rowNum + '…','warn');}
+  else if(evt.type==='fatal'){addLiveLog('FATAL ERROR: ' + evt.error,'err');document.getElementById('runStatusMsg').textContent='Fatal error — automation stopped';document.getElementById('runStatusMsg').style.color='var(--red)';runStopped();}
+  else if(evt.type==='run-complete'){const msg=evt.stopped?'Stopped by user — ' + evt.rowsProcessed + ' rows processed':'Complete — ' + evt.rowsProcessed + ' rows processed';addLiveLog(msg,evt.stopped?'warn':'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color=evt.stopped?'var(--amber)':'var(--green)';document.getElementById('runProgBar').style.width='100%';runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log saved to: ' + evt.logPath,'info');}}
 }
+function addLiveLog(msg,type){const log=document.getElementById('liveLog');const cls=type==='ok'?'log-ok':type==='err'?'log-err':type==='warn'?'log-warn':'log-info';const time=new Date().toLocaleTimeString();log.innerHTML+='<span class="' + cls + '">[' + time + '] ' + msg + '</span>\n';log.scrollTop=log.scrollHeight;const lines=log.innerHTML.split('\n');if(lines.length>220)log.innerHTML=lines.slice(-200).join('\n');}
+function updateRunStats(done,ok,err,skip){document.getElementById('rs-done').textContent=done.toLocaleString();document.getElementById('rs-ok').textContent=ok.toLocaleString();document.getElementById('rs-err').textContent=err.toLocaleString();document.getElementById('rs-skip').textContent=skip.toLocaleString();if(runTotal>0){const pct=Math.round(done/runTotal*100);document.getElementById('runProgBar').style.width=pct+'%';document.getElementById('rs-pct').textContent=pct+'%';}if(done>0&&runStartTime){const elapsed=(Date.now()-runStartTime)/1000/60;const rate=Math.round(done/elapsed);document.getElementById('rs-rate').textContent=rate.toLocaleString();if(runTotal>0){const remaining=runTotal-done;const etaMin=rate>0?Math.round(remaining/rate):0;document.getElementById('rs-eta').textContent=etaMin>60?Math.round(etaMin/60)+'h':etaMin+'m';}}}
+function addLogTableEntry(entry){logEntries.push(entry);if(logEntries.length>500)logEntries=logEntries.slice(-500);const tbody=document.getElementById('logBody');if(tbody.querySelector('td[colspan]'))tbody.innerHTML='';const tr=document.createElement('tr');const sc=entry.status==='ok'?'s-ok':entry.status==='error'?'s-err':'s-skip';const rc=entry.status==='ok'?'row-ok':entry.status==='error'?'row-err':'row-skip';tr.className=rc;tr.innerHTML='<td>' + logEntries.length + '</td><td>' + new Date(entry.timestamp).toLocaleTimeString() + '</td><td>' + entry.row + '</td><td class="' + sc + '">' + entry.status + '</td><td>' + (entry.duration?entry.duration+'ms':'') + '</td><td title="' + (entry.url||'') + '" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (entry.url||'') + '</td><td style="font-size:10px;color:var(--t2)">' + (entry.fieldsWritten||'') + '</td><td style="font-size:10px;color:var(--red)">' + (entry.failedStep||'') + '</td><td style="font-size:10px;color:var(--red)">' + (entry.error||'') + '</td>';tbody.appendChild(tr);const nb=document.getElementById('nb-log');nb.style.display='';nb.textContent=logEntries.length;}
+function openCurrentLog(){if(currentLogPath&&API.openFile)API.openFile(currentLogPath);}
+function openLogsFolder(){if(API.openLogsFolder)API.openLogsFolder();}
+function clearLogTable(){if(!confirm('Clear the log table? (Excel files on disk are not affected.)'))return;logEntries=[];document.getElementById('logBody').innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--t3);padding:28px;font-size:12px">No log entries yet.</td></tr>';document.getElementById('nb-log').style.display='none';}
+
+async function loadProfiles(){if(API.listProfiles)profiles=await API.listProfiles();renderProfiles();}
+function renderProfiles(){document.getElementById('nb-profiles').textContent=profiles.length;const list=document.getElementById('profileList');if(!profiles.length){list.innerHTML='<div class="empty">No profiles yet. Click "Add profile" to get started.</div>';document.getElementById('activeProfileLbl').textContent='None — add a profile first';return;}list.innerHTML=profiles.map(p=>'<div class="profile-card ' + (activeProfileId===p.id?'active-p':'') + '"><div class="profile-hd"><div class="profile-icon">' + (p.name||'?').slice(0,2).toUpperCase() + '</div><div><div style="font-size:13px;font-weight:600;color:var(--tx)">' + (p.name||'Unnamed') + '</div><div style="font-size:11px;color:var(--t2)">' + (p.loginUrl||'https://login.pestpac.com/') + '</div></div><div style="margin-left:auto;display:flex;gap:6px">' + (activeProfileId===p.id?'<span style="font-size:11px;font-weight:600;color:var(--green);padding:4px 8px">✓ Active</span>':'<button class="btn grn sm" onclick="setActiveProfile(\'' + p.id + '\')">Use this</button>') + '<button class="btn sm" onclick="editProfile(\'' + p.id + '\')">Edit</button></div></div><div style="font-size:11px;color:var(--t2)">Company key: <span style="font-family:monospace">••••••</span> &nbsp;·&nbsp; Username: <span style="font-family:monospace">' + (p.username||'(not set)') + '</span></div></div>').join('');const active=profiles.find(p=>p.id===activeProfileId);document.getElementById('activeProfileLbl').textContent=active?active.name:'None selected';document.getElementById('newProfileBtn').disabled=profiles.length>=10;}
+function setActiveProfile(id){activeProfileId=id;renderProfiles();refreshRunBtn();}
+function newProfile(){editingProfileId=null;document.getElementById('profileFormTitle').textContent='New profile';document.getElementById('pName').value='';document.getElementById('pUrl').value='https://login.pestpac.com/';document.getElementById('pCompanyKey').value='';document.getElementById('pUsername').value='';document.getElementById('pPassword').value='';document.getElementById('deleteProfileBtn').style.display='none';document.getElementById('profileForm').style.display='block';document.getElementById('pName').focus();}
+async function editProfile(id){editingProfileId=id;document.getElementById('profileFormTitle').textContent='Edit profile';const p=API.getProfile?await API.getProfile(id):profiles.find(x=>x.id===id);if(!p)return;document.getElementById('pName').value=p.name||'';document.getElementById('pUrl').value=p.loginUrl||'https://login.pestpac.com/';document.getElementById('pCompanyKey').value=p.companyKey||'';document.getElementById('pUsername').value=p.username||'';document.getElementById('pPassword').value=p.password||'';document.getElementById('deleteProfileBtn').style.display='';document.getElementById('profileForm').style.display='block';}
+async function saveProfile(){const name=document.getElementById('pName').value.trim();if(!name){alert('Enter a profile name.');return;}const companyKey=document.getElementById('pCompanyKey').value.trim();if(!companyKey){alert('Enter the company key.');return;}const username=document.getElementById('pUsername').value.trim();if(!username){alert('Enter the username.');return;}const password=document.getElementById('pPassword').value;if(!password){alert('Enter the password.');return;}const profile={id:editingProfileId||('p_'+Date.now()),name,loginUrl:document.getElementById('pUrl').value.trim()||'https://login.pestpac.com/',companyKey,username,password};if(API.saveProfile)await API.saveProfile(profile);else{const i=profiles.findIndex(p=>p.id===profile.id);if(i>=0)profiles[i]=profile;else profiles.push(profile);}await loadProfiles();document.getElementById('profileForm').style.display='none';if(!activeProfileId)setActiveProfile(profile.id);}
+async function deleteProfile(){if(!editingProfileId)return;if(!confirm('Delete this profile?'))return;if(API.deleteProfile)await API.deleteProfile(editingProfileId);else profiles=profiles.filter(p=>p.id!==editingProfileId);if(activeProfileId===editingProfileId)activeProfileId=null;await loadProfiles();document.getElementById('profileForm').style.display='none';}
+function cancelProfile(){document.getElementById('profileForm').style.display='none';}
+
+async function saveFlow(){const json=JSON.stringify({version:'1.0',cols,steps,activeProfileId,ssPath,config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value,flowNotes:document.getElementById('flowNotes').value,headless}},null,2);if(API.saveFlow){const p=await API.saveFlow({json});if(p)alert('Flow saved to '+p);}else{const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(json);a.download='buu-flow.json';a.click();}}
+async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);cols=data.cols||[];steps=data.steps||[];activeProfileId=data.activeProfileId||null;nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);if(data.ssPath)ssPath=data.ssPath;const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=c.errHandle;if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderColChips();renderSteps();renderProfiles();}
+
+async function checkUpdates(){if(API.checkForUpdates)await API.checkForUpdates();else alert('Update checks only work in the desktop app.');}
+async function doUpdate(){if(!updInfo||!API.installUpdate)return;document.getElementById('updBtn').disabled=true;const r=await API.installUpdate({downloadUrl:updInfo.downloadUrl});if(!r.ok)alert('Update failed: '+r.error);}
+function refreshRunBtn(){document.getElementById('runBtn').disabled=!(!isRunning&&steps.length>0&&activeProfileId&&ssPath);}
+
+function seedExampleSteps(){steps=[{id:nid++,type:'navigate',url:'{{URL}}',waitAfter:'load',open:false},{id:nid++,type:'type',selector:'input[name="firstName"]',value:'{{First name}}',clearFirst:'yes',open:false},{id:nid++,type:'type',selector:'input[name="lastName"]',value:'{{Last name}}',clearFirst:'yes',open:false},{id:nid++,type:'wait',waitType:'random',waitMin:0.5,waitMax:1.5,open:false},{id:nid++,type:'click',selector:"button[type='submit']",open:false},{id:nid++,type:'assert',selector:'a[href*="AutoLogin"]',expected:'',onFail:'log',open:false}];renderSteps();}
 </script>
 </body>
 </html>
