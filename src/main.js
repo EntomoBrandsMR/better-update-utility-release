@@ -152,6 +152,12 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   const env = { ...process.env };
   if (chromiumExe) env.BUU_CHROMIUM_PATH = chromiumExe;
 
+  // Point NODE_PATH to project node_modules so runner can find playwright-core etc
+  const nodeModulesPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+    : path.join(__dirname, '..', 'node_modules');
+  env.NODE_PATH = nodeModulesPath;
+
   automationProcess = spawn(process.execPath, [runnerPath, spreadsheetPath, credPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
@@ -190,14 +196,28 @@ ipcMain.handle('get-checkpoint', (_, runId) => {
 function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax) {
   return `
 'use strict';
-const { chromium } = require('playwright-core');
-const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
 const SPREADSHEET = process.argv[2];
 const CRED_PATH = process.argv[3];
+
+// Resolve modules from app node_modules
+const _nm = process.env.NODE_PATH || path.join(__dirname);
+function _require(mod){
+  try{return require(mod);}catch(e){
+    try{return require(path.join(_nm,mod));}catch(e2){
+      throw new Error('Cannot find: '+mod+' (tried NODE_PATH: '+_nm+')');
+    }
+  }
+}
+if(process.env.NODE_PATH){
+  try{require('module').Module._initPaths();}catch(e){}
+}
+
+const { chromium } = _require('playwright-core');
+const XLSX = _require('xlsx');
 const LOG_PATH = ${JSON.stringify(logPath)};
 const CHECKPOINT = ${JSON.stringify(checkpointPath)};
 const RESUME_FROM = ${resumeFrom};
@@ -285,7 +305,18 @@ async function runStep(page,step,row,creds){
       switch(step.editMode||'find-replace'){
         case 'find-replace':
           newVal = currentVal.split(search).join(replaceStr);
-          if(step.caseSensitive!=='yes'){function escRe(s){return s.replace(/[-[\]{}()*+?.,\\^$|#]/g,'\\$&');}newVal=currentVal.replace(new RegExp(escRe(search),'gi'),replaceStr);}
+          if(step.caseSensitive!=='yes'){
+            // Case-insensitive replace using split approach
+            const searchLower=search.toLowerCase();
+            const parts=currentVal.split('');
+            let result='';let i=0;
+            while(i<currentVal.length){
+              if(currentVal.substring(i,i+search.length).toLowerCase()===searchLower){
+                result+=replaceStr;i+=search.length;
+              }else{result+=currentVal[i];i++;}
+            }
+            newVal=result;
+          }
           break;
         case 'exact-remove':
           newVal = currentVal.split(search).join('');

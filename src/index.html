@@ -1039,7 +1039,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         else if (s.type === 'not-configured') alert('Auto-update not configured yet.\nSee README.md for GitHub setup instructions.');
       });
     }
-    if (API.onRunEvent) API.onRunEvent(handleRunEvent);
+    if (API.onAutomationEvent) API.onAutomationEvent(handleRunEvent);
     await loadProfiles();
     seedExampleSteps();
     if (API.checkChromium) {
@@ -1093,9 +1093,7 @@ async function openSpreadsheet() {
   const result = API.openSpreadsheet ? await API.openSpreadsheet() : null;
   if (!result) return;
   ssPath = result.filePath; ssName = result.name;
-  const data = API.readHeaders ? await API.readHeaders(ssPath) : null;
-  if (!data) return;
-  ssHeaders = data.headers; ssRows = data.preview || []; ssRowCount = data.rowCount || 0;
+  ssHeaders = result.headers || []; ssRows = result.previewRows || []; ssRowCount = result.totalRows || 0;
   cols = [...ssHeaders];
   if (!ssHeaders.some(h => h.toLowerCase() === 'url'))
     alert('Warning: No "URL" column found. Add one so the automation knows where to navigate for each row.');
@@ -1458,21 +1456,39 @@ async function startRun(){
   document.getElementById('nb-run').style.display='';
   isRunning=true;isPaused=false;
   go('run');
-  if(API.startRun){const result=await API.startRun({flowJson,spreadsheetPath:ssPath,profileId:activeProfileId,headless,startRow:0,rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value});if(!result.ok){alert('Failed to start: ' + result.error);runStopped();return;}currentLogPath=result.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';}
+  if(API.startAutomation){
+    const flow = JSON.parse(flowJson);
+    const runId = Date.now().toString();
+    const result = await API.startAutomation({
+      stepsJson: JSON.stringify(flow.allSteps||[]),
+      spreadsheetPath: ssPath,
+      profileId: activeProfileId,
+      headless,
+      runId,
+      resumeFromRow: 0,
+      errHandle: document.getElementById('errHandle').value,
+      rowDelayMin: parseFloat(document.getElementById('rowDelayMin').value||1),
+      rowDelayMax: parseFloat(document.getElementById('rowDelayMax').value||3)
+    });
+    if(!result.ok){alert('Failed to start: ' + (result.error||'Unknown error'));runStopped();return;}
+    currentLogPath=result.logPath;
+    document.getElementById('openLogBtn').style.display='';
+    document.getElementById('openLastLogBtn').style.display='';
+  }
 }
-async function stopRun(){if(!confirm('Stop the automation? The current row will be abandoned and the log saved.'))return;if(API.stopRun)await API.stopRun();runStopped();}
+async function stopRun(){if(!confirm('Stop the automation? The current row will be abandoned and the log saved.'))return;if(API.stopAutomation)await API.stopAutomation();runStopped();}
 async function togglePause(){if(isPaused){if(API.resumeRun)await API.resumeRun();isPaused=false;document.getElementById('pauseBtn').textContent='⏸ Pause';document.getElementById('runStatusMsg').textContent='Running…';document.getElementById('runStatusMsg').style.color='var(--green)';}else{if(API.pauseRun)await API.pauseRun();isPaused=true;document.getElementById('pauseBtn').textContent='▶ Resume';document.getElementById('runStatusMsg').textContent='Paused';document.getElementById('runStatusMsg').style.color='var(--amber)';}}
 function runStopped(){isRunning=false;isPaused=false;document.getElementById('runBtn').style.display='';document.getElementById('stopBtn').style.display='none';document.getElementById('pauseBtn').style.display='none';document.getElementById('nb-run').style.display='none';document.getElementById('runStatusMsg').textContent='Stopped';document.getElementById('runStatusMsg').style.color='var(--red)';}
 
 function handleRunEvent(evt){
-  if(evt.type==='total-rows'){runTotal=evt.total;updateRunStats(runRowsDone,runOk,runErr,runSkip);}
+  if(evt.type==='start'){runTotal=evt.totalRows||0;updateRunStats(runRowsDone,runOk,runErr,runSkip);}
   else if(evt.type==='status'){addLiveLog(evt.message,'info');document.getElementById('runStatusMsg').textContent=evt.message;document.getElementById('runStatusMsg').style.color='var(--blue)';}
   else if(evt.type==='row-start'){addLiveLog('Row ' + evt.rowNum + ': ' + (evt.url||''),'info');document.getElementById('runStatusMsg').textContent='Processing row ' + evt.rowNum + (runTotal>0?' / '+runTotal.toLocaleString():'') + '…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
-  else if(evt.type==='row-done'){runRowsDone++;runOk++;addLiveLog('✓ Row ' + evt.rowNum + ' complete (' + evt.duration + 'ms)','ok');addLogTableEntry({row:evt.rowNum,timestamp:new Date().toISOString(),status:'ok',duration:evt.duration,url:'',fieldsWritten:'',failedStep:'',error:''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
-  else if(evt.type==='row-error'){runRowsDone++;runErr++;addLiveLog('✗ Row ' + evt.rowNum + ' FAILED: ' + evt.error + ' (step: ' + evt.failedStep + ')','err');addLogTableEntry({row:evt.rowNum,timestamp:new Date().toISOString(),status:'error',duration:0,url:'',fieldsWritten:'',failedStep:evt.failedStep,error:evt.error});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
+  else if(evt.type==='row-done'){runRowsDone++;runOk++;addLiveLog('✓ Row ' + (evt.rowIndex||evt.rowNum) + ' complete (' + (evt.durationMs||evt.duration) + 'ms)','ok');addLogTableEntry({row:evt.rowIndex||evt.rowNum,timestamp:new Date().toISOString(),status:'ok',duration:evt.duration,url:'',fieldsWritten:'',failedStep:'',error:''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
+  else if(evt.type==='row-error'){runRowsDone++;runErr++;addLiveLog('✗ Row ' + (evt.rowIndex||evt.rowNum) + ' FAILED: ' + evt.error + ' (step: ' + evt.failedStep + ')','err');addLogTableEntry({row:evt.rowIndex||evt.rowNum,timestamp:new Date().toISOString(),status:'error',duration:0,url:'',fieldsWritten:'',failedStep:evt.failedStep,error:evt.error});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
   else if(evt.type==='retry'){addLiveLog('↺ Retrying row ' + evt.rowNum + '…','warn');}
   else if(evt.type==='fatal'){addLiveLog('FATAL ERROR: ' + evt.error,'err');document.getElementById('runStatusMsg').textContent='Fatal error — automation stopped';document.getElementById('runStatusMsg').style.color='var(--red)';runStopped();}
-  else if(evt.type==='run-complete'){const msg=evt.stopped?'Stopped by user — ' + evt.rowsProcessed + ' rows processed':'Complete — ' + evt.rowsProcessed + ' rows processed';addLiveLog(msg,evt.stopped?'warn':'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color=evt.stopped?'var(--amber)':'var(--green)';document.getElementById('runProgBar').style.width='100%';runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log saved to: ' + evt.logPath,'info');}}
+  else if(evt.type==='complete'||evt.type==='run-complete'){const msg=evt.stopped?'Stopped by user — ' + (evt.rowsProcessed||evt.totalRows||0) + ' rows processed':'Complete — ' + (evt.rowsProcessed||evt.totalRows||0) + ' rows processed';addLiveLog(msg,evt.stopped?'warn':'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color=evt.stopped?'var(--amber)':'var(--green)';document.getElementById('runProgBar').style.width='100%';runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log saved to: ' + evt.logPath,'info');}}
 }
 function addLiveLog(msg,type){const log=document.getElementById('liveLog');const cls=type==='ok'?'log-ok':type==='err'?'log-err':type==='warn'?'log-warn':'log-info';const time=new Date().toLocaleTimeString();log.innerHTML+='<span class="' + cls + '">[' + time + '] ' + msg + '</span>\n';log.scrollTop=log.scrollHeight;const lines=log.innerHTML.split('\n');if(lines.length>220)log.innerHTML=lines.slice(-200).join('\n');}
 function updateRunStats(done,ok,err,skip){document.getElementById('rs-done').textContent=done.toLocaleString();document.getElementById('rs-ok').textContent=ok.toLocaleString();document.getElementById('rs-err').textContent=err.toLocaleString();document.getElementById('rs-skip').textContent=skip.toLocaleString();if(runTotal>0){const pct=Math.round(done/runTotal*100);document.getElementById('runProgBar').style.width=pct+'%';document.getElementById('rs-pct').textContent=pct+'%';}if(done>0&&runStartTime){const elapsed=(Date.now()-runStartTime)/1000/60;const rate=Math.round(done/elapsed);document.getElementById('rs-rate').textContent=rate.toLocaleString();if(runTotal>0){const remaining=runTotal-done;const etaMin=rate>0?Math.round(remaining/rate):0;document.getElementById('rs-eta').textContent=etaMin>60?Math.round(etaMin/60)+'h':etaMin+'m';}}}
