@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.1.3';
+const CURRENT_VERSION = '1.1.4';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -171,7 +171,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   // Point NODE_PATH so runner can find playwright-core etc
   // When packaged, node_modules live next to app.asar in resources
   const nodeModulesPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'node_modules')
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
     : path.join(__dirname, '..', 'node_modules');
   env.NODE_PATH = nodeModulesPath;
   env.BUU_NODE_MODULES = nodeModulesPath;

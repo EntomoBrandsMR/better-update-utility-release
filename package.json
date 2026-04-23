@@ -1,6 +1,6 @@
 {
   "name": "better-update-utility",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "Better Update Utility — PestPac automation",
   "author": "Entomo Brands",
   "main": "src/main.js",
@@ -16,16 +16,16 @@
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }],
       "icon": "assets/icon.ico",
-      "certificateFile": "build/cert.p12",
-      "certificatePassword": "YourPasswordHere",
-      "signingHashAlgorithms": ["sha256"]
+      "cscLink": "build/cert.p12",
+      "cscKeyPassword": "YourPasswordHere"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "installerHeaderIcon": "assets/icon.ico"
+      "installerHeaderIcon": "assets/icon.ico",
+      "include": "build/installer.nsh"
     },
     "files": [
       "src/**/*",
