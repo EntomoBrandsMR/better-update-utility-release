@@ -1,5 +1,5 @@
 {
-  "version": "1.1.4",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.4/Better.Update.Utility.Setup.1.1.4.exe",
-  "notes": "Automation fix — browser engine now correctly found on all machines"
+  "version": "1.1.5",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.5/Better.Update.Utility.Setup.1.1.5.exe",
+  "notes": "Fix updater SmartScreen block; fix automation node_modules path; icon cache cleared on install"
 }
