@@ -25,7 +25,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "installerHeaderIcon": "assets/icon.ico",
-      "include": "build/installer.nsh"
+      "include": "build/installer.nsh",
+      "packElevateHelper": false
     },
     "files": [
       "src/**/*",
