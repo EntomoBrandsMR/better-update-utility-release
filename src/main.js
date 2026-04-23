@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.1.1';
+const CURRENT_VERSION = '1.1.2';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -121,7 +121,9 @@ function getBundledChromiumPath() {
 
 ipcMain.handle('check-chromium', async () => {
   const execPath = getBundledChromiumPath();
-  return { installed: !!execPath, path: execPath };
+  const resourcesPath = process.resourcesPath || 'N/A';
+  const isPackaged = app.isPackaged;
+  return { installed: !!execPath, path: execPath, resourcesPath, isPackaged };
 });
 
 ipcMain.handle('install-chromium', async () => {
@@ -154,6 +156,15 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
 
   // Pass bundled chromium path to runner
   const chromiumExe = getBundledChromiumPath();
+  if (!chromiumExe) {
+    mainWindow?.webContents.send('automation-event', {
+      type: 'error',
+      message: `Browser engine not found. Expected at: ${path.join(process.resourcesPath || '', 'chromium', 'chrome.exe')}. Please reinstall the application.`
+    });
+    mainWindow?.webContents.send('automation-event', { type: 'done', code: 1, logPath });
+    try { fs.unlinkSync(credPath); } catch {}
+    return { ok: false, error: 'Chromium not found' };
+  }
   const env = { ...process.env };
   if (chromiumExe) env.BUU_CHROMIUM_PATH = chromiumExe;
 
