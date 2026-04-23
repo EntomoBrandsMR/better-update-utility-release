@@ -340,8 +340,14 @@ textarea { resize: vertical; min-height: 60px; }
 .ibtn.del:hover { background: var(--rlt); color: var(--red); }
 .drag-handle { cursor: grab; color: var(--t3); padding: 0 4px; }
 .drag-handle:active { cursor: grabbing; }
-.step-card.drag-over { border-color: var(--blue) !important; background: var(--blt) !important; }
 .step-card.dragging { opacity: 0.4; }
+.drop-indicator {
+  height: 3px; border-radius: 2px;
+  background: var(--blue);
+  box-shadow: 0 0 8px rgba(74,158,255,.6);
+  margin: -2px 0; position: relative; z-index: 10;
+  pointer-events: none;
+}
 .ibtn svg { width: 13px; height: 13px; }
 .step-body { padding: 14px 15px; border-top: 1px solid var(--bdr); }
 .conn { height: 12px; display: flex; justify-content: center; }
@@ -1272,23 +1278,36 @@ function initDragDrop() {
     });
     card.addEventListener('dragend', () => {
       card.classList.remove('dragging');
-      list.querySelectorAll('.step-card').forEach(c => c.classList.remove('drag-over'));
+      list.querySelectorAll('.drop-indicator').forEach(el => el.remove());
     });
     card.addEventListener('dragover', e => {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      list.querySelectorAll('.step-card').forEach(c => c.classList.remove('drag-over'));
-      card.classList.add('drag-over');
+      list.querySelectorAll('.drop-indicator').forEach(el => el.remove());
+      const rect = card.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      const indicator = document.createElement('div');
+      indicator.className = 'drop-indicator';
+      if (e.clientY < midY) {
+        card.parentNode.insertBefore(indicator, card);
+      } else {
+        card.parentNode.insertBefore(indicator, card.nextSibling);
+      }
+      card.dataset.dropPos = e.clientY < midY ? 'before' : 'after';
     });
     card.addEventListener('drop', e => {
       e.preventDefault();
+      list.querySelectorAll('.drop-indicator').forEach(el => el.remove());
       const targetId = parseInt(card.dataset.stepId);
+      const dropPos = card.dataset.dropPos || 'after';
       if (dragSrcId === null || dragSrcId === targetId) return;
       const fromIdx = steps.findIndex(s => s.id === dragSrcId);
-      const toIdx   = steps.findIndex(s => s.id === targetId);
+      let toIdx = steps.findIndex(s => s.id === targetId);
       if (fromIdx < 0 || toIdx < 0) return;
       const [moved] = steps.splice(fromIdx, 1);
-      steps.splice(toIdx, 0, moved);
+      toIdx = steps.findIndex(s => s.id === targetId);
+      const insertAt = dropPos === 'before' ? toIdx : toIdx + 1;
+      steps.splice(insertAt, 0, moved);
       dragSrcId = null;
       renderSteps();
     });

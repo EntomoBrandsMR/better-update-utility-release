@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.1.2';
+const CURRENT_VERSION = '1.1.3';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -569,10 +569,16 @@ ipcMain.handle('get-version', () => CURRENT_VERSION);
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 
 // ── WINDOW ────────────────────────────────────────────────────────────────────
+function getIconPath() {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'assets', 'icon.ico');
+  return path.join(__dirname, '..', 'assets', 'icon.ico');
+}
+
 function createWindow() {
+  const iconPath = getIconPath();
   mainWindow = new BrowserWindow({
     width: 1300, height: 900, minWidth: 1000, minHeight: 680,
-    icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
+    icon: iconPath,
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
     backgroundColor: '#0f0f11', show: false, title: 'Better Update Utility'
   });
@@ -591,6 +597,7 @@ if (!gotLock) {
       mainWindow.focus();
     }
   });
+  app.setAppUserModelId('com.entomobands.better-update-utility');
   app.whenReady().then(createWindow);
 }
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

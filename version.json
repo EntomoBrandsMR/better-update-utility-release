@@ -1,5 +1,5 @@
 {
-  "version": "1.1.2",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.2/Better.Update.Utility.Setup.1.1.2.exe",
-  "notes": "Chromium bundling fix — browser engine now correctly included in installer on all machines"
+  "version": "1.1.3",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.3/Better.Update.Utility.Setup.1.1.3.exe",
+  "notes": "BUU logo now shows correctly on desktop, taskbar, and Start menu"
 }
