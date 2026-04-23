@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.0.0';
+const CURRENT_VERSION = '1.1.1';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -19,6 +19,11 @@ try { keytar = require('keytar'); } catch(e) {}
 // ── PATHS ─────────────────────────────────────────────────────────────────────
 function getLogsDir() {
   const dir = path.join(app.getPath('userData'), 'logs');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+function getFlowsDir() {
+  const dir = path.join(app.getPath('userData'), 'flows');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -152,11 +157,13 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   const env = { ...process.env };
   if (chromiumExe) env.BUU_CHROMIUM_PATH = chromiumExe;
 
-  // Point NODE_PATH to project node_modules so runner can find playwright-core etc
+  // Point NODE_PATH so runner can find playwright-core etc
+  // When packaged, node_modules live next to app.asar in resources
   const nodeModulesPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+    ? path.join(process.resourcesPath, 'node_modules')
     : path.join(__dirname, '..', 'node_modules');
   env.NODE_PATH = nodeModulesPath;
+  env.BUU_NODE_MODULES = nodeModulesPath;
 
   automationProcess = spawn(process.execPath, [runnerPath, spreadsheetPath, credPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -231,7 +238,10 @@ function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('
 function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
 function saveChk(row){try{fs.writeFileSync(CHECKPOINT,JSON.stringify({rowIndex:row,ts:new Date().toISOString()}));}catch{}}
 
-const STEPS = ${JSON.stringify(steps)};
+const ALL_STEPS = ${JSON.stringify(steps)};
+const LOGIN_STEPS = ALL_STEPS.filter(s => s.locked);
+const DATA_STEPS  = ALL_STEPS.filter(s => !s.locked);
+// Logout handled via PestPac menu — no URL needed
 
 let logEntries=[], flushTimer=null;
 function addLog(e){logEntries.push(e);if(logEntries.length%100===0)flush();else{clearTimeout(flushTimer);flushTimer=setTimeout(flush,3000);}}
@@ -292,6 +302,28 @@ async function runStep(page,step,row,creds){
     case 'clear':await page.waitForSelector(step.selector,{timeout:15000});await page.fill(step.selector,'');break;
     case 'wait':if(step.waitType==='random'){const mn=ms(step.waitMin||1),mx=ms(step.waitMax||3);await page.waitForTimeout(Math.floor(Math.random()*(mx-mn+1))+mn);}else if(step.waitType==='element')await page.waitForSelector(step.waitSel||'',{timeout:30000});else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
     case 'assert':await page.waitForSelector(step.selector,{timeout:15000});if(step.expected){const t=await page.locator(step.selector).textContent();if(!t.includes(step.expected))throw new Error('Assert failed: expected "'+step.expected+'" got "'+t+'"');}break;
+    case 'pestpac-login':{
+      // Full PestPac login sequence in one step
+      await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+      await page.waitForSelector('input[name="uid"]',{timeout:15000});
+      await page.fill('input[name="uid"]','');
+      await page.fill('input[name="uid"]',creds.companyKey||'');
+      await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+      await page.waitForSelector('input[name="username"]',{timeout:15000});
+      await page.fill('input[name="username"]',creds.username||'');
+      await page.fill('input[name="password"]',creds.password||'');
+      await page.click('button[data-testid="loginBtn"]');
+      await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
+      break;}
+    case 'pestpac-logout':{
+      // Navigate to search, click user menu, click Log Out
+      await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});
+      await page.waitForSelector('div.select',{timeout:10000});
+      await page.click('div.select');
+      await page.waitForSelector('a.logout',{timeout:5000});
+      await page.click('a.logout');
+      await page.waitForTimeout(1500);
+      break;}
     case 'textedit':{
       await page.waitForSelector(step.selector,{timeout:15000});
       const currentVal = await page.$eval(step.selector, el => el.value || el.textContent || el.innerText || '');
@@ -377,6 +409,8 @@ async function main(){
   const page=await(await browser.newContext()).newPage();
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
 
+  // Login is handled by pestpac-login step in the flow steps array
+
   try{
     for await(const row of streamRows(SPREADSHEET)){
       ri++;
@@ -386,7 +420,7 @@ async function main(){
       const entry={row:ri,timestamp:new Date().toISOString(),url:row.URL||row.url||'',status:'ok',error:'',failedStep:'',fieldsWritten:'',durationMs:0};
       let done=[];
 
-      const attempt=async()=>{done=[];for(const s of STEPS){await runStep(page,s,row,creds);done.push(s._label||s.type);}};
+      const attempt=async()=>{done=[];for(const s of DATA_STEPS){await runStep(page,s,row,creds);done.push(s._label||s.type);}};
 
       try{
         await attempt();
@@ -417,6 +451,7 @@ async function main(){
   }finally{
     flush();
     try{fs.unlinkSync(CHECKPOINT);}catch{}
+    // Logout is handled by the locked pestpac-logout step at end of flow
     await browser.close();
   }
   emit({type:'complete',totalRows:ri,ok,errs,skipped,elapsed:Date.now()-start,logPath:LOG_PATH});
@@ -462,7 +497,7 @@ async function checkForUpdates(manual) {
 ipcMain.handle('check-for-updates', () => checkForUpdates(true));
 ipcMain.handle('install-update', async (_, { downloadUrl }) => {
   const tmp = path.join(os.tmpdir(), 'buu-update.exe');
-  try { await downloadFile(downloadUrl, tmp); execFile(tmp, ['/S'], { detached: true }); setTimeout(() => app.quit(), 1500); return { ok: true }; }
+  try { await downloadFile(downloadUrl, tmp); shell.openPath(tmp); setTimeout(() => app.quit(), 2000); return { ok: true }; }
   catch(e) { return { ok: false, error: e.message }; }
 });
 
@@ -495,14 +530,28 @@ ipcMain.handle('open-spreadsheet', async () => {
   return { filePath: fp, name: path.basename(fp), headers, previewRows, totalRows };
 });
 
-ipcMain.handle('save-flow', async (_, { json }) => {
-  const r = await dialog.showSaveDialog(mainWindow, { title: 'Save flow', defaultPath: 'buu-flow.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
-  if (r.canceled) return null; fs.writeFileSync(r.filePath, json); return r.filePath;
+ipcMain.handle('save-flow', async (_, { json, name }) => {
+  const defaultName = (name || 'buu-flow') + '.json';
+  const r = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save flow',
+    defaultPath: path.join(getFlowsDir(), defaultName),
+    filters: [{ name: 'BUU Flow', extensions: ['json'] }]
+  });
+  if (r.canceled) return null;
+  fs.writeFileSync(r.filePath, json);
+  return r.filePath;
 });
 ipcMain.handle('load-flow', async () => {
-  const r = await dialog.showOpenDialog(mainWindow, { title: 'Load flow', filters: [{ name: 'JSON', extensions: ['json'] }], properties: ['openFile'] });
-  if (r.canceled) return null; return fs.readFileSync(r.filePaths[0], 'utf8');
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'Load flow',
+    defaultPath: getFlowsDir(),
+    filters: [{ name: 'BUU Flow', extensions: ['json'] }],
+    properties: ['openFile']
+  });
+  if (r.canceled) return null;
+  return fs.readFileSync(r.filePaths[0], 'utf8');
 });
+ipcMain.handle('open-flows-folder', () => shell.openPath(getFlowsDir()));
 ipcMain.handle('open-log-folder', () => shell.openPath(getLogsDir()));
 ipcMain.handle('open-file', (_, p) => shell.openPath(p));
 ipcMain.handle('get-version', () => CURRENT_VERSION);
@@ -512,6 +561,7 @@ ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1300, height: 900, minWidth: 1000, minHeight: 680,
+    icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
     backgroundColor: '#0f0f11', show: false, title: 'Better Update Utility'
   });
@@ -519,5 +569,17 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => { mainWindow.show(); checkForUpdates(false); });
   mainWindow.setMenuBarVisibility(false);
 }
-app.whenReady().then(createWindow);
+// Single instance lock — prevent opening a second window
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+  app.whenReady().then(createWindow);
+}
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

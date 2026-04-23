@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.0/Better.Update.Utility.Setup.1.1.0.exe",
-  "notes": "Fix runner module resolution, event mismatches, spreadsheet loading, Chromium bundling"
+  "version": "1.1.1",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.1/Better.Update.Utility.Setup.1.1.1.exe",
+  "notes": "Login once per run, locked logout step, drag-drop reorder, validation fix, single instance, Chromium bundled"
 }

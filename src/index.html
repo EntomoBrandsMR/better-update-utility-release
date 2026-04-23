@@ -338,6 +338,10 @@ textarea { resize: vertical; min-height: 60px; }
 }
 .ibtn:hover { background: var(--surf3); color: var(--tx); }
 .ibtn.del:hover { background: var(--rlt); color: var(--red); }
+.drag-handle { cursor: grab; color: var(--t3); padding: 0 4px; }
+.drag-handle:active { cursor: grabbing; }
+.step-card.drag-over { border-color: var(--blue) !important; background: var(--blt) !important; }
+.step-card.dragging { opacity: 0.4; }
 .ibtn svg { width: 13px; height: 13px; }
 .step-body { padding: 14px 15px; border-top: 1px solid var(--bdr); }
 .conn { height: 12px; display: flex; justify-content: center; }
@@ -616,6 +620,7 @@ textarea { resize: vertical; min-height: 60px; }
   </button>
   <button class="tbtn" onclick="loadFlow()">Load flow</button>
   <button class="tbtn" onclick="saveFlow()">Save flow</button>
+  <button class="tbtn" onclick="openFlowsFolder()" title="Open flows folder">📁 Flows</button>
   <button class="tbtn grn" id="runBtn" onclick="startRun()" disabled>
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="3,2 14,8 3,14"/></svg>
     Run automation
@@ -745,21 +750,15 @@ textarea { resize: vertical; min-height: 60px; }
   <div class="card">
     <div class="card-hd">
       <div class="card-title">Automation steps</div>
-      <span style="font-size:11px;color:var(--t3)" id="stepCountLbl">0 steps</span>
+
     </div>
-    <div class="infobox">
-      <strong>PestPac login steps are locked at the top</strong> — they run automatically before every row using your saved profile. Add a <strong>Navigate</strong> step using <span class="tok">{{URL}}</span> to open each row's page, then add steps for each field you want to fill in.
-    </div>
-    <div class="step-list" id="stepList">
-      <div class="empty" id="stepsEmpty">Loading steps…</div>
-    </div>
-    <div class="divider"></div>
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <button class="btn" onclick="toggleAddMenu()">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <button class="btn pri" onclick="toggleAddMenu()">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><circle cx="8" cy="8" r="6"/><path d="M8 5v6M5 8h6"/></svg>
         Add step
       </button>
       <div style="font-size:11px;color:var(--t3)">Profile: <strong id="activeProfileLbl" style="color:var(--purple)">None</strong> <span style="cursor:pointer;color:var(--blue);margin-left:5px" onclick="go('profiles')">(change)</span></div>
+      <span style="font-size:11px;color:var(--t3);margin-left:auto" id="stepCountLbl">0 steps</span>
     </div>
     <div class="add-menu" id="addMenu">
       <button class="add-opt" onclick="addStep('navigate')">Navigate</button>
@@ -772,6 +771,13 @@ textarea { resize: vertical; min-height: 60px; }
       <button class="add-opt" onclick="addStep('assert')">Assert / verify</button>
       <button class="add-opt" onclick="addStep('textedit')">Text edit</button>
     </div>
+    <div class="infobox">
+      <strong>Login and logout are handled automatically</strong> — locked steps at the top and bottom handle PestPac authentication. Add a <strong>Navigate</strong> step using <span class="tok">{{URL}}</span> then add your field steps.
+    </div>
+    <div class="step-list" id="stepList">
+      <div class="empty" id="stepsEmpty">Loading steps…</div>
+    </div>
+
   </div>
 
   <div class="card">
@@ -1008,15 +1014,13 @@ let currentLogPath = null, runStartTime = null, runRowsDone = 0, runTotal = 0;
 let logEntries = [], runOk = 0, runErr = 0, runSkip = 0;
 
 const LOGIN_STEPS = [
-  {id:'pp1',type:'navigate',locked:true,url:'https://login.pestpac.com/',waitAfter:'load',_label:'Navigate to PestPac login'},
-  {id:'pp2',type:'type',locked:true,selector:'input[name="uid"]',value:'{{CRED:companyKey}}',clearFirst:'yes',_label:'Enter company key'},
-  {id:'pp3',type:'click',locked:true,selector:'button[data-testid="CompanyKeyForm-loginBtn"]',waitFor:'input[name="username"]',_label:'Click Continue'},
-  {id:'pp4',type:'type',locked:true,selector:'input[name="username"]',value:'{{CRED:username}}',clearFirst:'yes',_label:'Enter username'},
-  {id:'pp5',type:'type',locked:true,selector:'input[name="password"]',value:'{{CRED:password}}',clearFirst:'yes',_label:'Enter password'},
-  {id:'pp6',type:'click',locked:true,selector:'button[data-testid="loginBtn"]',waitFor:'a[href*="AutoLogin"]',_label:'Click Log in — wait for dashboard'},
+  {id:'pp1',type:'pestpac-login',locked:true,_label:'Log in to PestPac'},
+];
+const LOGOUT_STEPS = [
+  {id:'pp99',type:'pestpac-logout',locked:true,_label:'Log out of PestPac'},
 ];
 
-function allSteps() { return [...LOGIN_STEPS, ...steps]; }
+function allSteps() { return [...LOGIN_STEPS, ...steps, ...LOGOUT_STEPS]; }
 
 window.addEventListener('DOMContentLoaded', async () => {
   try {
@@ -1202,6 +1206,8 @@ const SM = {
   clear:    { label:'Clear',    badge:'bd-clr', desc: s => s.selector ? 'Clear ' + s.selector : 'Clear a field' },
   wait:     { label:'Wait',     badge:'bd-wt',  desc: s => { if(s.waitType==='random') return 'Wait ' + (s.waitMin||1) + 's–' + (s.waitMax||3) + 's (random)'; if(s.waitType==='element') return 'Wait for "' + (s.waitSel||'?') + '"'; if(s.waitType==='navigation') return 'Wait for navigation'; return 'Wait ' + (s.waitSec||1) + 's'; } },
   assert:   { label:'Assert',   badge:'bd-asr', desc: s => s.selector ? 'Verify "' + s.selector + '"' : 'Verify element' },
+  'pestpac-login':  { label:'PestPac Login',  badge:'bd-nav', desc: s => 'Log in to PestPac using saved profile' },
+  'pestpac-logout': { label:'PestPac Logout', badge:'bd-nav', desc: s => 'Log out of PestPac via user menu' },
   textedit: { label:'Text edit', badge:'bd-edit', desc: s => {
     const modes = {
       'partial-remove-word':'Contains partial → remove word',
@@ -1229,6 +1235,7 @@ function renderSteps() {
     if (i > 0) { const d = document.createElement('div'); d.className = 'conn'; list.appendChild(d); }
     const m = SM[s.type]; const card = document.createElement('div');
     card.className = 'step-card' + (s.open ? ' open' : '') + (s.locked ? ' locked' : '');
+    if(!s.locked){card.draggable=true;card.dataset.stepId=String(s.id);}
     card.innerHTML =
       '<div class="step-hd" onclick="' + (s.locked ? '' : 'toggleStep(' + s.id + ')') + '">' +
         '<div class="step-n">' + (i+1) + '</div>' +
@@ -1238,8 +1245,7 @@ function renderSteps() {
         (s.locked
           ? '<span style="font-size:10px;color:var(--purple);margin-left:auto;padding-right:4px;opacity:.7">PestPac login — locked</span>'
           : '<div class="step-acts">' +
-              '<button class="ibtn" onclick="mv(event,' + s.id + ',-1)" title="Move up"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 12V4M4 7l4-4 4 4"/></svg></button>' +
-              '<button class="ibtn" onclick="mv(event,' + s.id + ',1)" title="Move down"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4v8M12 9l-4 4-4-4"/></svg></button>' +
+              '<span class="drag-handle" title="Drag to reorder"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:13px;height:13px"><path d="M4 5h8M4 8h8M4 11h8"/></svg></span>' +
               '<button class="ibtn del" onclick="delStep(event,' + s.id + ')" title="Delete"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M6 4V2h4v2M5 4l.5 9h5L11 4"/></svg></button>' +
             '</div>') +
       '</div>' +
@@ -1251,6 +1257,42 @@ function renderSteps() {
   document.getElementById('nb-builder').textContent = n;
   document.getElementById('nb-builder').style.display = n ? '' : 'none';
   refreshRunBtn();
+  initDragDrop();
+}
+
+function initDragDrop() {
+  const list = document.getElementById('stepList');
+  let dragSrcId = null;
+
+  list.querySelectorAll('.step-card[draggable]').forEach(card => {
+    card.addEventListener('dragstart', e => {
+      dragSrcId = parseInt(card.dataset.stepId);
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      list.querySelectorAll('.step-card').forEach(c => c.classList.remove('drag-over'));
+    });
+    card.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      list.querySelectorAll('.step-card').forEach(c => c.classList.remove('drag-over'));
+      card.classList.add('drag-over');
+    });
+    card.addEventListener('drop', e => {
+      e.preventDefault();
+      const targetId = parseInt(card.dataset.stepId);
+      if (dragSrcId === null || dragSrcId === targetId) return;
+      const fromIdx = steps.findIndex(s => s.id === dragSrcId);
+      const toIdx   = steps.findIndex(s => s.id === targetId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      const [moved] = steps.splice(fromIdx, 1);
+      steps.splice(toIdx, 0, moved);
+      dragSrcId = null;
+      renderSteps();
+    });
+  });
 }
 
 function selField(sid, field, value, placeholder, label) {
@@ -1383,15 +1425,15 @@ function runValidation() {
     if(s.type==='wait'&&s.waitType==='random'&&parseFloat(s.waitMin||1)>=parseFloat(s.waitMax||3)){issues.push({t:'warn',msg:'Min must be less than max.'});warns++;}
     if(s.type==='assert'&&!s.selector){issues.push({t:'err',msg:'No selector to verify.'});errs++;}
     if(s.type==='textedit'){
-    if(!s.selector){errs.push('No CSS selector.');errs.length>0&&(warns++);}
-    const m=s.editMode||'find-replace';
-    if(['find-replace','exact-remove','partial-remove-word','partial-remove-piece','partial-replace-piece','regex'].includes(m)&&!s.searchVal){errs.push('No search value defined.');}
-    if(m==='remove-after'&&!s.charVal){errs.push('No character defined to split on.');}
-    if(m==='remove-before'&&!s.charVal){errs.push('No character defined to split on.');}
-  }
-    [s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')&&!cols.includes(ref)){issues.push({t:'err',msg:'{{' + ref + '}} not in spreadsheet.'});errs++;}});});
+      if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
+      const m=s.editMode||'find-replace';
+      if(['find-replace','exact-remove','partial-remove-word','partial-remove-piece','partial-replace-piece','regex'].includes(m)&&!s.searchVal){issues.push({t:'warn',msg:'No search value defined.'});warns++;}
+      if(m==='remove-after'&&!s.charVal){issues.push({t:'warn',msg:'No character defined to split on.'});warns++;}
+      if(m==='remove-before'&&!s.charVal){issues.push({t:'warn',msg:'No character defined to split on.'});warns++;}
+    }
+    [s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')){const colMatch=cols.find(c=>c.toLowerCase()===ref.toLowerCase());if(!colMatch){issues.push({t:'err',msg:'{{' + ref + '}} not in spreadsheet.'});errs++;}}});});
     const worst=issues.length?(issues.some(x=>x.t==='err')?'err':issues.some(x=>x.t==='warn')?'warn':'ok'):'ok';
-    items.push({isStep:true,stepNum:n,type:s.type,label:SM[s.type].label,desc:SM[s.type].desc(s),issues,worst});
+    const smEntry=SM[s.type]||{label:s.type,badge:'bd-nav',desc:()=>s._label||s.type};items.push({isStep:true,stepNum:n,type:s.type,label:smEntry.label,desc:smEntry.desc(s),issues,worst});
   });
   const badge=document.getElementById('nb-validate');
   if(errs){badge.style.display='';badge.textContent=errs+'e';badge.style.background='var(--rlt)';badge.style.color='var(--red)';}
@@ -1413,7 +1455,7 @@ function setupDryRun() {
 }
 function resolveTokens(val,row){if(!val)return{text:'(empty)',type:'empty'};let text=val,hasCred=false,hasMissing=false;text=text.replace(/\{\{CRED:([^}]+)\}\}/g,(_,f)=>{hasCred=true;return '__CRED__' + f + '__';});text=text.replace(/\{\{([^}]+)\}\}/g,(_,col)=>{const idx=ssHeaders.indexOf(col);if(idx<0){hasMissing=true;return '__MISSING__' + col + '__';}return row[idx]!==undefined?row[idx]:'';});return{text,hasCred,hasMissing,raw:val};}
 function renderResolved(r){if(!r)return '<span style="color:var(--t3)">(empty)</span>';let h=r.text.replace(/&/g,'&amp;').replace(/</g,'&lt;');h=h.replace(/__CRED__([^_]+)__/g,()=>'<span class="dr-cred">••••••</span>');h=h.replace(/__MISSING__([^_]+)__/g,(_,c)=>'<span class="dr-missing">{{' + c + '}} — NOT FOUND</span>');return '<span class="dr-val">' + h + '</span>';}
-function stepErrors(s,row){const errs=[];if((s.type==='click'||s.type==='type'||s.type==='select'||s.type==='checkbox'||s.type==='clear'||s.type==='assert')&&!s.selector)errs.push('No CSS selector defined.');if(s.type==='navigate'&&!s.url)errs.push('No URL defined.');if(s.type==='type'&&!s.value)errs.push('Value is empty.');if(s.type==='wait'&&s.waitType==='element'&&!s.waitSel)errs.push('No wait selector set.');[s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')&&!ssHeaders.includes(ref))errs.push('Column "{{' + ref + '}}" not in spreadsheet.');});});return errs;}
+function stepErrors(s,row){const errs=[];if((s.type==='click'||s.type==='type'||s.type==='select'||s.type==='checkbox'||s.type==='clear'||s.type==='assert')&&!s.selector)errs.push('No CSS selector defined.');if(s.type==='navigate'&&!s.url)errs.push('No URL defined.');if(s.type==='type'&&!s.value)errs.push('Value is empty.');if(s.type==='wait'&&s.waitType==='element'&&!s.waitSel)errs.push('No wait selector set.');[s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')){const colMatch=ssHeaders.find(c=>c.toLowerCase()===ref.toLowerCase());if(!colMatch)errs.push('Column "{{' + ref + '}}" not in spreadsheet.');}});});return errs;}
 function stepDetail(s,row){const errs=stepErrors(s,row);let detail='';
   if(s.type==='navigate'){const r=resolveTokens(s.url,row);detail='Navigate to: ' + renderResolved(r);}
   else if(s.type==='click'){detail='Click: <span class="dr-val">' + (s.selector||'?') + '</span>';if(s.waitFor)detail+='<br>Wait for: <span class="dr-val">' + s.waitFor + '</span>';}
@@ -1430,7 +1472,13 @@ function stepDetail(s,row){const errs=stepErrors(s,row);let detail='';
     if(s.replaceVal!==undefined&&['find-replace','partial-replace-piece','regex'].includes(m))detail+='<br>Replace with: <span class="dr-val">'+(s.replaceVal||'(remove)')+'</span>';
     if(s.charVal&&['remove-after','remove-before'].includes(m))detail+='<br>Character: <span class="dr-val">'+s.charVal+'</span>';
   }
-    else if(s.type==='assert'){detail='Verify exists: <span class="dr-val">' + (s.selector||'?') + '</span>';if(s.expected)detail+='<br>Expected: <span class="dr-val">' + s.expected + '</span>';detail+='<br>On failure: <strong>' + (s.onFail||'stop') + '</strong>';}
+    else if(s.type==='pestpac-login'){
+    detail='Logs in to PestPac using saved profile credentials.<br><span class="dr-cred">Company key</span> <span class="dr-cred">Username</span> <span class="dr-cred">Password</span> — from active profile';
+  }
+  else if(s.type==='pestpac-logout'){
+    detail='Navigates to search page → clicks user menu → clicks Log Out.';
+  }
+  else if(s.type==='assert'){detail='Verify exists: <span class="dr-val">' + (s.selector||'?') + '</span>';if(s.expected)detail+='<br>Expected: <span class="dr-val">' + s.expected + '</span>';detail+='<br>On failure: <strong>' + (s.onFail||'stop') + '</strong>';}
   const errHtml=errs.length?'<div class="dr-err-box"><strong>⚠ ' + errs.length + ' error' + (errs.length>1?'s':'') + ' — fix before running:</strong>' + errs.map(e=>'<div>• ' + e + '</div>').join('') + '</div>':'';
   return{detail,errs,errHtml};
 }
@@ -1506,14 +1554,19 @@ async function saveProfile(){const name=document.getElementById('pName').value.t
 async function deleteProfile(){if(!editingProfileId)return;if(!confirm('Delete this profile?'))return;if(API.deleteProfile)await API.deleteProfile(editingProfileId);else profiles=profiles.filter(p=>p.id!==editingProfileId);if(activeProfileId===editingProfileId)activeProfileId=null;await loadProfiles();document.getElementById('profileForm').style.display='none';}
 function cancelProfile(){document.getElementById('profileForm').style.display='none';}
 
-async function saveFlow(){const json=JSON.stringify({version:'1.0',cols,steps,activeProfileId,ssPath,config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value,flowNotes:document.getElementById('flowNotes').value,headless}},null,2);if(API.saveFlow){const p=await API.saveFlow({json});if(p)alert('Flow saved to '+p);}else{const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(json);a.download='buu-flow.json';a.click();}}
+async function saveFlow(){const json=JSON.stringify({version:'1.0',cols,steps,activeProfileId,ssPath,config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value,flowNotes:document.getElementById('flowNotes').value,headless}},null,2);if(API.saveFlow){
+    const flowName=document.getElementById('flowNotes').value.trim().replace(/[^a-z0-9_\-]/gi,'_').slice(0,40)||'buu-flow';
+    const p=await API.saveFlow({json,name:flowName});
+    if(p)alert('Flow saved to '+p);
+  }else{const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(json);a.download='buu-flow.json';a.click();}}
 async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);cols=data.cols||[];steps=data.steps||[];activeProfileId=data.activeProfileId||null;nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);if(data.ssPath)ssPath=data.ssPath;const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=c.errHandle;if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderColChips();renderSteps();renderProfiles();}
 
+function openFlowsFolder(){if(API.openFlowsFolder)API.openFlowsFolder();}
 async function checkUpdates(){if(API.checkForUpdates)await API.checkForUpdates();else alert('Update checks only work in the desktop app.');}
 async function doUpdate(){if(!updInfo||!API.installUpdate)return;document.getElementById('updBtn').disabled=true;const r=await API.installUpdate({downloadUrl:updInfo.downloadUrl});if(!r.ok)alert('Update failed: '+r.error);}
 function refreshRunBtn(){document.getElementById('runBtn').disabled=!(!isRunning&&steps.length>0&&activeProfileId&&ssPath);}
 
-function seedExampleSteps(){steps=[{id:nid++,type:'navigate',url:'{{URL}}',waitAfter:'load',open:false},{id:nid++,type:'type',selector:'input[name="firstName"]',value:'{{First name}}',clearFirst:'yes',open:false},{id:nid++,type:'type',selector:'input[name="lastName"]',value:'{{Last name}}',clearFirst:'yes',open:false},{id:nid++,type:'wait',waitType:'random',waitMin:0.5,waitMax:1.5,open:false},{id:nid++,type:'click',selector:"button[type='submit']",open:false},{id:nid++,type:'assert',selector:'a[href*="AutoLogin"]',expected:'',onFail:'log',open:false}];renderSteps();}
+function seedExampleSteps(){steps=[{id:nid++,type:'navigate',url:'{{URL}}',waitAfter:'load',open:false}];renderSteps();}
 </script>
 </body>
 </html>

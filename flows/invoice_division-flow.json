@@ -1,0 +1,58 @@
+{
+  "version": "1.0",
+  "cols": [
+    "URL",
+    "Location Code ",
+    "Invoice Branch",
+    "Invoice # ",
+    "Division Assigned ",
+    "Correct Division ",
+    "Invoice Date"
+  ],
+  "steps": [
+    {
+      "id": 11,
+      "type": "navigate",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "url": "{{URL}}"
+    },
+    {
+      "id": 12,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butEdit\"]",
+      "waitFor": "button[name=\"butSave\"]"
+    },
+    {
+      "id": 13,
+      "type": "select",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Division\"]",
+      "value": "{{Correct Division }}"
+    },
+    {
+      "id": 14,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butSave\"]",
+      "waitFor": "button[name=\"butEdit\"]"
+    }
+  ],
+  "activeProfileId": "p_1776886858867",
+  "ssPath": "C:\\Users\\bigma\\Downloads\\c1a676e2ea86c4f13948fb55526f8d8392beaaa2f3a973600bb77abdd71.xlsx",
+  "config": {
+    "rowDelayMin": "1",
+    "rowDelayMax": "3",
+    "errHandle": "retry",
+    "flowNotes": "",
+    "headless": false
+  }
+}
