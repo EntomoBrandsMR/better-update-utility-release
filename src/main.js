@@ -508,7 +508,20 @@ async function checkForUpdates(manual) {
 ipcMain.handle('check-for-updates', () => checkForUpdates(true));
 ipcMain.handle('install-update', async (_, { downloadUrl }) => {
   const tmp = path.join(os.tmpdir(), 'buu-update.exe');
-  try { await downloadFile(downloadUrl, tmp); shell.openPath(tmp); setTimeout(() => app.quit(), 2000); return { ok: true }; }
+  try {
+    await downloadFile(downloadUrl, tmp);
+    // Strip Zone.Identifier alternate data stream so SmartScreen doesn't block it
+    try {
+      const { execFileSync } = require('child_process');
+      execFileSync('powershell', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Remove-Item -Path '${tmp}:Zone.Identifier' -ErrorAction SilentlyContinue`
+      ]);
+    } catch {}
+    shell.openPath(tmp);
+    setTimeout(() => app.quit(), 2000);
+    return { ok: true };
+  }
   catch(e) { return { ok: false, error: e.message }; }
 });
 

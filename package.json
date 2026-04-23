@@ -6,7 +6,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win --x64",
+    "build": "electron-builder --win --x64 && powershell Compress-Archive -Force -Path 'dist\\Better Update Utility Setup 1.1.4.exe' -DestinationPath 'dist\\Better.Update.Utility.Setup.1.1.4.zip'",
     "postinstall": "electron-builder install-app-deps && npx playwright install chromium"
   },
   "build": {
@@ -15,9 +15,7 @@
     "directories": { "output": "dist" },
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }],
-      "icon": "assets/icon.ico",
-      "cscLink": "build/cert.p12",
-      "cscKeyPassword": "YourPasswordHere"
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -25,8 +23,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "installerHeaderIcon": "assets/icon.ico",
-      "include": "build/installer.nsh",
-      "packElevateHelper": false
+      "include": "build/installer.nsh"
     },
     "files": [
       "src/**/*",
