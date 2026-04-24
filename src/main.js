@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.1.8';
+const CURRENT_VERSION = '1.1.9';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -176,20 +176,36 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   env.NODE_PATH = nodeModulesPath;
   env.BUU_NODE_MODULES = nodeModulesPath;
 
+  // Electron's process.execPath runs Electron, not Node.
+  // Pass ELECTRON_RUN_AS_NODE=1 so Electron acts as plain Node for the runner.
+  env.ELECTRON_RUN_AS_NODE = '1';
+
+  const runnerLogPath = path.join(getLogsDir(), `buu-runner-${runId}.log`);
+  const runnerLogStream = fs.createWriteStream(runnerLogPath, { flags: 'a' });
+  runnerLogStream.write(`[${new Date().toISOString()}] Runner starting\n`);
+  runnerLogStream.write(`[${new Date().toISOString()}] execPath: ${process.execPath}\n`);
+  runnerLogStream.write(`[${new Date().toISOString()}] runnerPath: ${runnerPath}\n`);
+  runnerLogStream.write(`[${new Date().toISOString()}] ELECTRON_RUN_AS_NODE: ${env.ELECTRON_RUN_AS_NODE}\n`);
+  runnerLogStream.write(`[${new Date().toISOString()}] NODE_PATH: ${env.NODE_PATH}\n`);
+
   automationProcess = spawn(process.execPath, [runnerPath, spreadsheetPath, credPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
   });
 
+  automationProcess.stderr.on('data', data => {
+    runnerLogStream.write(`[STDERR] ${String(data)}\n`);
+    mainWindow?.webContents.send('automation-event', { type: 'stderr', message: String(data) });
+  });
   automationProcess.stdout.on('data', data => {
+    runnerLogStream.write(`[STDOUT] ${String(data)}\n`);
     String(data).split('\n').filter(Boolean).forEach(line => {
       try { mainWindow?.webContents.send('automation-event', JSON.parse(line)); } catch {}
     });
   });
-  automationProcess.stderr.on('data', data => {
-    mainWindow?.webContents.send('automation-event', { type: 'stderr', message: String(data) });
-  });
   automationProcess.on('close', code => {
+    runnerLogStream.write(`[${new Date().toISOString()}] Runner exited with code: ${code}\n`);
+    runnerLogStream.end();
     mainWindow?.webContents.send('automation-event', { type: 'done', code, logPath });
     automationProcess = null;
     try { fs.unlinkSync(runnerPath); } catch {}
