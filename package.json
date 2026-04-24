@@ -1,12 +1,12 @@
 {
   "name": "better-update-utility",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "Better Update Utility — PestPac automation",
   "author": "Entomo Brands",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win --x64 && powershell Compress-Archive -Force -Path 'dist\\Better Update Utility Setup 1.1.6.exe' -DestinationPath 'dist\\Better.Update.Utility.Setup.1.1.6.zip'",
+    "build": "electron-builder --win --x64",
     "postinstall": "electron-builder install-app-deps && npx playwright install chromium"
   },
   "build": {

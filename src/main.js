@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.1.6';
+const CURRENT_VERSION = '1.1.7';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -414,9 +414,21 @@ async function main(){
   const totalRows=await countRows(SPREADSHEET);
   emit({type:'start',totalRows,resumeFrom:RESUME_FROM});
 
-  const launchOpts={headless:HEADLESS};
-  if(process.env.BUU_CHROMIUM_PATH)launchOpts.executablePath=process.env.BUU_CHROMIUM_PATH;
-  const browser=await chromium.launch(launchOpts);
+  const chromiumExePath = process.env.BUU_CHROMIUM_PATH || '';
+  const launchOpts = {
+    headless: HEADLESS,
+    executablePath: chromiumExePath || undefined,
+  };
+  if (!chromiumExePath) {
+    emit({ type: 'fatal', error: 'BUU_CHROMIUM_PATH not set — bundled browser not found. Please reinstall the application.' });
+    process.exit(1);
+  }
+  if (!require('fs').existsSync(chromiumExePath)) {
+    emit({ type: 'fatal', error: 'Bundled browser not found at: ' + chromiumExePath + '. Please reinstall the application.' });
+    process.exit(1);
+  }
+  emit({ type: 'log', message: 'Using browser: ' + chromiumExePath });
+  const browser = await chromium.launch(launchOpts);
   const page=await(await browser.newContext()).newPage();
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
 

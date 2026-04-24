@@ -1,5 +1,5 @@
 {
-  "version": "1.1.6",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.6/Better.Update.Utility.Setup.1.1.6.exe",
-  "notes": "Fix install path — now installs to user AppData instead of Program Files, resolving automation hang on some machines"
+  "version": "1.1.7",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.7/Better.Update.Utility.Setup.1.1.7.exe",
+  "notes": "Fix bundled browser path — Playwright now explicitly uses bundled Chromium, with clear error if not found"
 }
