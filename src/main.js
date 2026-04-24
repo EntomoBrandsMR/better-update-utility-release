@@ -236,7 +236,7 @@ ipcMain.handle('get-checkpoint', (_, runId) => {
 // ── LIVE DRY RUN ───────────────────────────────────────────────────────────
 let dryRunProcess = null;
 
-ipcMain.handle('start-live-dryrun', async (_, { stepsJson, profileId, rowData }) => {
+ipcMain.handle('start-live-dryrun', async (_, { stepsJson, profileId, spreadsheetPath, startRow }) => {
   if (dryRunProcess) { try { dryRunProcess.kill(); } catch {} dryRunProcess = null; }
 
   const steps = JSON.parse(stepsJson);
@@ -256,7 +256,7 @@ ipcMain.handle('start-live-dryrun', async (_, { stepsJson, profileId, rowData })
     : path.join(__dirname, '..', 'node_modules');
 
   const runnerPath = path.join(os.tmpdir(), `buu-dryrun-${Date.now()}.js`);
-  const script = buildDryRunner(steps, prof, rowData, chromiumExe, nodeModulesPath);
+  const script = buildDryRunner(steps, prof, spreadsheetPath, startRow || 0, chromiumExe, nodeModulesPath);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env, NODE_PATH: nodeModulesPath, BUU_NODE_MODULES: nodeModulesPath, ELECTRON_RUN_AS_NODE: '1' };
@@ -289,6 +289,18 @@ ipcMain.handle('start-live-dryrun', async (_, { stepsJson, profileId, rowData })
 ipcMain.handle('dryrun-next', () => {
   if (!dryRunProcess) return { ok: false, error: 'No dry run active' };
   try { dryRunProcess.stdin.write('next\n'); return { ok: true }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('dryrun-nextrow', () => {
+  if (!dryRunProcess) return { ok: false, error: 'No dry run active' };
+  try { dryRunProcess.stdin.write('next-row\n'); return { ok: true }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('dryrun-runall', () => {
+  if (!dryRunProcess) return { ok: false, error: 'No dry run active' };
+  try { dryRunProcess.stdin.write('run-all\n'); return { ok: true }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
 
@@ -421,6 +433,22 @@ async function runStep(page,step,row,creds){
       await page.waitForSelector('a.logout',{timeout:5000});
       await page.click('a.logout');
       await page.waitForTimeout(1500);
+      break;}
+    case 'dialog':{
+      // Register a one-time dialog handler for the next dialog that appears
+      const matchText = step.dialogMatch||'';
+      const dialogAction = step.dialogAction||'accept';
+      page.once('dialog', async dialog => {
+        const msg = dialog.message();
+        const matches = !matchText || msg.toLowerCase().includes(matchText.toLowerCase());
+        emit({ type: 'dialog', message: msg, dialogType: dialog.type(), action: matches ? dialogAction : 'ignored' });
+        if (matches) {
+          if (dialogAction === 'dismiss') await dialog.dismiss();
+          else await dialog.accept();
+        } else {
+          await dialog.dismiss();
+        }
+      });
       break;}
     case 'textedit':{
       await page.waitForSelector(step.selector,{timeout:15000});
@@ -571,7 +599,7 @@ main().catch(e=>{emit({type:'fatal',error:e.message});process.exit(1);});
 
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────
 // ── DRY RUN SCRIPT BUILDER ──────────────────────────────────────────────────
-function buildDryRunner(steps, creds, rowData, chromiumExePath, nodeModulesPath) {
+function buildDryRunner(steps, creds, spreadsheetPath, startRow, chromiumExePath, nodeModulesPath) {
   const loginSteps = steps.filter(s => s.locked);
   const dataSteps  = steps.filter(s => !s.locked);
   return `
@@ -583,13 +611,18 @@ const _nm = ${JSON.stringify(nodeModulesPath)};
 if(process.env.NODE_PATH){try{require('module').Module._initPaths();}catch(e){}}
 function _req(mod){try{return require(mod);}catch(e){try{return require(path.join(_nm,mod));}catch(e2){throw new Error('Cannot find: '+mod);}}}
 const { chromium } = _req('playwright-core');
+const XLSX = _req('xlsx');
 function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
+
 const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
 const credsReal = ${JSON.stringify(creds)};
-const rowData = ${JSON.stringify(rowData || {})};
+const SPREADSHEET = ${JSON.stringify(spreadsheetPath)};
+const START_ROW = ${startRow};
 const LOGIN_STEPS = ${JSON.stringify(loginSteps)};
 const DATA_STEPS = ${JSON.stringify(dataSteps)};
+
 function rv(v,row,c){if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,c.companyKey||'').replace(/{{CRED:username}}/g,c.username||'').replace(/{{CRED:password}}/g,c.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');}
+
 async function runStep(page,step,row,creds){
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
@@ -601,31 +634,100 @@ async function runStep(page,step,row,creds){
     case 'clear':await page.waitForSelector(step.selector,{timeout:15000});await page.fill(step.selector,'');break;
     case 'wait':if(step.waitType==='element')await page.waitForSelector(step.waitSel||'',{timeout:30000});else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
     case 'assert':await page.waitForSelector(step.selector,{timeout:15000});break;
+    case 'dialog':{const matchText=step.dialogMatch||'';const dialogAction=step.dialogAction||'accept';page.once('dialog',async dialog=>{const msg=dialog.message();const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase());if(matches){if(dialogAction==='dismiss')await dialog.dismiss();else await dialog.accept();}else{await dialog.dismiss();}});break;}
     case 'pestpac-login':{await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});await page.waitForSelector('input[name="uid"]',{timeout:15000});await page.fill('input[name="uid"]','');await page.fill('input[name="uid"]',creds.companyKey||'');await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');await page.waitForSelector('input[name="username"]',{timeout:15000});await page.fill('input[name="username"]',creds.username||'');await page.fill('input[name="password"]',creds.password||'');await page.click('button[data-testid="loginBtn"]');await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});break;}
-    case 'pestpac-logout':{await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});break;}
+    case 'pestpac-logout':{await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});try{await page.waitForSelector('div.select',{timeout:8000});await page.click('div.select');await page.waitForSelector('a.logout',{timeout:5000});await page.click('a.logout');await page.waitForTimeout(1500);}catch{}break;}
     default:break;
   }
 }
-function waitForNext(){return new Promise(resolve=>{const rl=readline.createInterface({input:process.stdin,terminal:false});rl.once('line',()=>{rl.close();resolve();});});}
+
+function loadRows(){
+  const ext=path.extname(SPREADSHEET).toLowerCase();
+  if(ext==='.csv'){
+    const lines=fs.readFileSync(SPREADSHEET,'utf8').split('\\n').filter(Boolean);
+    const headers=lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''));
+    return lines.slice(1).map(l=>{const vals=l.split(',').map(v=>v.trim().replace(/^"|"$/g,''));const row={};headers.forEach((h,i)=>row[h]=vals[i]||'');return row;});
+  }
+  const wb=XLSX.readFile(SPREADSHEET);
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+}
+
+// Stdin command reader — supports next, next-row, run-all
+let pendingResolve=null;
+let autoMode=false;
+const rl=readline.createInterface({input:process.stdin,terminal:false});
+rl.on('line',line=>{
+  const cmd=line.trim();
+  if(cmd==='run-all'){autoMode=true;if(pendingResolve){const r=pendingResolve;pendingResolve=null;r('run-all');}}
+  else if(pendingResolve){const r=pendingResolve;pendingResolve=null;r(cmd);}
+});
+function waitInput(){if(autoMode)return Promise.resolve('auto');return new Promise(r=>{pendingResolve=r;});}
+
 async function main(){
   emit({type:'starting'});
   if(!fs.existsSync(CHROMIUM_EXE)){emit({type:'fatal',error:'Chromium not found: '+CHROMIUM_EXE});process.exit(1);}
+  const rows=loadRows();
+  const totalRows=rows.length;
+  emit({type:'rows-loaded',totalRows,startRow:START_ROW});
+
   const browser=await chromium.launch({headless:false,executablePath:CHROMIUM_EXE});
   const page=await(await browser.newContext()).newPage();
-  page.on('dialog',async dialog=>{emit({type:'dialog',message:dialog.message(),dialogType:dialog.type()});await dialog.accept();});
+  page.on('dialog',async dialog=>{emit({type:'dialog-auto',message:dialog.message(),dialogType:dialog.type()});await dialog.accept();});
+
+  // Login once
   emit({type:'login-start'});
-  for(const step of LOGIN_STEPS){try{await runStep(page,step,rowData,credsReal);emit({type:'login-step-done',label:step._label||step.type});}catch(e){emit({type:'fatal',error:'Login failed: '+e.message});await browser.close();process.exit(1);}}
-  emit({type:'login-done',stepCount:DATA_STEPS.length});
-  for(let i=0;i<DATA_STEPS.length;i++){
-    const step=DATA_STEPS[i];
-    emit({type:'step-ready',pos:i,stepId:step.id,total:DATA_STEPS.length});
-    await waitForNext();
-    try{await runStep(page,step,rowData,credsReal);emit({type:'step-done',pos:i,stepId:step.id});}
-    catch(e){emit({type:'step-error',pos:i,stepId:step.id,error:e.message});emit({type:'step-ready',pos:i,stepId:step.id,total:DATA_STEPS.length,retrying:true});await waitForNext();}
+  for(const step of LOGIN_STEPS){
+    try{await runStep(page,step,{},credsReal);emit({type:'login-step-done',label:step._label||step.type});}
+    catch(e){emit({type:'fatal',error:'Login failed: '+e.message});await browser.close();process.exit(1);}
   }
-  emit({type:'all-done'});
-  await waitForNext();
+  emit({type:'login-done',stepCount:DATA_STEPS.length,totalRows,startRow:START_ROW});
+
+  for(let ri=START_ROW;ri<totalRows;ri++){
+    const row=rows[ri];
+    emit({type:'row-start',rowIndex:ri,totalRows,url:row.URL||row.url||''});
+
+    // Step through data steps
+    for(let si=0;si<DATA_STEPS.length;si++){
+      const step=DATA_STEPS[si];
+      if(!autoMode){
+        emit({type:'step-ready',pos:si,stepId:step.id,total:DATA_STEPS.length,rowIndex:ri,totalRows});
+        const cmd=await waitInput();
+        if(cmd==='run-all'){autoMode=true;} // fall through to execute
+      }
+      try{
+        await runStep(page,step,row,credsReal);
+        if(!autoMode)emit({type:'step-done',pos:si,stepId:step.id,rowIndex:ri});
+      }catch(e){
+        if(!autoMode){
+          emit({type:'step-error',pos:si,stepId:step.id,error:e.message,rowIndex:ri});
+          // Wait for user to retry or move on
+          emit({type:'step-ready',pos:si,stepId:step.id,total:DATA_STEPS.length,rowIndex:ri,totalRows,retrying:true});
+          await waitInput();
+          try{await runStep(page,step,row,credsReal);emit({type:'step-done',pos:si,stepId:step.id,rowIndex:ri});}
+          catch(e2){emit({type:'step-error',pos:si,stepId:step.id,error:'Retry failed: '+e2.message,rowIndex:ri});}
+        } else {
+          emit({type:'row-error',rowIndex:ri,error:e.message});
+          break;
+        }
+      }
+    }
+
+    emit({type:'row-done',rowIndex:ri,totalRows});
+
+    // If not in auto mode, wait for user to decide next-row or run-all
+    if(!autoMode && ri<totalRows-1){
+      emit({type:'row-waiting',rowIndex:ri,totalRows,nextRowIndex:ri+1});
+      const cmd=await waitInput();
+      if(cmd==='run-all')autoMode=true;
+      // 'next-row' just continues the loop
+    }
+    if(autoMode && ri<totalRows-1){emit({type:'auto-row',rowIndex:ri+1,totalRows});}
+  }
+
+  // Logout
+  try{await runStep(page,{type:'pestpac-logout'},{}  ,credsReal);}catch{}
   await browser.close();
+  emit({type:'all-done',totalRows});
   process.exit(0);
 }
 main().catch(e=>{emit({type:'fatal',error:e.message});process.exit(1);});

@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('api', {
   onAutomationEvent:   (cb)    => ipcRenderer.on('automation-event', (_, d) => cb(d)),
   startLiveDryrun:     (d)     => ipcRenderer.invoke('start-live-dryrun', d),
   dryrunNext:          ()      => ipcRenderer.invoke('dryrun-next'),
+  dryrunNextRow:       ()      => ipcRenderer.invoke('dryrun-nextrow'),
+  dryrunRunAll:        ()      => ipcRenderer.invoke('dryrun-runall'),
   stopDryrun:          ()      => ipcRenderer.invoke('stop-dryrun'),
   onDryrunEvent:       (cb)    => ipcRenderer.on('dryrun-event', (_, d) => cb(d)),
 });

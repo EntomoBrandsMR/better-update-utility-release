@@ -662,14 +662,9 @@ textarea { resize: vertical; min-height: 60px; }
     2. Build steps
     <span class="nb" id="nb-builder" style="display:none;background:var(--surf3);color:var(--t2)">0</span>
   </div>
-  <div class="nav" id="nav-validate" onclick="go('validate')">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M5.5 8l2 2 3-3"/></svg>
-    3. Validate
-    <span class="nb" id="nb-validate" style="display:none"></span>
-  </div>
   <div class="nav" id="nav-dryrun" onclick="go('dryrun')">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M6 5l5 3-5 3V5z"/></svg>
-    4. Dry run
+    3. Dry run
   </div>
 
   <div class="sb-sep"></div>
@@ -776,6 +771,7 @@ textarea { resize: vertical; min-height: 60px; }
       <button class="add-opt" onclick="addStep('clear')">Clear field</button>
       <button class="add-opt" onclick="addStep('wait')">Wait</button>
       <button class="add-opt" onclick="addStep('assert')">Assert / verify</button>
+      <button class="add-opt" onclick="addStep('dialog')">Handle dialog</button>
       <button class="add-opt" onclick="addStep('textedit')">Text edit</button>
     </div>
     <div class="infobox">
@@ -823,7 +819,7 @@ textarea { resize: vertical; min-height: 60px; }
       </div>
     </div>
     <div class="btn-row">
-      <button class="btn pri" onclick="go('validate')">Validate flow →</button>
+      <button class="btn pri" onclick="go('dryrun')">Dry run →</button>
     </div>
   </div>
 </div>
@@ -859,10 +855,10 @@ textarea { resize: vertical; min-height: 60px; }
   <div class="card">
     <div id="drSetupArea">
       <div class="infobox" style="margin-bottom:14px">
-        A real browser window will open and log into PestPac automatically. Then you click <strong>Execute step</strong> to advance one step at a time — watching exactly what happens. When satisfied, click <strong style="color:var(--green)">Launch full automation</strong> to hand off.
+        A real browser window will open and log into PestPac automatically. Step through each action one at a time. After each row you can continue to the next row or hand off to full automation — which continues in the <strong>same browser window</strong> with no new login.
       </div>
       <div class="row-sel">
-        <label>Row to test:</label>
+        <label>Start from row:</label>
         <select id="drRowSel" style="width:auto;max-width:360px"></select>
       </div>
       <div class="btn-row">
@@ -877,11 +873,12 @@ textarea { resize: vertical; min-height: 60px; }
         <div class="dr-prog"><div class="dr-fill" id="drFill" style="width:0"></div></div>
         <span style="font-size:12px;color:var(--t2);white-space:nowrap" id="drInfo">Logging in…</span>
         <button class="btn pri sm" id="drNextBtn" onclick="dryRunNext()" disabled>Execute step →</button>
-        <button class="btn red-solid sm" onclick="stopLiveDryRun()">Stop</button>
-        <button class="tbtn grn" id="drAutoBtn" style="display:none" onclick="startRun()">
+        <button class="btn sm" id="drNextRowBtn" onclick="dryRunNextRow()" style="display:none">Next row →</button>
+        <button class="btn grn" id="drAutoBtn" onclick="dryRunRunAll()" style="display:none">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><polygon points="3,2 14,8 3,14"/></svg>
           Launch full automation
         </button>
+        <button class="btn red-solid sm" onclick="stopLiveDryRun()">Stop</button>
       </div>
       <div style="font-size:11px;font-weight:600;color:var(--t3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Step progress</div>
       <div id="drSteps"></div>
@@ -1240,6 +1237,11 @@ const SM = {
     };
     return (modes[s.editMode]||'Text edit') + ' in ' + (s.selector||'?');
   }},
+  dialog: { label:'Handle dialog', badge:'bd-wt', desc: s => {
+    const action = s.dialogAction||'accept';
+    const when = s.dialogMatch ? 'if contains "'+s.dialogMatch+'"' : 'any dialog';
+    return (action==='accept'?'Accept':'Dismiss') + ' dialog — ' + when;
+  }},
 };
 
 function renderSteps() {
@@ -1367,6 +1369,8 @@ function bodyHTML(s) {
     '</div>';
 
   if(s.type==='assert') return '<div class="row">' + selField(s.id,'selector',s.selector||'','.toast-success','CSS selector to verify') + '<div class="fg"><label>Expected text (optional)</label><input type="text" id="fi-' + s.id + '-expected" value="' + esc(s.expected) + '" placeholder="Record saved" oninput="u(' + s.id + ',\'expected\',this.value)"/></div></div><div class="row"><div class="fg"><label>On failure</label><select onchange="u(' + s.id + ',\'onFail\',this.value)"><option ' + (!s.onFail||s.onFail==='stop'?'selected':'') + ' value="stop">Stop automation</option><option ' + (s.onFail==='skip'?'selected':'') + ' value="skip">Skip row</option><option ' + (s.onFail==='log'?'selected':'') + ' value="log">Log and continue</option></select></div></div>';
+
+  if(s.type==='dialog') return '<div class="row"><div class="fg"><label>Action</label><select onchange="u(' + s.id + ',\'dialogAction\',this.value)"><option ' + (!s.dialogAction||s.dialogAction==='accept'?'selected':'') + ' value="accept">Accept (click OK / confirm)</option><option ' + (s.dialogAction==='dismiss'?'selected':'') + ' value="dismiss">Dismiss (click Cancel)</option></select><div class="hint">Accept clicks OK on confirm dialogs. Dismiss clicks Cancel.</div></div><div class="fg"><label>Only trigger if dialog contains (optional)</label><input type="text" id="fi-' + s.id + '-dialogMatch" value="' + esc(s.dialogMatch) + '" placeholder="e.g. delete, are you sure" oninput="u(' + s.id + ',\'dialogMatch\',this.value)"/><div class="hint">Leave blank to handle any dialog. If set, only handles dialogs where the message contains this text.</div></div></div>';
   if(s.type==='textedit') {
     const mode = s.editMode||'find-replace';
     const modeOpts = [
@@ -1494,51 +1498,46 @@ let dryRunPos=-1;
 async function startLiveDryRun(){
   if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
   if(!ssPath){alert('No spreadsheet loaded.');go('import');return;}
-  const rowIdx=parseInt(document.getElementById('drRowSel').value||'0');
-  const rowData={};
-  if(ssRows[rowIdx]){ssHeaders.forEach((h,i)=>{rowData[h]=ssRows[rowIdx][i]||'';});}
+  const startRow=parseInt(document.getElementById('drRowSel').value||'0');
   const btn=document.getElementById('drStartBtn');
   btn.disabled=true;btn.textContent='Starting…';
   document.getElementById('drSetupArea').style.display='none';
   document.getElementById('drRunArea').style.display='';
   document.getElementById('drInfo').textContent='Logging in…';
   document.getElementById('drNextBtn').disabled=true;
+  document.getElementById('drNextRowBtn').style.display='none';
   document.getElementById('drAutoBtn').style.display='none';
-  const container=document.getElementById('drSteps');
-  container.innerHTML='';
+  document.getElementById('drSteps').innerHTML='';
   dryRunDataSteps=allSteps().filter(s=>!s.locked);
   dryRunPos=-1;
-  // Render all steps as pending
-  dryRunDataSteps.forEach((s,i)=>{
-    const m=SM[s.type]||{label:s.type,badge:'bd-nav',desc:()=>s._label||s.type};
-    const div=document.createElement('div');
-    div.className='dr-step dr-pending';
-    div.id='drs-'+i;
-    div.innerHTML='<div class="dr-hd"><div class="dr-num">'+(i+1)+'</div><span class="badge '+m.badge+'">'+m.label+'</span><span class="dr-action" style="margin-left:4px">'+(s._label||m.desc(s))+'</span></div>';
-    container.appendChild(div);
-  });
-  if(API.onDryrunEvent){API.onDryrunEvent(handleDryrunEvent);}
+  if(API.onDryrunEvent)API.onDryrunEvent(handleDryrunEvent);
   if(API.startLiveDryrun){
-    const result=await API.startLiveDryrun({stepsJson:JSON.stringify(allSteps()),profileId:activeProfileId,rowData});
-    if(!result.ok){
-      alert('Failed to start: '+(result.error||'Unknown error'));
-      resetDryRunUI();
-    }
+    const result=await API.startLiveDryrun({stepsJson:JSON.stringify(allSteps()),profileId:activeProfileId,spreadsheetPath:ssPath,startRow});
+    if(!result.ok){alert('Failed to start: '+(result.error||'Unknown error'));resetDryRunUI();}
   }
   btn.disabled=false;btn.textContent='Start dry run';
 }
 
 function handleDryrunEvent(evt){
   if(evt.type==='login-done'){
-    document.getElementById('drInfo').textContent='Login done — ready for step 1 of '+evt.stepCount;
+    document.getElementById('drInfo').textContent='Logged in — row '+(evt.startRow+1)+' of '+evt.totalRows+', ready for step 1';
     document.getElementById('drNextBtn').disabled=false;
+    renderDryRunSteps(evt.startRow);
+  }
+  else if(evt.type==='row-start'){
+    renderDryRunSteps(evt.rowIndex);
+    document.getElementById('drNextRowBtn').style.display='none';
+    document.getElementById('drAutoBtn').style.display='none';
+    document.getElementById('drNextBtn').disabled=false;
+    document.getElementById('drNextBtn').textContent='Execute step →';
   }
   else if(evt.type==='step-ready'){
     dryRunPos=evt.pos;
-    document.getElementById('drInfo').textContent='Step '+(evt.pos+1)+' of '+evt.total+' — click Execute';
+    document.getElementById('drInfo').textContent='Row '+(evt.rowIndex+1)+'/'+evt.totalRows+' — step '+(evt.pos+1)+'/'+evt.total+(evt.retrying?' (retry)':'');
     document.getElementById('drNextBtn').disabled=false;
-    document.getElementById('drNextBtn').textContent='Execute step →';
-    // Highlight current step
+    document.getElementById('drNextBtn').textContent=evt.retrying?'Retry step →':'Execute step →';
+    document.getElementById('drNextRowBtn').style.display='none';
+    document.getElementById('drAutoBtn').style.display='none';
     dryRunDataSteps.forEach((_,i)=>{
       const el=document.getElementById('drs-'+i);
       if(!el)return;
@@ -1548,7 +1547,7 @@ function handleDryrunEvent(evt){
     });
     const cur=document.getElementById('drs-'+evt.pos);
     if(cur)cur.scrollIntoView({behavior:'smooth',block:'nearest'});
-    updateDrProgress(dryRunDataSteps.length);
+    updateDrProgress(evt.total);
   }
   else if(evt.type==='step-done'){
     const el=document.getElementById('drs-'+evt.pos);
@@ -1559,37 +1558,84 @@ function handleDryrunEvent(evt){
   else if(evt.type==='step-error'){
     const el=document.getElementById('drs-'+evt.pos);
     if(el){el.className='dr-step dr-err';el.innerHTML+=('<div class="dr-err-box">⚠ '+evt.error+'</div>');}
-    document.getElementById('drInfo').textContent='Error on step '+(evt.pos+1)+' — click Execute to retry or Stop to exit';
-    document.getElementById('drNextBtn').disabled=false;
-    document.getElementById('drNextBtn').textContent='Retry step →';
   }
-  else if(evt.type==='all-done'){
-    document.getElementById('drInfo').textContent='All steps complete — browser stays open';
-    document.getElementById('drNextBtn').disabled=true;
-    document.getElementById('drNextBtn').textContent='All done ✓';
-    document.getElementById('drAutoBtn').style.display='';
+  else if(evt.type==='row-done'){
     dryRunDataSteps.forEach((_,i)=>{
       const el=document.getElementById('drs-'+i);
       if(el&&!el.classList.contains('dr-err'))el.className='dr-step dr-done';
     });
     updateDrProgress(dryRunDataSteps.length);
   }
+  else if(evt.type==='row-waiting'){
+    const remaining=evt.totalRows-evt.rowIndex-1;
+    document.getElementById('drInfo').textContent='Row '+(evt.rowIndex+1)+' done — '+remaining+' row'+(remaining!==1?'s':'')+' remaining';
+    document.getElementById('drNextBtn').disabled=true;
+    document.getElementById('drNextRowBtn').style.display='';
+    document.getElementById('drAutoBtn').style.display='';
+  }
+  else if(evt.type==='auto-row'){
+    document.getElementById('drInfo').textContent='Auto — running row '+(evt.rowIndex+1)+'/'+evt.totalRows+'…';
+    document.getElementById('drNextBtn').disabled=true;
+    document.getElementById('drNextRowBtn').style.display='none';
+    document.getElementById('drAutoBtn').style.display='none';
+  }
+  else if(evt.type==='all-done'){
+    document.getElementById('drInfo').textContent='✅ All '+evt.totalRows+' rows complete';
+    document.getElementById('drNextBtn').disabled=true;
+    document.getElementById('drNextRowBtn').style.display='none';
+    document.getElementById('drAutoBtn').style.display='none';
+  }
   else if(evt.type==='fatal'){
-    document.getElementById('drInfo').textContent='Fatal: '+evt.error;
+    document.getElementById('drInfo').textContent='❌ Fatal: '+evt.error;
     resetDryRunUI();
   }
   else if(evt.type==='closed'){
-    if(document.getElementById('drRunArea').style.display!=='none'&&document.getElementById('drAutoBtn').style.display==='none'){
+    if(document.getElementById('drRunArea').style.display!=='none'){
       document.getElementById('drInfo').textContent='Browser closed';
       resetDryRunUI();
     }
   }
 }
 
+function renderDryRunSteps(rowIndex){
+  const container=document.getElementById('drSteps');
+  container.innerHTML='';
+  // Row header
+  const urlIdx=ssHeaders.findIndex(h=>h.toLowerCase()==='url');
+  const rowUrl=ssRows[rowIndex]&&urlIdx>=0?ssRows[rowIndex][urlIdx]:'';
+  const hdr=document.createElement('div');
+  hdr.style.cssText='font-size:11px;color:var(--t2);margin-bottom:8px;padding:6px 10px;background:var(--surf3);border-radius:6px';
+  hdr.innerHTML='<strong style="color:var(--tx)">Row '+(rowIndex+1)+'</strong>'+(rowUrl?' — '+rowUrl:'');
+  container.appendChild(hdr);
+  dryRunDataSteps.forEach((s,i)=>{
+    const m=SM[s.type]||{label:s.type,badge:'bd-nav',desc:()=>s._label||s.type};
+    const div=document.createElement('div');
+    div.className='dr-step dr-pending';
+    div.id='drs-'+i;
+    div.innerHTML='<div class="dr-hd"><div class="dr-num">'+(i+1)+'</div><span class="badge '+m.badge+'">'+m.label+'</span><span class="dr-action" style="margin-left:4px">'+(s._label||m.desc(s))+'</span></div>';
+    container.appendChild(div);
+  });
+}
+
 async function dryRunNext(){
   document.getElementById('drNextBtn').disabled=true;
   document.getElementById('drNextBtn').textContent='Executing…';
   if(API.dryrunNext)await API.dryrunNext();
+}
+
+async function dryRunNextRow(){
+  document.getElementById('drNextRowBtn').style.display='none';
+  document.getElementById('drAutoBtn').style.display='none';
+  document.getElementById('drInfo').textContent='Loading next row…';
+  if(API.dryrunNextRow)await API.dryrunNextRow();
+}
+
+async function dryRunRunAll(){
+  document.getElementById('drNextRowBtn').style.display='none';
+  document.getElementById('drAutoBtn').style.display='none';
+  document.getElementById('drNextBtn').disabled=true;
+  document.getElementById('drInfo').textContent='Switching to full automation…';
+  if(API.dryrunRunAll)await API.dryrunRunAll();
 }
 
 async function stopLiveDryRun(){
