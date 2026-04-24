@@ -54,9 +54,10 @@ html, body {
 }
 
 /* ── SCROLLBAR ── */
-::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--bdr3); border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: var(--bdr3); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--t3); }
 
 /* ── TOPBAR ── */
 .topbar {
@@ -852,30 +853,40 @@ textarea { resize: vertical; min-height: 60px; }
 <!-- ══ DRY RUN ══ -->
 <div class="panel" id="panel-dryrun">
   <div class="page-header">
-    <div class="page-title">Dry run</div>
-    <div class="page-sub">Step through each action with real data before committing</div>
+    <div class="page-title">Live dry run</div>
+    <div class="page-sub">Opens a real browser — step through each action one at a time and watch it live</div>
   </div>
   <div class="card">
-    <p style="font-size:12px;color:var(--t2);margin-bottom:14px;line-height:1.65">
-      Select a row and step through each action to see exactly what will happen with your real data substituted in. Credentials show as <span class="dr-cred" style="font-size:10px">••••</span> for security. Red error cards indicate configuration problems — fix them before running. When satisfied, click <strong style="color:var(--green)">Automate from here</strong>.
-    </p>
-    <div class="row-sel">
-      <label>Preview row:</label>
-      <select id="drRowSel" style="width:auto;max-width:360px" onchange="initDryRun()"></select>
-      <button class="btn sm" onclick="initDryRun()">Reset</button>
+    <div id="drSetupArea">
+      <div class="infobox" style="margin-bottom:14px">
+        A real browser window will open and log into PestPac automatically. Then you click <strong>Execute step</strong> to advance one step at a time — watching exactly what happens. When satisfied, click <strong style="color:var(--green)">Launch full automation</strong> to hand off.
+      </div>
+      <div class="row-sel">
+        <label>Row to test:</label>
+        <select id="drRowSel" style="width:auto;max-width:360px"></select>
+      </div>
+      <div class="btn-row">
+        <button class="btn grn" id="drStartBtn" onclick="startLiveDryRun()">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><polygon points="3,2 14,8 3,14"/></svg>
+          Start dry run
+        </button>
+      </div>
+    </div>
+    <div id="drRunArea" style="display:none">
+      <div class="dr-ctrl" id="drCtrl">
+        <div class="dr-prog"><div class="dr-fill" id="drFill" style="width:0"></div></div>
+        <span style="font-size:12px;color:var(--t2);white-space:nowrap" id="drInfo">Logging in…</span>
+        <button class="btn pri sm" id="drNextBtn" onclick="dryRunNext()" disabled>Execute step →</button>
+        <button class="btn red-solid sm" onclick="stopLiveDryRun()">Stop</button>
+        <button class="tbtn grn" id="drAutoBtn" style="display:none" onclick="startRun()">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><polygon points="3,2 14,8 3,14"/></svg>
+          Launch full automation
+        </button>
+      </div>
+      <div style="font-size:11px;font-weight:600;color:var(--t3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Step progress</div>
+      <div id="drSteps"></div>
     </div>
   </div>
-  <div class="dr-ctrl" id="drCtrl" style="display:none">
-    <div class="dr-prog"><div class="dr-fill" id="drFill" style="width:0"></div></div>
-    <span style="font-size:12px;color:var(--t2);white-space:nowrap" id="drInfo">Step 0 / 0</span>
-    <button class="btn sm" id="drPrev" onclick="drMove(-1)" disabled>← Back</button>
-    <button class="btn pri sm" id="drNext" onclick="drMove(1)">Next step →</button>
-    <button class="tbtn grn" id="drAutoBtn" style="display:none" onclick="startRun()">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><polygon points="3,2 14,8 3,14"/></svg>
-      Automate from here
-    </button>
-  </div>
-  <div id="drSteps"></div>
 </div>
 
 <!-- ══ RUN PROGRESS ══ -->
@@ -1470,40 +1481,130 @@ function setupDryRun() {
   const sel=document.getElementById('drRowSel');sel.innerHTML='';
   if(!ssRows.length){sel.innerHTML='<option>No spreadsheet loaded</option>';}
   else{const urlIdx=ssHeaders.findIndex(h=>h.toLowerCase()==='url');ssRows.forEach((row,i)=>{const label=urlIdx>=0?'Row ' + (i+1) + ' — ' + (row[urlIdx]||'(no URL)'):'Row ' + (i+1);sel.innerHTML+='<option value="' + i + '">' + label + '</option>';});}
-  initDryRun();
+  // Reset UI
+  document.getElementById('drSetupArea').style.display='';
+  document.getElementById('drRunArea').style.display='none';
+  document.getElementById('drSteps').innerHTML='';
+  document.getElementById('drAutoBtn').style.display='none';
 }
-function resolveTokens(val,row){if(!val)return{text:'(empty)',type:'empty'};let text=val,hasCred=false,hasMissing=false;text=text.replace(/\{\{CRED:([^}]+)\}\}/g,(_,f)=>{hasCred=true;return '__CRED__' + f + '__';});text=text.replace(/\{\{([^}]+)\}\}/g,(_,col)=>{const idx=ssHeaders.indexOf(col);if(idx<0){hasMissing=true;return '__MISSING__' + col + '__';}return row[idx]!==undefined?row[idx]:'';});return{text,hasCred,hasMissing,raw:val};}
-function renderResolved(r){if(!r)return '<span style="color:var(--t3)">(empty)</span>';let h=r.text.replace(/&/g,'&amp;').replace(/</g,'&lt;');h=h.replace(/__CRED__([^_]+)__/g,()=>'<span class="dr-cred">••••••</span>');h=h.replace(/__MISSING__([^_]+)__/g,(_,c)=>'<span class="dr-missing">{{' + c + '}} — NOT FOUND</span>');return '<span class="dr-val">' + h + '</span>';}
-function stepErrors(s,row){const errs=[];if((s.type==='click'||s.type==='type'||s.type==='select'||s.type==='checkbox'||s.type==='clear'||s.type==='assert')&&!s.selector)errs.push('No CSS selector defined.');if(s.type==='navigate'&&!s.url)errs.push('No URL defined.');if(s.type==='type'&&!s.value)errs.push('Value is empty.');if(s.type==='wait'&&s.waitType==='element'&&!s.waitSel)errs.push('No wait selector set.');[s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')){const colMatch=ssHeaders.find(c=>c.toLowerCase()===ref.toLowerCase());if(!colMatch)errs.push('Column "{{' + ref + '}}" not in spreadsheet.');}});});return errs;}
-function stepDetail(s,row){const errs=stepErrors(s,row);let detail='';
-  if(s.type==='navigate'){const r=resolveTokens(s.url,row);detail='Navigate to: ' + renderResolved(r);}
-  else if(s.type==='click'){detail='Click: <span class="dr-val">' + (s.selector||'?') + '</span>';if(s.waitFor)detail+='<br>Wait for: <span class="dr-val">' + s.waitFor + '</span>';}
-  else if(s.type==='type'){const r=resolveTokens(s.value,row);detail='Field: <span class="dr-val">' + (s.selector||'?') + '</span><br>' + (s.clearFirst!=='no'?'Clear, then type: ':'Type: ') + renderResolved(r);}
-  else if(s.type==='select'){const r=resolveTokens(s.value,row);detail='Dropdown: <span class="dr-val">' + (s.selector||'?') + '</span><br>Select: ' + renderResolved(r);}
-  else if(s.type==='checkbox'){const a=s.checkAction||'check';detail='Checkbox: <span class="dr-val">' + (s.selector||'?') + '</span><br>';if(a==='conditional'){const r=resolveTokens(s.condCol,row);const tv=(s.truthyVals||'yes,true,1,x').split(',').map(x=>x.trim().toLowerCase());const willCheck=tv.includes(String(r.text||'').trim().toLowerCase());detail+='Column: ' + renderResolved(r) + ' → will <strong>' + (willCheck?'CHECK':'UNCHECK') + '</strong>';}else{detail+='Action: <strong>' + a.toUpperCase() + '</strong>';}}
-  else if(s.type==='clear'){detail='Clear field: <span class="dr-val">' + (s.selector||'?') + '</span>';}
-  else if(s.type==='wait'){if(s.waitType==='random')detail='Random wait: <span class="dr-val">' + (s.waitMin||1) + 's</span> to <span class="dr-val">' + (s.waitMax||3) + 's</span>';else if(s.waitType==='element')detail='Wait for: <span class="dr-val">' + (s.waitSel||'?') + '</span>';else if(s.waitType==='navigation')detail='Wait for page navigation';else detail='Wait <span class="dr-val">' + (s.waitSec||1) + ' seconds</span>';}
-  else if(s.type==='textedit'){
-    const modes={'find-replace':'Find and replace','exact-remove':'Exact remove','partial-remove-word':'Remove whole word','partial-remove-piece':'Remove piece','partial-replace-piece':'Replace piece','remove-after':'Remove after char','remove-before':'Remove before char','trim':'Trim whitespace','remove-extra-spaces':'Collapse spaces','regex':'Regex replace'};
-    const m=s.editMode||'find-replace';
-    detail='Field: <span class="dr-val">'+(s.selector||'?')+'</span><br>Mode: <strong>'+(modes[m]||m)+'</strong>';
-    if(s.searchVal)detail+='<br>Search: <span class="dr-val">'+s.searchVal+'</span>';
-    if(s.replaceVal!==undefined&&['find-replace','partial-replace-piece','regex'].includes(m))detail+='<br>Replace with: <span class="dr-val">'+(s.replaceVal||'(remove)')+'</span>';
-    if(s.charVal&&['remove-after','remove-before'].includes(m))detail+='<br>Character: <span class="dr-val">'+s.charVal+'</span>';
+
+let dryRunDataSteps=[];
+let dryRunPos=-1;
+
+async function startLiveDryRun(){
+  if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
+  if(!ssPath){alert('No spreadsheet loaded.');go('import');return;}
+  const rowIdx=parseInt(document.getElementById('drRowSel').value||'0');
+  const rowData={};
+  if(ssRows[rowIdx]){ssHeaders.forEach((h,i)=>{rowData[h]=ssRows[rowIdx][i]||'';});}
+  const btn=document.getElementById('drStartBtn');
+  btn.disabled=true;btn.textContent='Starting…';
+  document.getElementById('drSetupArea').style.display='none';
+  document.getElementById('drRunArea').style.display='';
+  document.getElementById('drInfo').textContent='Logging in…';
+  document.getElementById('drNextBtn').disabled=true;
+  document.getElementById('drAutoBtn').style.display='none';
+  const container=document.getElementById('drSteps');
+  container.innerHTML='';
+  dryRunDataSteps=allSteps().filter(s=>!s.locked);
+  dryRunPos=-1;
+  // Render all steps as pending
+  dryRunDataSteps.forEach((s,i)=>{
+    const m=SM[s.type]||{label:s.type,badge:'bd-nav',desc:()=>s._label||s.type};
+    const div=document.createElement('div');
+    div.className='dr-step dr-pending';
+    div.id='drs-'+i;
+    div.innerHTML='<div class="dr-hd"><div class="dr-num">'+(i+1)+'</div><span class="badge '+m.badge+'">'+m.label+'</span><span class="dr-action" style="margin-left:4px">'+(s._label||m.desc(s))+'</span></div>';
+    container.appendChild(div);
+  });
+  if(API.onDryrunEvent){API.onDryrunEvent(handleDryrunEvent);}
+  if(API.startLiveDryrun){
+    const result=await API.startLiveDryrun({stepsJson:JSON.stringify(allSteps()),profileId:activeProfileId,rowData});
+    if(!result.ok){
+      alert('Failed to start: '+(result.error||'Unknown error'));
+      resetDryRunUI();
+    }
   }
-    else if(s.type==='pestpac-login'){
-    detail='Logs in to PestPac using saved profile credentials.<br><span class="dr-cred">Company key</span> <span class="dr-cred">Username</span> <span class="dr-cred">Password</span> — from active profile';
-  }
-  else if(s.type==='pestpac-logout'){
-    detail='Navigates to search page → clicks user menu → clicks Log Out.';
-  }
-  else if(s.type==='assert'){detail='Verify exists: <span class="dr-val">' + (s.selector||'?') + '</span>';if(s.expected)detail+='<br>Expected: <span class="dr-val">' + s.expected + '</span>';detail+='<br>On failure: <strong>' + (s.onFail||'stop') + '</strong>';}
-  const errHtml=errs.length?'<div class="dr-err-box"><strong>⚠ ' + errs.length + ' error' + (errs.length>1?'s':'') + ' — fix before running:</strong>' + errs.map(e=>'<div>• ' + e + '</div>').join('') + '</div>':'';
-  return{detail,errs,errHtml};
+  btn.disabled=false;btn.textContent='Start dry run';
 }
-function initDryRun(){drPos=-1;const rowIdx=parseInt(document.getElementById('drRowSel').value||'0');const row=ssRows[rowIdx]||[];const all=allSteps();document.getElementById('drCtrl').style.display=all.length?'':'none';document.getElementById('drAutoBtn').style.display='none';document.getElementById('drNext').textContent='Next step →';document.getElementById('drNext').disabled=false;document.getElementById('drPrev').disabled=true;const container=document.getElementById('drSteps');container.innerHTML='';if(!all.length){container.innerHTML='<div class="empty">No steps defined.</div>';return;}all.forEach((s,i)=>{const m=SM[s.type];const{detail,errs,errHtml}=stepDetail(s,row);const div=document.createElement('div');div.className='dr-step dr-pending';div.id='drs-' + i;div.innerHTML='<div class="dr-hd"><div class="dr-num">' + (i+1) + '</div><span class="badge ' + m.badge + '">' + m.label + '</span><span class="dr-action" style="margin-left:4px">' + (s._label||m.desc(s)) + '</span>' + (s.locked?'<span style="font-size:10px;color:var(--purple);margin-left:auto;opacity:.7">🔒 login</span>':'') + (errs.length?'<span style="font-size:10px;color:var(--red);font-weight:700;margin-left:auto">⚠ ' + errs.length + ' error' + (errs.length>1?'s':'') + '</span>':'') + '</div><div class="dr-detail">' + detail + errHtml + '</div>';container.appendChild(div);});updateDrProgress(all.length);}
-function drMove(dir){const all=allSteps();const rowIdx=parseInt(document.getElementById('drRowSel').value||'0');const row=ssRows[rowIdx]||[];const prev=drPos;drPos=Math.max(-1,Math.min(all.length-1,drPos+dir));if(prev>=0){const c=document.getElementById('drs-' + prev);if(c){const{errs}=stepDetail(all[prev],row);c.className='dr-step ' + (errs.length?'dr-err':'dr-done');}}if(drPos>=0){const c=document.getElementById('drs-' + drPos);if(c){c.className='dr-step dr-current';c.scrollIntoView({behavior:'smooth',block:'nearest'});}}all.forEach((_,i)=>{if(i<drPos){const c=document.getElementById('drs-' + i);if(c&&!c.classList.contains('dr-err')){const{errs}=stepDetail(all[i],row);c.className='dr-step ' + (errs.length?'dr-err':'dr-done');}}if(i>drPos){const c=document.getElementById('drs-' + i);if(c)c.className='dr-step dr-pending';}});document.getElementById('drPrev').disabled=drPos<=0;const atEnd=drPos>=all.length-1;document.getElementById('drNext').textContent=atEnd?'✓ Complete':'Next step →';document.getElementById('drNext').disabled=atEnd;document.getElementById('drAutoBtn').style.display=atEnd?'':'none';updateDrProgress(all.length);}
-function updateDrProgress(total){const pct=total>0?Math.round(((drPos+1)/total)*100):0;document.getElementById('drFill').style.width=pct+'%';document.getElementById('drInfo').textContent='Step ' + Math.max(0,drPos+1) + ' / ' + total;}
+
+function handleDryrunEvent(evt){
+  if(evt.type==='login-done'){
+    document.getElementById('drInfo').textContent='Login done — ready for step 1 of '+evt.stepCount;
+    document.getElementById('drNextBtn').disabled=false;
+  }
+  else if(evt.type==='step-ready'){
+    dryRunPos=evt.pos;
+    document.getElementById('drInfo').textContent='Step '+(evt.pos+1)+' of '+evt.total+' — click Execute';
+    document.getElementById('drNextBtn').disabled=false;
+    document.getElementById('drNextBtn').textContent='Execute step →';
+    // Highlight current step
+    dryRunDataSteps.forEach((_,i)=>{
+      const el=document.getElementById('drs-'+i);
+      if(!el)return;
+      if(i<evt.pos)el.className='dr-step dr-done';
+      else if(i===evt.pos)el.className='dr-step dr-current';
+      else el.className='dr-step dr-pending';
+    });
+    const cur=document.getElementById('drs-'+evt.pos);
+    if(cur)cur.scrollIntoView({behavior:'smooth',block:'nearest'});
+    updateDrProgress(dryRunDataSteps.length);
+  }
+  else if(evt.type==='step-done'){
+    const el=document.getElementById('drs-'+evt.pos);
+    if(el)el.className='dr-step dr-done';
+    document.getElementById('drNextBtn').disabled=true;
+    document.getElementById('drNextBtn').textContent='Executing…';
+  }
+  else if(evt.type==='step-error'){
+    const el=document.getElementById('drs-'+evt.pos);
+    if(el){el.className='dr-step dr-err';el.innerHTML+=('<div class="dr-err-box">⚠ '+evt.error+'</div>');}
+    document.getElementById('drInfo').textContent='Error on step '+(evt.pos+1)+' — click Execute to retry or Stop to exit';
+    document.getElementById('drNextBtn').disabled=false;
+    document.getElementById('drNextBtn').textContent='Retry step →';
+  }
+  else if(evt.type==='all-done'){
+    document.getElementById('drInfo').textContent='All steps complete — browser stays open';
+    document.getElementById('drNextBtn').disabled=true;
+    document.getElementById('drNextBtn').textContent='All done ✓';
+    document.getElementById('drAutoBtn').style.display='';
+    dryRunDataSteps.forEach((_,i)=>{
+      const el=document.getElementById('drs-'+i);
+      if(el&&!el.classList.contains('dr-err'))el.className='dr-step dr-done';
+    });
+    updateDrProgress(dryRunDataSteps.length);
+  }
+  else if(evt.type==='fatal'){
+    document.getElementById('drInfo').textContent='Fatal: '+evt.error;
+    resetDryRunUI();
+  }
+  else if(evt.type==='closed'){
+    if(document.getElementById('drRunArea').style.display!=='none'&&document.getElementById('drAutoBtn').style.display==='none'){
+      document.getElementById('drInfo').textContent='Browser closed';
+      resetDryRunUI();
+    }
+  }
+}
+
+async function dryRunNext(){
+  document.getElementById('drNextBtn').disabled=true;
+  document.getElementById('drNextBtn').textContent='Executing…';
+  if(API.dryrunNext)await API.dryrunNext();
+}
+
+async function stopLiveDryRun(){
+  if(API.stopDryrun)await API.stopDryrun();
+  resetDryRunUI();
+}
+
+function resetDryRunUI(){
+  document.getElementById('drSetupArea').style.display='';
+  document.getElementById('drRunArea').style.display='none';
+  document.getElementById('drAutoBtn').style.display='none';
+  document.getElementById('drSteps').innerHTML='';
+}
+
+function updateDrProgress(total){const pct=total>0?Math.round(((dryRunPos+1)/total)*100):0;document.getElementById('drFill').style.width=pct+'%';}
 
 async function startRun(){
   if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
@@ -1564,9 +1665,21 @@ function openCurrentLog(){if(currentLogPath&&API.openFile)API.openFile(currentLo
 function openLogsFolder(){if(API.openLogsFolder)API.openLogsFolder();}
 function clearLogTable(){if(!confirm('Clear the log table? (Excel files on disk are not affected.)'))return;logEntries=[];document.getElementById('logBody').innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--t3);padding:28px;font-size:12px">No log entries yet.</td></tr>';document.getElementById('nb-log').style.display='none';}
 
-async function loadProfiles(){if(API.listProfiles)profiles=await API.listProfiles();renderProfiles();}
+async function loadProfiles(){
+  if(API.listProfiles)profiles=await API.listProfiles();
+  // Auto-select last used profile
+  if(!activeProfileId&&API.getConfig){
+    const cfg=await API.getConfig();
+    if(cfg.lastProfileId&&profiles.find(p=>p.id===cfg.lastProfileId)){
+      activeProfileId=cfg.lastProfileId;
+    } else if(profiles.length===1){
+      activeProfileId=profiles[0].id;
+    }
+  }
+  renderProfiles();
+}
 function renderProfiles(){document.getElementById('nb-profiles').textContent=profiles.length;const list=document.getElementById('profileList');if(!profiles.length){list.innerHTML='<div class="empty">No profiles yet. Click "Add profile" to get started.</div>';document.getElementById('activeProfileLbl').textContent='None — add a profile first';return;}list.innerHTML=profiles.map(p=>'<div class="profile-card ' + (activeProfileId===p.id?'active-p':'') + '"><div class="profile-hd"><div class="profile-icon">' + (p.name||'?').slice(0,2).toUpperCase() + '</div><div><div style="font-size:13px;font-weight:600;color:var(--tx)">' + (p.name||'Unnamed') + '</div><div style="font-size:11px;color:var(--t2)">' + (p.loginUrl||'https://login.pestpac.com/') + '</div></div><div style="margin-left:auto;display:flex;gap:6px">' + (activeProfileId===p.id?'<span style="font-size:11px;font-weight:600;color:var(--green);padding:4px 8px">✓ Active</span>':'<button class="btn grn sm" onclick="setActiveProfile(\'' + p.id + '\')">Use this</button>') + '<button class="btn sm" onclick="editProfile(\'' + p.id + '\')">Edit</button></div></div><div style="font-size:11px;color:var(--t2)">Company key: <span style="font-family:monospace">••••••</span> &nbsp;·&nbsp; Username: <span style="font-family:monospace">' + (p.username||'(not set)') + '</span></div></div>').join('');const active=profiles.find(p=>p.id===activeProfileId);document.getElementById('activeProfileLbl').textContent=active?active.name:'None selected';document.getElementById('newProfileBtn').disabled=profiles.length>=10;}
-function setActiveProfile(id){activeProfileId=id;renderProfiles();refreshRunBtn();}
+function setActiveProfile(id){activeProfileId=id;if(API.setConfig)API.setConfig({lastProfileId:id});renderProfiles();refreshRunBtn();}
 function newProfile(){editingProfileId=null;document.getElementById('profileFormTitle').textContent='New profile';document.getElementById('pName').value='';document.getElementById('pUrl').value='https://login.pestpac.com/';document.getElementById('pCompanyKey').value='';document.getElementById('pUsername').value='';document.getElementById('pPassword').value='';document.getElementById('deleteProfileBtn').style.display='none';document.getElementById('profileForm').style.display='block';document.getElementById('pName').focus();}
 async function editProfile(id){editingProfileId=id;document.getElementById('profileFormTitle').textContent='Edit profile';const p=API.getProfile?await API.getProfile(id):profiles.find(x=>x.id===id);if(!p)return;document.getElementById('pName').value=p.name||'';document.getElementById('pUrl').value=p.loginUrl||'https://login.pestpac.com/';document.getElementById('pCompanyKey').value=p.companyKey||'';document.getElementById('pUsername').value=p.username||'';document.getElementById('pPassword').value=p.password||'';document.getElementById('deleteProfileBtn').style.display='';document.getElementById('profileForm').style.display='block';}
 async function saveProfile(){const name=document.getElementById('pName').value.trim();if(!name){alert('Enter a profile name.');return;}const companyKey=document.getElementById('pCompanyKey').value.trim();if(!companyKey){alert('Enter the company key.');return;}const username=document.getElementById('pUsername').value.trim();if(!username){alert('Enter the username.');return;}const password=document.getElementById('pPassword').value;if(!password){alert('Enter the password.');return;}const profile={id:editingProfileId||('p_'+Date.now()),name,loginUrl:document.getElementById('pUrl').value.trim()||'https://login.pestpac.com/',companyKey,username,password};if(API.saveProfile)await API.saveProfile(profile);else{const i=profiles.findIndex(p=>p.id===profile.id);if(i>=0)profiles[i]=profile;else profiles.push(profile);}await loadProfiles();document.getElementById('profileForm').style.display='none';if(!activeProfileId)setActiveProfile(profile.id);}

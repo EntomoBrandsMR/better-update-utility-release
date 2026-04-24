@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.1.9';
+const CURRENT_VERSION = '1.2.0';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -94,6 +94,13 @@ ipcMain.handle('delete-profile', async (_, id) => {
   writeAllProfiles(readAllProfiles().filter(p => p.id !== id));
   return { ok: true };
 });
+
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+function getConfigPath() { return path.join(app.getPath('userData'), 'buu-config.json'); }
+function readConfig() { try { return JSON.parse(fs.readFileSync(getConfigPath(), 'utf8')); } catch { return {}; } }
+function writeConfig(obj) { fs.writeFileSync(getConfigPath(), JSON.stringify({ ...readConfig(), ...obj })); }
+ipcMain.handle('get-config', () => readConfig());
+ipcMain.handle('set-config', (_, obj) => { writeConfig(obj); return { ok: true }; });
 
 // ── CHROMIUM ──────────────────────────────────────────────────────────────────
 function getBundledChromiumPath() {
@@ -224,6 +231,70 @@ ipcMain.handle('get-checkpoint', (_, runId) => {
   const p = path.join(app.getPath('userData'), `checkpoint-${runId}.json`);
   if (!fs.existsSync(p)) return null;
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+});
+
+// ── LIVE DRY RUN ───────────────────────────────────────────────────────────
+let dryRunProcess = null;
+
+ipcMain.handle('start-live-dryrun', async (_, { stepsJson, profileId, rowData }) => {
+  if (dryRunProcess) { try { dryRunProcess.kill(); } catch {} dryRunProcess = null; }
+
+  const steps = JSON.parse(stepsJson);
+  const chromiumExe = getBundledChromiumPath();
+  if (!chromiumExe) return { ok: false, error: 'Chromium not found' };
+
+  const all = readAllProfiles();
+  const prof = all.find(p => p.id === profileId) || {};
+  if (keytar) {
+    prof.companyKey = await keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
+    prof.username   = await keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
+    prof.password   = await keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
+  }
+
+  const nodeModulesPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+    : path.join(__dirname, '..', 'node_modules');
+
+  const runnerPath = path.join(os.tmpdir(), `buu-dryrun-${Date.now()}.js`);
+  const script = buildDryRunner(steps, prof, rowData, chromiumExe, nodeModulesPath);
+  fs.writeFileSync(runnerPath, script);
+
+  const env = { ...process.env, NODE_PATH: nodeModulesPath, BUU_NODE_MODULES: nodeModulesPath, ELECTRON_RUN_AS_NODE: '1' };
+
+  dryRunProcess = spawn(process.execPath, [runnerPath], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env,
+  });
+
+  dryRunProcess.stdout.on('data', data => {
+    String(data).split('\n').filter(Boolean).forEach(line => {
+      try { mainWindow?.webContents.send('dryrun-event', JSON.parse(line)); } catch {}
+    });
+  });
+  dryRunProcess.stderr.on('data', data => {
+    mainWindow?.webContents.send('dryrun-event', { type: 'stderr', message: String(data) });
+  });
+  dryRunProcess.on('close', code => {
+    mainWindow?.webContents.send('dryrun-event', { type: 'closed', code });
+    dryRunProcess = null;
+    try { fs.unlinkSync(runnerPath); } catch {}
+  });
+  dryRunProcess.on('error', e => {
+    mainWindow?.webContents.send('dryrun-event', { type: 'fatal', error: e.message });
+  });
+
+  return { ok: true };
+});
+
+ipcMain.handle('dryrun-next', () => {
+  if (!dryRunProcess) return { ok: false, error: 'No dry run active' };
+  try { dryRunProcess.stdin.write('next\n'); return { ok: true }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('stop-dryrun', () => {
+  if (dryRunProcess) { try { dryRunProcess.kill(); } catch {} dryRunProcess = null; }
+  return { ok: true };
 });
 
 // ── RUNNER SCRIPT BUILDER ─────────────────────────────────────────────────────
@@ -438,6 +509,12 @@ async function main(){
   emit({ type: 'log', message: 'Using browser: ' + CHROMIUM_EXE });
   const browser = await chromium.launch({ headless: HEADLESS, executablePath: CHROMIUM_EXE });
   const page=await(await browser.newContext()).newPage();
+
+  // Auto-handle browser dialogs (alert, confirm, prompt)
+  page.on('dialog', async dialog => {
+    emit({ type: 'dialog', message: dialog.message(), dialogType: dialog.type() });
+    await dialog.accept();
+  });
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
 
   // Login is handled by pestpac-login step in the flow steps array
@@ -493,6 +570,68 @@ main().catch(e=>{emit({type:'fatal',error:e.message});process.exit(1);});
 }
 
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────
+// ── DRY RUN SCRIPT BUILDER ──────────────────────────────────────────────────
+function buildDryRunner(steps, creds, rowData, chromiumExePath, nodeModulesPath) {
+  const loginSteps = steps.filter(s => s.locked);
+  const dataSteps  = steps.filter(s => !s.locked);
+  return `
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const readline = require('readline');
+const _nm = ${JSON.stringify(nodeModulesPath)};
+if(process.env.NODE_PATH){try{require('module').Module._initPaths();}catch(e){}}
+function _req(mod){try{return require(mod);}catch(e){try{return require(path.join(_nm,mod));}catch(e2){throw new Error('Cannot find: '+mod);}}}
+const { chromium } = _req('playwright-core');
+function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
+const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
+const credsReal = ${JSON.stringify(creds)};
+const rowData = ${JSON.stringify(rowData || {})};
+const LOGIN_STEPS = ${JSON.stringify(loginSteps)};
+const DATA_STEPS = ${JSON.stringify(dataSteps)};
+function rv(v,row,c){if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,c.companyKey||'').replace(/{{CRED:username}}/g,c.username||'').replace(/{{CRED:password}}/g,c.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');}
+async function runStep(page,step,row,creds){
+  const ms=s=>Math.round(parseFloat(s||1)*1000);
+  switch(step.type){
+    case 'navigate':await page.goto(rv(step.url,row,creds),{waitUntil:step.waitAfter==='networkidle'?'networkidle':'load',timeout:30000});break;
+    case 'click':await page.waitForSelector(step.selector,{timeout:15000});await page.click(step.selector);if(step.waitFor)await page.waitForSelector(step.waitFor,{timeout:15000});break;
+    case 'type':await page.waitForSelector(step.selector,{timeout:15000});if(step.clearFirst!=='no')await page.fill(step.selector,'');await page.fill(step.selector,rv(step.value,row,creds));break;
+    case 'select':await page.waitForSelector(step.selector,{timeout:15000});await page.selectOption(step.selector,{label:rv(step.value,row,creds)});break;
+    case 'checkbox':await page.waitForSelector(step.selector,{timeout:15000});if(step.checkAction==='check')await page.check(step.selector);else if(step.checkAction==='uncheck')await page.uncheck(step.selector);else await page.click(step.selector);break;
+    case 'clear':await page.waitForSelector(step.selector,{timeout:15000});await page.fill(step.selector,'');break;
+    case 'wait':if(step.waitType==='element')await page.waitForSelector(step.waitSel||'',{timeout:30000});else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
+    case 'assert':await page.waitForSelector(step.selector,{timeout:15000});break;
+    case 'pestpac-login':{await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});await page.waitForSelector('input[name="uid"]',{timeout:15000});await page.fill('input[name="uid"]','');await page.fill('input[name="uid"]',creds.companyKey||'');await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');await page.waitForSelector('input[name="username"]',{timeout:15000});await page.fill('input[name="username"]',creds.username||'');await page.fill('input[name="password"]',creds.password||'');await page.click('button[data-testid="loginBtn"]');await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});break;}
+    case 'pestpac-logout':{await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});break;}
+    default:break;
+  }
+}
+function waitForNext(){return new Promise(resolve=>{const rl=readline.createInterface({input:process.stdin,terminal:false});rl.once('line',()=>{rl.close();resolve();});});}
+async function main(){
+  emit({type:'starting'});
+  if(!fs.existsSync(CHROMIUM_EXE)){emit({type:'fatal',error:'Chromium not found: '+CHROMIUM_EXE});process.exit(1);}
+  const browser=await chromium.launch({headless:false,executablePath:CHROMIUM_EXE});
+  const page=await(await browser.newContext()).newPage();
+  page.on('dialog',async dialog=>{emit({type:'dialog',message:dialog.message(),dialogType:dialog.type()});await dialog.accept();});
+  emit({type:'login-start'});
+  for(const step of LOGIN_STEPS){try{await runStep(page,step,rowData,credsReal);emit({type:'login-step-done',label:step._label||step.type});}catch(e){emit({type:'fatal',error:'Login failed: '+e.message});await browser.close();process.exit(1);}}
+  emit({type:'login-done',stepCount:DATA_STEPS.length});
+  for(let i=0;i<DATA_STEPS.length;i++){
+    const step=DATA_STEPS[i];
+    emit({type:'step-ready',pos:i,stepId:step.id,total:DATA_STEPS.length});
+    await waitForNext();
+    try{await runStep(page,step,rowData,credsReal);emit({type:'step-done',pos:i,stepId:step.id});}
+    catch(e){emit({type:'step-error',pos:i,stepId:step.id,error:e.message});emit({type:'step-ready',pos:i,stepId:step.id,total:DATA_STEPS.length,retrying:true});await waitForNext();}
+  }
+  emit({type:'all-done'});
+  await waitForNext();
+  await browser.close();
+  process.exit(0);
+}
+main().catch(e=>{emit({type:'fatal',error:e.message});process.exit(1);});
+`;
+}
+
 function fetchJSON(url) {
   return new Promise((res, rej) => {
     (url.startsWith('https') ? https : http).get(url, r => {
@@ -527,15 +666,17 @@ async function checkForUpdates(manual) {
 }
 ipcMain.handle('check-for-updates', () => checkForUpdates(true));
 ipcMain.handle('install-update', async (_, { downloadUrl }) => {
-  const tmp = path.join(os.tmpdir(), 'buu-update.exe');
+  const updateDir = path.join(app.getPath('userData'), 'updates');
+  if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
+  const tmp = path.join(updateDir, 'buu-update.exe');
   try {
     await downloadFile(downloadUrl, tmp);
-    // Strip Zone.Identifier alternate data stream so SmartScreen doesn't block it
+    // Strip Zone.Identifier so SmartScreen doesn't block it
     try {
       const { execFileSync } = require('child_process');
       execFileSync('powershell', [
         '-NoProfile', '-NonInteractive', '-Command',
-        `Remove-Item -Path '${tmp}:Zone.Identifier' -ErrorAction SilentlyContinue`
+        `Unblock-File -Path '${tmp}'`
       ]);
     } catch {}
     shell.openPath(tmp);
