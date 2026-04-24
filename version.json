@@ -1,5 +1,5 @@
 {
-  "version": "1.1.5",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.5/Better.Update.Utility.Setup.1.1.5.exe",
-  "notes": "Fix updater SmartScreen block; fix automation node_modules path; icon cache cleared on install"
+  "version": "1.1.6",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.1.6/Better.Update.Utility.Setup.1.1.6.exe",
+  "notes": "Fix install path — now installs to user AppData instead of Program Files, resolving automation hang on some machines"
 }
