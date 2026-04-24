@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.1.7';
+const CURRENT_VERSION = '1.1.8';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -150,11 +150,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   }
   fs.writeFileSync(credPath, encStore([prof]));
 
-  // Write runner script
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'stop', rowDelayMin || 1, rowDelayMax || 3);
-  fs.writeFileSync(runnerPath, script);
-
-  // Pass bundled chromium path to runner
+  // Get chromium path FIRST before anything else
   const chromiumExe = getBundledChromiumPath();
   if (!chromiumExe) {
     mainWindow?.webContents.send('automation-event', {
@@ -165,8 +161,12 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
     try { fs.unlinkSync(credPath); } catch {}
     return { ok: false, error: 'Chromium not found' };
   }
+
+  // Write runner script with chromium path baked in
+  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'stop', rowDelayMin || 1, rowDelayMax || 3, chromiumExe);
+  fs.writeFileSync(runnerPath, script);
+
   const env = { ...process.env };
-  if (chromiumExe) env.BUU_CHROMIUM_PATH = chromiumExe;
 
   // Point NODE_PATH so runner can find playwright-core etc
   // When packaged, node_modules live next to app.asar in resources
@@ -211,7 +211,7 @@ ipcMain.handle('get-checkpoint', (_, runId) => {
 });
 
 // ── RUNNER SCRIPT BUILDER ─────────────────────────────────────────────────────
-function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax) {
+function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath) {
   return `
 'use strict';
 const fs = require('fs');
@@ -414,21 +414,13 @@ async function main(){
   const totalRows=await countRows(SPREADSHEET);
   emit({type:'start',totalRows,resumeFrom:RESUME_FROM});
 
-  const chromiumExePath = process.env.BUU_CHROMIUM_PATH || '';
-  const launchOpts = {
-    headless: HEADLESS,
-    executablePath: chromiumExePath || undefined,
-  };
-  if (!chromiumExePath) {
-    emit({ type: 'fatal', error: 'BUU_CHROMIUM_PATH not set — bundled browser not found. Please reinstall the application.' });
+  const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
+  if (!fs.existsSync(CHROMIUM_EXE)) {
+    emit({ type: 'fatal', error: 'Bundled browser not found at: ' + CHROMIUM_EXE });
     process.exit(1);
   }
-  if (!require('fs').existsSync(chromiumExePath)) {
-    emit({ type: 'fatal', error: 'Bundled browser not found at: ' + chromiumExePath + '. Please reinstall the application.' });
-    process.exit(1);
-  }
-  emit({ type: 'log', message: 'Using browser: ' + chromiumExePath });
-  const browser = await chromium.launch(launchOpts);
+  emit({ type: 'log', message: 'Using browser: ' + CHROMIUM_EXE });
+  const browser = await chromium.launch({ headless: HEADLESS, executablePath: CHROMIUM_EXE });
   const page=await(await browser.newContext()).newPage();
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
 
