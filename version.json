@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.2.0/Better.Update.Utility.Setup.1.2.0.exe",
-  "notes": "v1.2.0 — Live dry run, dialog handler, remember last login, scrollbar, icon fix"
+  "version": "1.2.1",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.2.1/Better.Update.Utility.Setup.1.2.1.exe",
+  "notes": "v1.2.1 — Fixed login not running in live runner (caused navigate to land on wrong PestPac auto-redirect URL); logout now runs once at end instead of per-row; added navigate URL diagnostic log; elapsed time in dry run; cleaner run progress events."
 }

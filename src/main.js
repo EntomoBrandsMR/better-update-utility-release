@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.2.0';
+const CURRENT_VERSION = '1.2.1';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -349,9 +349,9 @@ function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
 function saveChk(row){try{fs.writeFileSync(CHECKPOINT,JSON.stringify({rowIndex:row,ts:new Date().toISOString()}));}catch{}}
 
 const ALL_STEPS = ${JSON.stringify(steps)};
-const LOGIN_STEPS = ALL_STEPS.filter(s => s.locked);
-const DATA_STEPS  = ALL_STEPS.filter(s => !s.locked);
-// Logout handled via PestPac menu — no URL needed
+const LOGIN_STEPS = ALL_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
+const DATA_STEPS  = ALL_STEPS.filter(s => !s.locked && s.type !== 'pestpac-logout');
+const LOGOUT_STEP = ALL_STEPS.find(s => s.type === 'pestpac-logout') || {type:'pestpac-logout'};
 
 let logEntries=[], flushTimer=null;
 function addLog(e){logEntries.push(e);if(logEntries.length%100===0)flush();else{clearTimeout(flushTimer);flushTimer=setTimeout(flush,3000);}}
@@ -404,7 +404,7 @@ async function runStep(page,step,row,creds){
   const r=v=>{if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');};
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
-    case 'navigate':await page.goto(r(step.url),{waitUntil:step.waitAfter==='networkidle'?'networkidle':'load',timeout:30000});break;
+    case 'navigate':{const _navUrl=r(step.url);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step\\'s URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:step.waitAfter==='networkidle'?'networkidle':'load',timeout:30000});break;}
     case 'click':await page.waitForSelector(step.selector,{timeout:15000});await page.click(step.selector);if(step.waitFor)await page.waitForSelector(step.waitFor,{timeout:15000});break;
     case 'type':await page.waitForSelector(step.selector,{timeout:15000});if(step.clearFirst!=='no')await page.fill(step.selector,'');if(parseInt(step.typeDelay||0)>0)await page.type(step.selector,r(step.value),{delay:parseInt(step.typeDelay)});else await page.fill(step.selector,r(step.value));break;
     case 'select':await page.waitForSelector(step.selector,{timeout:15000});await page.selectOption(step.selector,{label:r(step.value)});break;
@@ -537,21 +537,20 @@ async function main(){
   emit({ type: 'log', message: 'Using browser: ' + CHROMIUM_EXE });
   const browser = await chromium.launch({ headless: HEADLESS, executablePath: CHROMIUM_EXE });
   const page=await(await browser.newContext()).newPage();
-
-  // Auto-handle browser dialogs (alert, confirm, prompt)
-  page.on('dialog', async dialog => {
-    emit({ type: 'dialog', message: dialog.message(), dialogType: dialog.type() });
-    await dialog.accept();
-  });
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
 
-  // Login is handled by pestpac-login step in the flow steps array
+  // Run login steps once before the row loop
+  for(const step of LOGIN_STEPS){
+    try{ await runStep(page,step,{},creds); }
+    catch(e){ emit({type:'fatal',error:'Login failed at step '+( step._label||step.type)+': '+e.message}); await browser.close(); process.exit(1); }
+  }
 
   try{
     for await(const row of streamRows(SPREADSHEET)){
       ri++;
       if(ri<=RESUME_FROM)continue;
       saveChk(ri);
+      emit({type:'row-start',rowIndex:ri,rowNum:ri,totalRows,url:row.URL||row.url||''});
       const t0=Date.now();
       const entry={row:ri,timestamp:new Date().toISOString(),url:row.URL||row.url||'',status:'ok',error:'',failedStep:'',fieldsWritten:'',durationMs:0};
       let done=[];
@@ -587,7 +586,7 @@ async function main(){
   }finally{
     flush();
     try{fs.unlinkSync(CHECKPOINT);}catch{}
-    // Logout is handled by the locked pestpac-logout step at end of flow
+    try{await runStep(page,LOGOUT_STEP,{},creds);}catch{}
     await browser.close();
   }
   emit({type:'complete',totalRows:ri,ok,errs,skipped,elapsed:Date.now()-start,logPath:LOG_PATH});
@@ -600,8 +599,9 @@ main().catch(e=>{emit({type:'fatal',error:e.message});process.exit(1);});
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────
 // ── DRY RUN SCRIPT BUILDER ──────────────────────────────────────────────────
 function buildDryRunner(steps, creds, spreadsheetPath, startRow, chromiumExePath, nodeModulesPath) {
-  const loginSteps = steps.filter(s => s.locked);
-  const dataSteps  = steps.filter(s => !s.locked);
+  const loginSteps = steps.filter(s => s.locked && s.type !== 'pestpac-logout');
+  const dataSteps  = steps.filter(s => !s.locked && s.type !== 'pestpac-logout');
+  const logoutStep = steps.find(s => s.type === 'pestpac-logout') || { type: 'pestpac-logout' };
   return `
 'use strict';
 const fs = require('fs');
@@ -620,13 +620,14 @@ const SPREADSHEET = ${JSON.stringify(spreadsheetPath)};
 const START_ROW = ${startRow};
 const LOGIN_STEPS = ${JSON.stringify(loginSteps)};
 const DATA_STEPS = ${JSON.stringify(dataSteps)};
+const LOGOUT_STEP = ${JSON.stringify(logoutStep)};
 
 function rv(v,row,c){if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,c.companyKey||'').replace(/{{CRED:username}}/g,c.username||'').replace(/{{CRED:password}}/g,c.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');}
 
 async function runStep(page,step,row,creds){
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
-    case 'navigate':await page.goto(rv(step.url,row,creds),{waitUntil:step.waitAfter==='networkidle'?'networkidle':'load',timeout:30000});break;
+    case 'navigate':{const _navUrl=rv(step.url,row,creds);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:step.waitAfter==='networkidle'?'networkidle':'load',timeout:30000});break;}
     case 'click':await page.waitForSelector(step.selector,{timeout:15000});await page.click(step.selector);if(step.waitFor)await page.waitForSelector(step.waitFor,{timeout:15000});break;
     case 'type':await page.waitForSelector(step.selector,{timeout:15000});if(step.clearFirst!=='no')await page.fill(step.selector,'');await page.fill(step.selector,rv(step.value,row,creds));break;
     case 'select':await page.waitForSelector(step.selector,{timeout:15000});await page.selectOption(step.selector,{label:rv(step.value,row,creds)});break;
@@ -672,7 +673,6 @@ async function main(){
 
   const browser=await chromium.launch({headless:false,executablePath:CHROMIUM_EXE});
   const page=await(await browser.newContext()).newPage();
-  page.on('dialog',async dialog=>{emit({type:'dialog-auto',message:dialog.message(),dialogType:dialog.type()});await dialog.accept();});
 
   // Login once
   emit({type:'login-start'});
@@ -724,8 +724,8 @@ async function main(){
     if(autoMode && ri<totalRows-1){emit({type:'auto-row',rowIndex:ri+1,totalRows});}
   }
 
-  // Logout
-  try{await runStep(page,{type:'pestpac-logout'},{}  ,credsReal);}catch{}
+  // Logout once at the very end
+  try{await runStep(page,LOGOUT_STEP,{},credsReal);}catch{}
   await browser.close();
   emit({type:'all-done',totalRows});
   process.exit(0);

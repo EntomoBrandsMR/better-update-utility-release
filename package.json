@@ -1,6 +1,6 @@
 {
   "name": "better-update-utility",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Better Update Utility — PestPac automation",
   "author": "Entomo Brands",
   "main": "src/main.js",
@@ -44,7 +44,10 @@
       }
     ],
     "asarUnpack": [
-      "node_modules/playwright-core/**/*"
+      "node_modules/playwright-core/**/*",
+      "node_modules/xlsx/**/*",
+      "node_modules/keytar/**/*",
+      "node_modules/csv-parse/**/*"
     ]
   },
   "devDependencies": {
