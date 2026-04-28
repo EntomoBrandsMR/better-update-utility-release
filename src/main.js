@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.2.1';
+const CURRENT_VERSION = '1.2.2';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -734,23 +734,53 @@ main().catch(e=>{emit({type:'fatal',error:e.message});process.exit(1);});
 `;
 }
 
-function fetchJSON(url) {
+function fetchJSON(url, redirects) {
+  redirects = redirects || 0;
   return new Promise((res, rej) => {
+    if (redirects > 5) return rej(new Error('Too many redirects'));
     (url.startsWith('https') ? https : http).get(url, r => {
+      if ([301,302,307,308].includes(r.statusCode) && r.headers.location) {
+        r.resume();
+        return res(fetchJSON(r.headers.location, redirects + 1));
+      }
+      if (r.statusCode !== 200) { r.resume(); return rej(new Error('HTTP ' + r.statusCode + ' fetching ' + url)); }
       let d = ''; r.on('data', c => d += c);
       r.on('end', () => { try { res(JSON.parse(d)); } catch(e) { rej(e); } });
+      r.on('error', rej);
     }).on('error', rej);
   });
 }
-function downloadFile(url, dest) {
-  return new Promise((res, rej) => {
-    const f = fs.createWriteStream(dest);
+function downloadFile(url, dest, redirects) {
+  redirects = redirects || 0;
+  return new Promise((resolve, reject) => {
+    if (redirects > 5) return reject(new Error('Too many redirects'));
     (url.startsWith('https') ? https : http).get(url, r => {
+      // Follow redirects (GitHub release downloads always 302 to a CDN URL)
+      if ([301,302,307,308].includes(r.statusCode) && r.headers.location) {
+        r.resume();
+        return resolve(downloadFile(r.headers.location, dest, redirects + 1));
+      }
+      if (r.statusCode !== 200) {
+        r.resume();
+        return reject(new Error('HTTP ' + r.statusCode + ' downloading ' + url));
+      }
       const tot = parseInt(r.headers['content-length'] || '0');
       let recv = 0;
-      r.on('data', c => { f.write(c); recv += c.length; if (tot > 0 && mainWindow) mainWindow.webContents.send('update-progress', Math.round(recv/tot*100)); });
-      r.on('end', () => { f.end(); res(); });
-    }).on('error', rej);
+      const f = fs.createWriteStream(dest);
+      r.on('data', c => { recv += c.length; if (tot > 0 && mainWindow) mainWindow.webContents.send('update-progress', Math.round(recv/tot*100)); });
+      r.pipe(f);
+      f.on('finish', () => f.close(err => {
+        if (err) return reject(err);
+        // Sanity check: refuse files smaller than 1 MB — almost certainly an error page, not a real installer
+        try {
+          const stat = fs.statSync(dest);
+          if (stat.size < 1024 * 1024) { try { fs.unlinkSync(dest); } catch{} return reject(new Error('Downloaded file is only ' + stat.size + ' bytes — likely not a valid installer.')); }
+        } catch(e) { return reject(e); }
+        resolve();
+      }));
+      f.on('error', err => { try { fs.unlinkSync(dest); } catch{} reject(err); });
+      r.on('error', reject);
+    }).on('error', reject);
   });
 }
 function semverGt(a, b) {
