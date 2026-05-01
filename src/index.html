@@ -612,6 +612,35 @@ textarea { resize: vertical; min-height: 60px; }
   </div>
 </div>
 
+<!-- RESUME UNFINISHED RUN MODAL -->
+<div class="setup-overlay" id="resumeOverlay">
+  <div class="setup-box" style="max-width:520px">
+    <div class="setup-icon" style="background:var(--amber)">↺</div>
+    <div class="setup-title">Unfinished run found</div>
+    <div class="setup-sub" id="resumeSub" style="margin-bottom:18px">Loading…</div>
+    <div id="resumeDetails" style="background:rgba(255,255,255,0.04);border:1px solid var(--brd);border-radius:8px;padding:14px;margin-bottom:14px;font-size:12px;line-height:1.7">
+      <div><span style="color:var(--t3)">File:</span> <span id="resumeFile" style="color:var(--t1);font-weight:600"></span></div>
+      <div><span style="color:var(--t3)">Started:</span> <span id="resumeStarted" style="color:var(--t1)"></span></div>
+      <div><span style="color:var(--t3)">Last activity:</span> <span id="resumeLast" style="color:var(--t1)"></span></div>
+      <div><span style="color:var(--t3)">Progress:</span> <span id="resumeProgress" style="color:var(--t1);font-weight:600"></span></div>
+    </div>
+    <div id="resumeProfilePicker" style="display:none;background:rgba(255,180,0,0.08);border:1px solid var(--amber);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px">
+      <div style="margin-bottom:8px;color:var(--amber);font-weight:600">⚠ Original profile no longer exists</div>
+      <div style="margin-bottom:8px;color:var(--t2)">Choose a profile to resume with:</div>
+      <select id="resumeProfileSelect" style="width:100%;padding:8px;background:var(--bg2);border:1px solid var(--brd);color:var(--t1);border-radius:6px"></select>
+    </div>
+    <div id="resumeFileMissing" style="display:none;background:rgba(255,80,80,0.08);border:1px solid var(--red);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px;color:var(--red)">
+      ⚠ Spreadsheet file no longer at the original path. Resume is not possible — only Discard or Dismiss are available.
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn pri" id="resumeBtnResume" style="flex:1;min-width:120px" onclick="resumeChoice('resume')">▶ Resume</button>
+      <button class="btn" id="resumeBtnDiscard" style="flex:1;min-width:120px" onclick="resumeChoice('discard')">🗑 Discard</button>
+      <button class="btn" id="resumeBtnDismiss" style="flex:1;min-width:120px" onclick="resumeChoice('dismiss')">Dismiss</button>
+    </div>
+    <div style="font-size:10px;color:var(--t3);text-align:center;margin-top:10px">Discard removes the checkpoint (file untouched). Dismiss leaves it for next launch.</div>
+  </div>
+</div>
+
 <!-- TOPBAR -->
 <div class="topbar">
   <div class="tb-logo">
@@ -909,6 +938,7 @@ textarea { resize: vertical; min-height: 60px; }
       <div class="run-stat"><div class="run-stat-val" id="rs-rate">—</div><div class="run-stat-lbl">Rows/min</div></div>
       <div class="run-stat"><div class="run-stat-val" id="rs-eta">—</div><div class="run-stat-lbl">Est. left</div></div>
       <div class="run-stat"><div class="run-stat-val" id="rs-pct">0%</div><div class="run-stat-lbl">Complete</div></div>
+      <div class="run-stat"><div class="run-stat-val" id="rs-elapsed">-</div><div class="run-stat-lbl">Elapsed</div></div>
     </div>
     <div style="font-size:11px;font-weight:600;color:var(--t3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Live output</div>
     <div class="live-log" id="liveLog"></div>
@@ -1063,6 +1093,17 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (API.checkChromium) {
       const result = await API.checkChromium();
       if (!result.installed) document.getElementById('setupOverlay').classList.add('show');
+    }
+    // Resume-on-launch: scan for orphaned checkpoints and prompt user
+    if (API.findOrphanCheckpoints) {
+      try {
+        const orphans = await API.findOrphanCheckpoints();
+        for (const o of orphans) {
+          const action = await showResumePrompt(o);
+          if (action === 'resume') break; // resuming starts a run; don't prompt for further orphans this session
+          if (action === 'dismiss-all') break;
+        }
+      } catch(e) { console.error('Orphan checkpoint scan failed:', e); }
     }
   } catch(e) {
     console.error('Init error:', e);
@@ -1660,6 +1701,7 @@ function resetDryRunUI(){
 function updateDrProgress(total){const pct=total>0?Math.round(((dryRunPos+1)/total)*100):0;document.getElementById('drFill').style.width=pct+'%';}
 
 async function startRun(){
+  if(isRunning){alert('An automation is already running. Stop it first or wait for it to finish.');return;}
   if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
   if(!steps.length){alert('No steps defined. Build your flow first.');go('builder');return;}
   if(!ssPath){alert('No spreadsheet loaded. Import data first.');go('import');return;}
@@ -1668,6 +1710,7 @@ async function startRun(){
   const flowJson=JSON.stringify({allSteps:allSteps(),config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value}});
   runOk=0;runErr=0;runSkip=0;runRowsDone=0;runTotal=ssRowCount||0;runStartTime=Date.now();
   updateRunStats(0,0,0,0);
+  startElapsedTicker();
   document.getElementById('liveLog').innerHTML='';
   document.getElementById('runStatusMsg').textContent='Starting…';
   document.getElementById('runStatusMsg').style.color='var(--blue)';
@@ -1676,8 +1719,15 @@ async function startRun(){
   document.getElementById('pauseBtn').style.display='';
   document.getElementById('nb-run').style.display='';
   isRunning=true;isPaused=false;
+  refreshRunBtn();
   go('run');
-  if(API.startAutomation){
+  if(!API.startAutomation){
+    alert('Internal error: automation API not available.\n\nThis usually means BUU was launched incorrectly. Try fully quitting and relaunching BUU.\n\nIf the problem persists, BUU may need to be reinstalled.');
+    addLiveLog('FATAL: API.startAutomation is undefined — preload bridge is missing.','err');
+    runStopped();
+    return;
+  }
+  {
     const flow = JSON.parse(flowJson);
     const runId = Date.now().toString();
     const result = await API.startAutomation({
@@ -1699,7 +1749,132 @@ async function startRun(){
 }
 async function stopRun(){if(!confirm('Stop the automation? The current row will be abandoned and the log saved.'))return;if(API.stopAutomation)await API.stopAutomation();runStopped();}
 async function togglePause(){if(isPaused){if(API.resumeRun)await API.resumeRun();isPaused=false;document.getElementById('pauseBtn').textContent='⏸ Pause';document.getElementById('runStatusMsg').textContent='Running…';document.getElementById('runStatusMsg').style.color='var(--green)';}else{if(API.pauseRun)await API.pauseRun();isPaused=true;document.getElementById('pauseBtn').textContent='▶ Resume';document.getElementById('runStatusMsg').textContent='Paused';document.getElementById('runStatusMsg').style.color='var(--amber)';}}
-function runStopped(){isRunning=false;isPaused=false;document.getElementById('runBtn').style.display='';document.getElementById('stopBtn').style.display='none';document.getElementById('pauseBtn').style.display='none';document.getElementById('nb-run').style.display='none';document.getElementById('runStatusMsg').textContent='Stopped';document.getElementById('runStatusMsg').style.color='var(--red)';}
+function runStopped(){isRunning=false;isPaused=false;document.getElementById('runBtn').style.display='';document.getElementById('stopBtn').style.display='none';document.getElementById('pauseBtn').style.display='none';document.getElementById('nb-run').style.display='none';document.getElementById('runStatusMsg').textContent='Stopped';document.getElementById('runStatusMsg').style.color='var(--red)';refreshRunBtn();stopElapsedTicker();}
+
+// ── RESUME-ON-LAUNCH ──────────────────────────────────────────────────────
+// Tracks the orphan currently being decided on. Used by resumeChoice() callbacks.
+let _currentOrphan=null;
+let _resumeResolver=null;
+
+function fmtRelativeTime(iso){
+  if(!iso)return 'unknown';
+  const t=new Date(iso).getTime();if(!t)return iso;
+  const diff=(Date.now()-t)/1000;
+  if(diff<60)return Math.round(diff)+'s ago';
+  if(diff<3600)return Math.round(diff/60)+'m ago';
+  if(diff<86400)return Math.round(diff/3600)+'h ago';
+  return Math.round(diff/86400)+'d ago ('+new Date(iso).toLocaleString()+')';
+}
+
+async function showResumePrompt(orphan){
+  return new Promise(resolve=>{
+    _currentOrphan=orphan;
+    _resumeResolver=resolve;
+
+    document.getElementById('resumeFile').textContent=orphan.spreadsheetName||'(unknown)';
+    document.getElementById('resumeStarted').textContent=orphan.startedAt?new Date(orphan.startedAt).toLocaleString()+' ('+fmtRelativeTime(orphan.startedAt)+')':'unknown';
+    document.getElementById('resumeLast').textContent=orphan.ts?fmtRelativeTime(orphan.ts):'unknown';
+    const pct=orphan.totalRows>0?Math.round((orphan.rowIndex/orphan.totalRows)*100):0;
+    document.getElementById('resumeProgress').textContent=orphan.rowIndex.toLocaleString()+' of '+orphan.totalRows.toLocaleString()+' rows ('+pct+'%)';
+
+    // File-missing case: hide Resume, only Discard/Dismiss work
+    const fileMissing=document.getElementById('resumeFileMissing');
+    const resumeBtn=document.getElementById('resumeBtnResume');
+    if(!orphan.fileExists){fileMissing.style.display='';resumeBtn.disabled=true;resumeBtn.style.opacity='0.5';}
+    else{fileMissing.style.display='none';resumeBtn.disabled=false;resumeBtn.style.opacity='';}
+
+    // Profile-missing case: show profile picker
+    const profilePicker=document.getElementById('resumeProfilePicker');
+    if(!orphan.profileExists){
+      profilePicker.style.display='';
+      const sel=document.getElementById('resumeProfileSelect');
+      sel.innerHTML='';
+      if(profiles.length===0){sel.innerHTML='<option value="">No profiles configured — create one first</option>';resumeBtn.disabled=true;resumeBtn.style.opacity='0.5';}
+      else{profiles.forEach(p=>{const opt=document.createElement('option');opt.value=p.id;opt.textContent=p.name;sel.appendChild(opt);});}
+    }else{profilePicker.style.display='none';}
+
+    document.getElementById('resumeOverlay').classList.add('show');
+  });
+}
+
+async function resumeChoice(action){
+  if(!_currentOrphan||!_resumeResolver)return;
+  const orphan=_currentOrphan;
+  document.getElementById('resumeOverlay').classList.remove('show');
+
+  if(action==='discard'){
+    if(API.discardCheckpoint)await API.discardCheckpoint(orphan.checkpointPath);
+    _resumeResolver('discard');
+  }
+  else if(action==='dismiss'){
+    _resumeResolver('dismiss');
+  }
+  else if(action==='resume'){
+    let profileToUse=orphan.profileId;
+    if(!orphan.profileExists){
+      const sel=document.getElementById('resumeProfileSelect');
+      profileToUse=sel.value;
+      if(!profileToUse){alert('No profile selected.');document.getElementById('resumeOverlay').classList.add('show');return;}
+    }
+    _resumeResolver('resume');
+    // Hydrate full checkpoint and execute resume
+    await executeResume(orphan,profileToUse);
+  }
+  _currentOrphan=null;_resumeResolver=null;
+}
+
+async function executeResume(orphan,profileId){
+  if(!API.loadCheckpoint){alert('Resume not supported in this build.');return;}
+  const checkpoint=await API.loadCheckpoint(orphan.checkpointPath);
+  if(!checkpoint){alert('Could not load checkpoint — file may have been deleted.');return;}
+
+  // Hydrate UI state from checkpoint
+  steps=(checkpoint.flowSnapshot||[]).filter(s=>!s.locked);
+  ssPath=checkpoint.spreadsheetPath;
+  ssName=checkpoint.spreadsheetName||(ssPath.split(/[\\/]/).pop());
+  ssRowCount=checkpoint.totalRows||0;
+  setActiveProfile(profileId);
+  renderSteps();
+
+  // Reset run counters
+  runOk=0;runErr=0;runSkip=0;runRowsDone=checkpoint.rowIndex||0;
+  runTotal=checkpoint.totalRows||0;
+  runStartTime=Date.now();
+  updateRunStats(runRowsDone,0,0,0);
+  startElapsedTicker();
+  document.getElementById('liveLog').innerHTML='';
+  addLiveLog('Resuming run from row '+(checkpoint.rowIndex+1).toLocaleString()+' of '+runTotal.toLocaleString(),'info');
+  document.getElementById('runStatusMsg').textContent='Resuming…';
+  document.getElementById('runStatusMsg').style.color='var(--blue)';
+  document.getElementById('runBtn').style.display='none';
+  document.getElementById('stopBtn').style.display='';
+  document.getElementById('pauseBtn').style.display='';
+  document.getElementById('nb-run').style.display='';
+  isRunning=true;isPaused=false;
+  refreshRunBtn();
+  go('run');
+
+  // Discard the old checkpoint — the resumed run will write its own (new runId)
+  if(API.discardCheckpoint)await API.discardCheckpoint(orphan.checkpointPath);
+
+  // Spawn the runner with resumeFromRow set
+  const runId=Date.now().toString();
+  const result=await API.startAutomation({
+    stepsJson:JSON.stringify(checkpoint.flowSnapshot||[]),
+    spreadsheetPath:checkpoint.spreadsheetPath,
+    profileId:profileId,
+    headless:!!checkpoint.headless,
+    runId,
+    resumeFromRow:checkpoint.rowIndex||0,
+    errHandle:checkpoint.errHandle||'stop',
+    rowDelayMin:checkpoint.rowDelayMin||1,
+    rowDelayMax:checkpoint.rowDelayMax||3,
+  });
+  if(!result.ok){alert('Failed to resume: '+(result.error||'Unknown error'));runStopped();return;}
+  currentLogPath=result.logPath;
+  document.getElementById('openLogBtn').style.display='';
+  document.getElementById('openLastLogBtn').style.display='';
+}
 
 function handleRunEvent(evt){
   if(evt.type==='start'){runTotal=evt.totalRows||0;updateRunStats(0,0,0,0);addLiveLog('Starting — '+runTotal.toLocaleString()+' rows','info');}
@@ -1709,12 +1884,26 @@ function handleRunEvent(evt){
   else if(evt.type==='row-error'){runRowsDone=evt.rowIndex;runErr=evt.errs||runErr+1;runOk=evt.ok||runOk;runSkip=evt.skipped||runSkip;addLiveLog('✗ Row '+evt.rowIndex+' FAILED: '+evt.error,'err');addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:'error',duration:0,url:evt.url||'',fieldsWritten:'',failedStep:evt.failedStep||'',error:evt.error||''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
   else if(evt.type==='row-retry'){addLiveLog('↺ Retrying row '+evt.rowIndex+'…','warn');}
   else if(evt.type==='dialog'){addLiveLog('Dialog: '+evt.message+' → '+evt.action,'warn');}
+  else if(evt.type==='log-error'){addLiveLog('⚠ Excel log save FAILED: '+(evt.message||'unknown')+' — check the logs folder. The run is continuing but its Excel report may be incomplete or absent.','err');}
+  else if(evt.type==='heartbeat'){
+    // Quiet "still alive" signal — updates status during slow phases (login, cleanup) but stays out of the way during active rows so row-start/row-done events keep status fresh.
+    if(evt.phase==='logging-in'){document.getElementById('runStatusMsg').textContent='Logging in…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
+    else if(evt.phase==='starting'){document.getElementById('runStatusMsg').textContent='Starting…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
+    else if(evt.phase==='cleanup'){document.getElementById('runStatusMsg').textContent='Logging out and saving…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
+  }
   else if(evt.type==='fatal'){addLiveLog('FATAL: '+evt.error,'err');document.getElementById('runStatusMsg').textContent='Fatal error — stopped';document.getElementById('runStatusMsg').style.color='var(--red)';runStopped();}
   else if(evt.type==='complete'){const processed=evt.ok+evt.errs+evt.skipped;const msg='Complete — '+processed+' rows ('+evt.ok+' ok, '+evt.errs+' errors, '+evt.skipped+' skipped)';addLiveLog(msg,'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color='var(--green)';document.getElementById('runProgBar').style.width='100%';document.getElementById('rs-pct').textContent='100%';runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log: '+evt.logPath,'info');}}
   else if(evt.type==='done'||evt.type==='closed'){if(isRunning){addLiveLog('Process exited (code '+( evt.code||0)+')','warn');runStopped();}if(evt.logPath&&!currentLogPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';}}
 }
 function addLiveLog(msg,type){const log=document.getElementById('liveLog');const cls=type==='ok'?'log-ok':type==='err'?'log-err':type==='warn'?'log-warn':'log-info';const time=new Date().toLocaleTimeString();log.innerHTML+='<span class="' + cls + '">[' + time + '] ' + msg + '</span>\n';log.scrollTop=log.scrollHeight;const lines=log.innerHTML.split('\n');if(lines.length>220)log.innerHTML=lines.slice(-200).join('\n');}
-function updateRunStats(done,ok,err,skip){document.getElementById('rs-done').textContent=done.toLocaleString();document.getElementById('rs-ok').textContent=ok.toLocaleString();document.getElementById('rs-err').textContent=err.toLocaleString();document.getElementById('rs-skip').textContent=skip.toLocaleString();if(runTotal>0){const pct=Math.round(done/runTotal*100);document.getElementById('runProgBar').style.width=pct+'%';document.getElementById('rs-pct').textContent=pct+'%';}if(done>0&&runStartTime){const elapsed=(Date.now()-runStartTime)/1000/60;const rate=Math.round(done/elapsed);document.getElementById('rs-rate').textContent=rate.toLocaleString();if(runTotal>0){const remaining=runTotal-done;const etaMin=rate>0?Math.round(remaining/rate):0;document.getElementById('rs-eta').textContent=etaMin>60?Math.round(etaMin/60)+'h':etaMin+'m';}}}
+// Elapsed-time ticker — refreshes the elapsed display every second while a run is active.
+// Reads runStartTime locally; doesn't depend on runner events, so it stays accurate during
+// silent phases (login, navigation, slow waits).
+let elapsedTicker=null;
+function fmtElapsed(ms){const sec=Math.floor(ms/1000);const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h>0?(h+'h '+m+'m'):(m>0?(m+'m '+s+'s'):(s+'s'));}
+function startElapsedTicker(){stopElapsedTicker();const el=document.getElementById('rs-elapsed');if(!el)return;elapsedTicker=setInterval(function(){if(!runStartTime){el.textContent='-';return;}el.textContent=fmtElapsed(Date.now()-runStartTime);},1000);}
+function stopElapsedTicker(){if(elapsedTicker){clearInterval(elapsedTicker);elapsedTicker=null;}}
+function updateRunStats(done,ok,err,skip){document.getElementById('rs-done').textContent=done.toLocaleString();document.getElementById('rs-ok').textContent=ok.toLocaleString();document.getElementById('rs-err').textContent=err.toLocaleString();document.getElementById('rs-skip').textContent=skip.toLocaleString();if(runTotal>0){const pct=Math.round(done/runTotal*100);document.getElementById('runProgBar').style.width=pct+'%';document.getElementById('rs-pct').textContent=pct+'%';}if(done>0&&runStartTime&&runStartTime>0){const elapsed=(Date.now()-runStartTime)/1000/60;const rate=elapsed>0?Math.round(done/elapsed):0;document.getElementById('rs-rate').textContent=rate.toLocaleString();if(runTotal>0){const remaining=runTotal-done;const etaMin=rate>0?Math.round(remaining/rate):0;document.getElementById('rs-eta').textContent=etaMin>60?Math.round(etaMin/60)+'h':etaMin+'m';}}}
 function addLogTableEntry(entry){logEntries.push(entry);if(logEntries.length>500)logEntries=logEntries.slice(-500);const tbody=document.getElementById('logBody');if(tbody.querySelector('td[colspan]'))tbody.innerHTML='';const tr=document.createElement('tr');const sc=entry.status==='ok'?'s-ok':entry.status==='error'?'s-err':'s-skip';const rc=entry.status==='ok'?'row-ok':entry.status==='error'?'row-err':'row-skip';tr.className=rc;tr.innerHTML='<td>' + logEntries.length + '</td><td>' + new Date(entry.timestamp).toLocaleTimeString() + '</td><td>' + entry.row + '</td><td class="' + sc + '">' + entry.status + '</td><td>' + (entry.duration?entry.duration+'ms':'') + '</td><td title="' + (entry.url||'') + '" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (entry.url||'') + '</td><td style="font-size:10px;color:var(--t2)">' + (entry.fieldsWritten||'') + '</td><td style="font-size:10px;color:var(--red)">' + (entry.failedStep||'') + '</td><td style="font-size:10px;color:var(--red)">' + (entry.error||'') + '</td>';tbody.appendChild(tr);const nb=document.getElementById('nb-log');nb.style.display='';nb.textContent=logEntries.length;}
 function openCurrentLog(){if(currentLogPath&&API.openFile)API.openFile(currentLogPath);}
 function openLogsFolder(){if(API.openLogsFolder)API.openLogsFolder();}

@@ -7,12 +7,15 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.2.2';
+const CURRENT_VERSION = '1.2.3';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
 let mainWindow;
-let automationProcess = null;
+// Map of runId -> { process, runId, profileId, logPath, startedAt, runnerLogStream, runnerPath, credPath }
+// For v1.2.3 only one entry can exist at a time; v1.3.0 will lift this cap.
+const MAX_CONCURRENT_RUNS = 1;
+const automationProcesses = new Map();
 let keytar = null;
 try { keytar = require('keytar'); } catch(e) {}
 
@@ -141,11 +144,65 @@ ipcMain.handle('install-chromium', async () => {
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax }) => {
+  // Concurrency guard — refuse if at cap. Prevents zombie runners.
+  if (automationProcesses.size >= MAX_CONCURRENT_RUNS) {
+    const running = Array.from(automationProcesses.values())[0];
+    const startedTime = running ? new Date(running.startedAt).toLocaleTimeString() : 'unknown';
+    return { ok: false, error: `Another automation is already running (started ${startedTime}). Stop it first or wait for it to finish.` };
+  }
   const steps = JSON.parse(stepsJson);
   const logPath = path.join(getLogsDir(), `BUU-log-${new Date().toISOString().slice(0,10)}-${runId}.xlsx`);
   const checkpointPath = path.join(app.getPath('userData'), `checkpoint-${runId}.json`);
   const runnerPath = path.join(os.tmpdir(), `buu-runner-${runId}.js`);
   const credPath = path.join(os.tmpdir(), `buu-cred-${runId}.enc`);
+
+  // Open the runner log FIRST so any pre-spawn failure is captured.
+  // (Was opened later — meaning chromium-not-found and other early errors left no trace.)
+  const runnerLogPath = path.join(getLogsDir(), `buu-runner-${runId}.log`);
+  let runnerLogStream;
+  try {
+    runnerLogStream = fs.createWriteStream(runnerLogPath, { flags: 'a' });
+    runnerLogStream.write(`[${new Date().toISOString()}] start-automation called: runId=${runId} profileId=${profileId} spreadsheetPath=${spreadsheetPath}\n`);
+  } catch (e) {
+    return { ok: false, error: 'Cannot create runner log file at ' + runnerLogPath + ': ' + e.message };
+  }
+
+  // Expanded checkpoint v2 — written once at run start with full context so the run
+  // can be resumed even after a crash, restart, or normal stop. The runner only updates
+  // rowIndex/ts inside, never overwriting the context fields.
+  let totalRowsForCheckpoint = 0;
+  try {
+    const probe = require('xlsx');
+    const ext = path.extname(spreadsheetPath).toLowerCase();
+    if (ext === '.csv') {
+      totalRowsForCheckpoint = Math.max(0, fs.readFileSync(spreadsheetPath, 'utf8').split('\n').filter(Boolean).length - 1);
+    } else {
+      const wb = probe.readFile(spreadsheetPath);
+      totalRowsForCheckpoint = probe.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]).length;
+    }
+  } catch {}
+  try {
+    fs.writeFileSync(checkpointPath, JSON.stringify({
+      schemaVersion: 2,
+      runId,
+      profileId,
+      spreadsheetPath,
+      spreadsheetName: path.basename(spreadsheetPath),
+      flowSnapshot: steps,
+      headless: !!headless,
+      errHandle: errHandle || 'stop',
+      rowDelayMin: rowDelayMin || 1,
+      rowDelayMax: rowDelayMax || 3,
+      totalRows: totalRowsForCheckpoint,
+      startedAt: new Date().toISOString(),
+      rowIndex: resumeFromRow || 0,
+      ts: new Date().toISOString(),
+      logPath,
+    }));
+  } catch (e) {
+    // Non-fatal — run still proceeds without resume capability if userData is read-only
+    console.error('Failed to write initial checkpoint:', e.message);
+  }
 
   // Write credentials to temp encrypted file
   const all = readAllProfiles();
@@ -160,10 +217,10 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   // Get chromium path FIRST before anything else
   const chromiumExe = getBundledChromiumPath();
   if (!chromiumExe) {
-    mainWindow?.webContents.send('automation-event', {
-      type: 'error',
-      message: `Browser engine not found. Expected at: ${path.join(process.resourcesPath || '', 'chromium', 'chrome.exe')}. Please reinstall the application.`
-    });
+    const errMsg = `Browser engine not found. Expected at: ${path.join(process.resourcesPath || '', 'chromium', 'chrome.exe')}. Please reinstall the application.`;
+    runnerLogStream.write(`[${new Date().toISOString()}] FATAL: ${errMsg}\n`);
+    runnerLogStream.end();
+    mainWindow?.webContents.send('automation-event', { type: 'error', message: errMsg });
     mainWindow?.webContents.send('automation-event', { type: 'done', code: 1, logPath });
     try { fs.unlinkSync(credPath); } catch {}
     return { ok: false, error: 'Chromium not found' };
@@ -187,34 +244,38 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   // Pass ELECTRON_RUN_AS_NODE=1 so Electron acts as plain Node for the runner.
   env.ELECTRON_RUN_AS_NODE = '1';
 
-  const runnerLogPath = path.join(getLogsDir(), `buu-runner-${runId}.log`);
-  const runnerLogStream = fs.createWriteStream(runnerLogPath, { flags: 'a' });
-  runnerLogStream.write(`[${new Date().toISOString()}] Runner starting\n`);
+  // Append spawn-time details to the already-open runner log
+  runnerLogStream.write(`[${new Date().toISOString()}] Runner spawning\n`);
   runnerLogStream.write(`[${new Date().toISOString()}] execPath: ${process.execPath}\n`);
   runnerLogStream.write(`[${new Date().toISOString()}] runnerPath: ${runnerPath}\n`);
   runnerLogStream.write(`[${new Date().toISOString()}] ELECTRON_RUN_AS_NODE: ${env.ELECTRON_RUN_AS_NODE}\n`);
   runnerLogStream.write(`[${new Date().toISOString()}] NODE_PATH: ${env.NODE_PATH}\n`);
 
-  automationProcess = spawn(process.execPath, [runnerPath, spreadsheetPath, credPath], {
+  automationProcesses.set(runId, { process: null, runId, profileId, logPath, startedAt: Date.now(), runnerLogStream, runnerPath, credPath });
+
+  const proc = spawn(process.execPath, [runnerPath, spreadsheetPath, credPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
   });
+  // Update Map entry with the live process handle
+  const entry = automationProcesses.get(runId);
+  if (entry) entry.process = proc;
 
-  automationProcess.stderr.on('data', data => {
+  proc.stderr.on('data', data => {
     runnerLogStream.write(`[STDERR] ${String(data)}\n`);
     mainWindow?.webContents.send('automation-event', { type: 'stderr', message: String(data) });
   });
-  automationProcess.stdout.on('data', data => {
+  proc.stdout.on('data', data => {
     runnerLogStream.write(`[STDOUT] ${String(data)}\n`);
     String(data).split('\n').filter(Boolean).forEach(line => {
       try { mainWindow?.webContents.send('automation-event', JSON.parse(line)); } catch {}
     });
   });
-  automationProcess.on('close', code => {
+  proc.on('close', code => {
     runnerLogStream.write(`[${new Date().toISOString()}] Runner exited with code: ${code}\n`);
     runnerLogStream.end();
-    mainWindow?.webContents.send('automation-event', { type: 'done', code, logPath });
-    automationProcess = null;
+    mainWindow?.webContents.send('automation-event', { type: 'done', code, logPath, runId });
+    automationProcesses.delete(runId);
     try { fs.unlinkSync(runnerPath); } catch {}
     try { fs.unlinkSync(credPath); } catch {}
   });
@@ -222,15 +283,78 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   return { ok: true, logPath };
 });
 
-ipcMain.handle('stop-automation', () => {
-  if (automationProcess) { automationProcess.kill(); automationProcess = null; }
-  return { ok: true };
+ipcMain.handle('stop-automation', (_, payload) => {
+  const targetRunId = payload && payload.runId;
+  if (targetRunId) {
+    const entry = automationProcesses.get(targetRunId);
+    if (entry && entry.process) { try { entry.process.kill(); } catch {} }
+    automationProcesses.delete(targetRunId);
+    return { ok: true, stopped: entry ? 1 : 0 };
+  }
+  // No runId given -> stop all (preserves v1.2.2 behavior)
+  let stopped = 0;
+  for (const [, entry] of automationProcesses) {
+    if (entry.process) { try { entry.process.kill(); stopped++; } catch {} }
+  }
+  automationProcesses.clear();
+  return { ok: true, stopped };
 });
 
 ipcMain.handle('get-checkpoint', (_, runId) => {
   const p = path.join(app.getPath('userData'), `checkpoint-${runId}.json`);
   if (!fs.existsSync(p)) return null;
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+});
+
+// Find orphaned v2 checkpoints — runs that didn't complete cleanly.
+// Returns an array of { runId, ts, startedAt, spreadsheetPath, spreadsheetName, profileId, rowIndex, totalRows, checkpointPath, profileExists, fileExists }
+// Old (v1) checkpoints with only {rowIndex, ts} are filtered out — they predate this feature.
+ipcMain.handle('find-orphan-checkpoints', () => {
+  const dir = app.getPath('userData');
+  const orphans = [];
+  if (!fs.existsSync(dir)) return orphans;
+  let files;
+  try { files = fs.readdirSync(dir); } catch { return orphans; }
+  const allProfiles = readAllProfiles();
+  for (const f of files) {
+    if (!/^checkpoint-.+\.json$/.test(f)) continue;
+    const checkpointPath = path.join(dir, f);
+    try {
+      const c = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+      // Skip v1 (no schemaVersion or no flowSnapshot) — can't resume those
+      if (c.schemaVersion !== 2 || !c.flowSnapshot || !c.spreadsheetPath) continue;
+      // Skip if currently running
+      if (automationProcesses.has(c.runId)) continue;
+      orphans.push({
+        runId: c.runId,
+        ts: c.ts,
+        startedAt: c.startedAt,
+        spreadsheetPath: c.spreadsheetPath,
+        spreadsheetName: c.spreadsheetName || path.basename(c.spreadsheetPath),
+        profileId: c.profileId,
+        rowIndex: c.rowIndex || 0,
+        totalRows: c.totalRows || 0,
+        checkpointPath,
+        profileExists: !!allProfiles.find(p => p.id === c.profileId),
+        fileExists: fs.existsSync(c.spreadsheetPath),
+      });
+    } catch {}
+  }
+  // Most recent first
+  orphans.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+  return orphans;
+});
+
+// Hydrate the full checkpoint (including flowSnapshot) for a Resume action.
+// Separate from find-orphan-checkpoints to keep the orphan list payload small.
+ipcMain.handle('load-checkpoint', (_, checkpointPath) => {
+  if (!checkpointPath || !fs.existsSync(checkpointPath)) return null;
+  try { return JSON.parse(fs.readFileSync(checkpointPath, 'utf8')); } catch { return null; }
+});
+
+ipcMain.handle('discard-checkpoint', (_, checkpointPath) => {
+  try { if (checkpointPath && fs.existsSync(checkpointPath)) fs.unlinkSync(checkpointPath); return { ok: true }; }
+  catch (e) { return { ok: false, error: e.message }; }
 });
 
 // ── LIVE DRY RUN ───────────────────────────────────────────────────────────
@@ -346,7 +470,11 @@ const ROW_DELAY_MAX = ${Math.round(parseFloat(rowDelayMax) * 1000)};
 const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32);
 function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
 function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
-function saveChk(row){try{fs.writeFileSync(CHECKPOINT,JSON.stringify({rowIndex:row,ts:new Date().toISOString()}));}catch{}}
+function saveChk(row){try{
+  let prev={};try{prev=JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));}catch{}
+  prev.rowIndex=row;prev.ts=new Date().toISOString();
+  fs.writeFileSync(CHECKPOINT,JSON.stringify(prev));
+}catch{}}
 
 const ALL_STEPS = ${JSON.stringify(steps)};
 const LOGIN_STEPS = ALL_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
@@ -356,25 +484,47 @@ const LOGOUT_STEP = ALL_STEPS.find(s => s.type === 'pestpac-logout') || {type:'p
 let logEntries=[], flushTimer=null;
 function addLog(e){logEntries.push(e);if(logEntries.length%100===0)flush();else{clearTimeout(flushTimer);flushTimer=setTimeout(flush,3000);}}
 function flush(){
-  if(!logEntries.length)return;
-  try{
-    const wb=XLSX.utils.book_new();
-    const ok=logEntries.filter(e=>e.status==='ok'||e.status==='ok (retry)');
-    const errs=logEntries.filter(e=>e.status==='error');
-    const skipped=logEntries.filter(e=>e.status==='skip');
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([
-      {Metric:'Total processed',Value:logEntries.length},
-      {Metric:'Successful',Value:ok.length},
-      {Metric:'Errors',Value:errs.length},
-      {Metric:'Skipped',Value:skipped.length},
-      {Metric:'Success rate',Value:logEntries.length?Math.round(ok.length/logEntries.length*100)+'%':'N/A'},
-      {Metric:'Last updated',Value:new Date().toLocaleString()},
-    ]),'Summary');
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(logEntries),'All rows');
-    if(errs.length)XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(errs),'Errors only');
-    if(skipped.length)XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(skipped),'Skipped');
-    XLSX.writeFile(wb,LOG_PATH);
-  }catch(e){emit({type:'log-error',message:e.message});}
+  // Always write at least a Summary sheet, even with zero rows, so the user
+  // has evidence the run happened. Previously returned early on empty logEntries,
+  // which meant a run that died before any row completed produced no Excel log.
+  let attempt=0;
+  const maxAttempts=3;
+  while(attempt<maxAttempts){
+    attempt++;
+    try{
+      const wb=XLSX.utils.book_new();
+      const ok=logEntries.filter(e=>e.status==='ok'||e.status==='ok (retry)');
+      const errs=logEntries.filter(e=>e.status==='error');
+      const skipped=logEntries.filter(e=>e.status==='skip');
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([
+        {Metric:'Total processed',Value:logEntries.length},
+        {Metric:'Successful',Value:ok.length},
+        {Metric:'Errors',Value:errs.length},
+        {Metric:'Skipped',Value:skipped.length},
+        {Metric:'Success rate',Value:logEntries.length?Math.round(ok.length/logEntries.length*100)+'%':'N/A'},
+        {Metric:'Last updated',Value:new Date().toLocaleString()},
+        {Metric:'Phase at last flush',Value:(typeof _hbState!=='undefined'&&_hbState&&_hbState.phase)||'unknown'},
+      ]),'Summary');
+      if(logEntries.length){
+        XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(logEntries),'All rows');
+        if(errs.length)XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(errs),'Errors only');
+        if(skipped.length)XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(skipped),'Skipped');
+      } else {
+        XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([
+          {Note:'No rows were processed before this log was flushed. Check the runner log (.log file in the same folder) for diagnostic details.'}
+        ]),'Note');
+      }
+      XLSX.writeFile(wb,LOG_PATH);
+      return;
+    }catch(e){
+      if(attempt>=maxAttempts){
+        emit({type:'log-error',message:e.message+' (after '+attempt+' attempts at '+LOG_PATH+')'});
+        return;
+      }
+      // Likely a file lock (Excel/OneDrive). Wait briefly and retry.
+      const wait=Date.now()+800;while(Date.now()<wait){}
+    }
+  }
 }
 
 async function* streamRows(fp){
@@ -529,9 +679,18 @@ async function main(){
   const totalRows=await countRows(SPREADSHEET);
   emit({type:'start',totalRows,resumeFrom:RESUME_FROM});
 
+  // Heartbeat — emit every 5 seconds so the UI can tell the runner is alive
+  // even during slow operations like login or page navigation.
+  let _hbState={phase:'starting',rowIndex:0,totalRows:totalRows,startedAt:Date.now()};
+  const _heartbeat=setInterval(function(){
+    emit({type:'heartbeat',phase:_hbState.phase,rowIndex:_hbState.rowIndex,totalRows:_hbState.totalRows,elapsed:Date.now()-_hbState.startedAt});
+  },5000);
+  process.on('exit',function(){clearInterval(_heartbeat);});
+
   const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
   if (!fs.existsSync(CHROMIUM_EXE)) {
     emit({ type: 'fatal', error: 'Bundled browser not found at: ' + CHROMIUM_EXE });
+    flush();
     process.exit(1);
   }
   emit({ type: 'log', message: 'Using browser: ' + CHROMIUM_EXE });
@@ -540,15 +699,18 @@ async function main(){
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
 
   // Run login steps once before the row loop
+  _hbState.phase='logging-in';
   for(const step of LOGIN_STEPS){
     try{ await runStep(page,step,{},creds); }
-    catch(e){ emit({type:'fatal',error:'Login failed at step '+( step._label||step.type)+': '+e.message}); await browser.close(); process.exit(1); }
+    catch(e){ emit({type:'fatal',error:'Login failed at step '+( step._label||step.type)+': '+e.message}); flush(); await browser.close(); process.exit(1); }
   }
 
   try{
+    _hbState.phase='running';
     for await(const row of streamRows(SPREADSHEET)){
       ri++;
       if(ri<=RESUME_FROM)continue;
+      _hbState.rowIndex=ri;
       saveChk(ri);
       emit({type:'row-start',rowIndex:ri,rowNum:ri,totalRows,url:row.URL||row.url||''});
       const t0=Date.now();
@@ -584,15 +746,17 @@ async function main(){
       if(ri<totalRows){const delay=Math.floor(Math.random()*(ROW_DELAY_MAX-ROW_DELAY_MIN+1))+ROW_DELAY_MIN;await page.waitForTimeout(delay);}
     }
   }finally{
+    _hbState.phase='cleanup';
     flush();
     try{fs.unlinkSync(CHECKPOINT);}catch{}
     try{await runStep(page,LOGOUT_STEP,{},creds);}catch{}
     await browser.close();
+    clearInterval(_heartbeat);
   }
   emit({type:'complete',totalRows:ri,ok,errs,skipped,elapsed:Date.now()-start,logPath:LOG_PATH});
 }
 
-main().catch(e=>{emit({type:'fatal',error:e.message});process.exit(1);});
+main().catch(e=>{emit({type:'fatal',error:e.message});try{flush();}catch{}process.exit(1);});
 `;
 }
 

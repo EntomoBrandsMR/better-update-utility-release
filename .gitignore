@@ -16,3 +16,8 @@ npm-debug.log*
 .env.local
 credentials.enc
 *.exe
+
+# Workspace folders / one-off scripts (not part of BUU source)
+scripts/
+upcoming/
+_asar-installed/

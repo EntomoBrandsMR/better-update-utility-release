@@ -1,5 +1,5 @@
 {
-  "version": "1.2.2",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.2.2/Better.Update.Utility.Setup.1.2.2.exe",
-  "notes": "v1.2.2 — Critical fix: auto-updater now follows GitHub release CDN redirects (was downloading a tiny redirect response and trying to run it as an installer, causing 'This app can't run on your PC'). Also verifies HTTP 200, waits for file flush, and rejects suspiciously tiny downloads. Includes all v1.2.1 fixes (login loop, logout-once, navigate URL log)."
+  "version": "1.2.3",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.2.3/Better.Update.Utility.Setup.1.2.3.exe",
+  "notes": "v1.2.3 — Major reliability and visibility release. Forces icon embedding via post-build rcedit step (was silently failing); adds backend run-guard that prevents zombie runners; UI now early-exits if a run is already active; runner emits 5-second heartbeat and phase tracking (so 'Logging in...' and 'Cleanup' show up in the status); live counters now include Elapsed time that ticks every second; resume-on-launch detects orphaned checkpoints and prompts to Resume / Discard / Dismiss with full file/profile/progress context; checkpoint format now captures full run context (flow snapshot, file path, profile, settings) so resume works even after a crash; UI loud-fails if the automation API isn't bridged to the renderer (was silently doing nothing); runner log file is created BEFORE the chromium check so pre-spawn failures get logged; Excel run log now writes a Summary sheet even with zero rows processed and retries up to 3 times on file lock; UI surfaces log-error events so silent log-write failures are visible."
 }
