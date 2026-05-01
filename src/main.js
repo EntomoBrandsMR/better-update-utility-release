@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.2.3';
+const CURRENT_VERSION = '1.2.4';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -143,7 +143,9 @@ ipcMain.handle('install-chromium', async () => {
 
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
-ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax }) => {
+ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, startMode }) => {
+  // startMode: 'step' | 'step-row' | 'run-all'  (added v1.2.4). Defaults to 'run-all' for back-compat.
+  startMode = startMode || 'run-all';
   // Concurrency guard — refuse if at cap. Prevents zombie runners.
   if (automationProcesses.size >= MAX_CONCURRENT_RUNS) {
     const running = Array.from(automationProcesses.values())[0];
@@ -227,7 +229,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   }
 
   // Write runner script with chromium path baked in
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'stop', rowDelayMin || 1, rowDelayMax || 3, chromiumExe);
+  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'stop', rowDelayMin || 1, rowDelayMax || 3, chromiumExe, startMode);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env };
@@ -254,7 +256,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   automationProcesses.set(runId, { process: null, runId, profileId, logPath, startedAt: Date.now(), runnerLogStream, runnerPath, credPath });
 
   const proc = spawn(process.execPath, [runnerPath, spreadsheetPath, credPath], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     env,
   });
   // Update Map entry with the live process handle
@@ -298,6 +300,27 @@ ipcMain.handle('stop-automation', (_, payload) => {
   }
   automationProcesses.clear();
   return { ok: true, stopped };
+});
+
+// Send a control command to a running runner via stdin (v1.2.4).
+// cmd: 'next-step' | 'next-row' | 'run-all' | 'stop'
+// If runId is omitted, applies to the (currently single) running runner.
+ipcMain.handle('run-control', (_, payload) => {
+  const { runId, cmd } = payload || {};
+  if (!cmd) return { ok: false, error: 'Missing cmd' };
+  let entry = null;
+  if (runId) {
+    entry = automationProcesses.get(runId);
+  } else {
+    entry = Array.from(automationProcesses.values())[0] || null;
+  }
+  if (!entry || !entry.process) return { ok: false, error: 'No running automation' };
+  try {
+    entry.process.stdin.write(JSON.stringify({ cmd }) + '\n');
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 });
 
 ipcMain.handle('get-checkpoint', (_, runId) => {
@@ -357,84 +380,8 @@ ipcMain.handle('discard-checkpoint', (_, checkpointPath) => {
   catch (e) { return { ok: false, error: e.message }; }
 });
 
-// ── LIVE DRY RUN ───────────────────────────────────────────────────────────
-let dryRunProcess = null;
-
-ipcMain.handle('start-live-dryrun', async (_, { stepsJson, profileId, spreadsheetPath, startRow }) => {
-  if (dryRunProcess) { try { dryRunProcess.kill(); } catch {} dryRunProcess = null; }
-
-  const steps = JSON.parse(stepsJson);
-  const chromiumExe = getBundledChromiumPath();
-  if (!chromiumExe) return { ok: false, error: 'Chromium not found' };
-
-  const all = readAllProfiles();
-  const prof = all.find(p => p.id === profileId) || {};
-  if (keytar) {
-    prof.companyKey = await keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
-    prof.username   = await keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
-    prof.password   = await keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
-  }
-
-  const nodeModulesPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
-    : path.join(__dirname, '..', 'node_modules');
-
-  const runnerPath = path.join(os.tmpdir(), `buu-dryrun-${Date.now()}.js`);
-  const script = buildDryRunner(steps, prof, spreadsheetPath, startRow || 0, chromiumExe, nodeModulesPath);
-  fs.writeFileSync(runnerPath, script);
-
-  const env = { ...process.env, NODE_PATH: nodeModulesPath, BUU_NODE_MODULES: nodeModulesPath, ELECTRON_RUN_AS_NODE: '1' };
-
-  dryRunProcess = spawn(process.execPath, [runnerPath], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env,
-  });
-
-  dryRunProcess.stdout.on('data', data => {
-    String(data).split('\n').filter(Boolean).forEach(line => {
-      try { mainWindow?.webContents.send('dryrun-event', JSON.parse(line)); } catch {}
-    });
-  });
-  dryRunProcess.stderr.on('data', data => {
-    mainWindow?.webContents.send('dryrun-event', { type: 'stderr', message: String(data) });
-  });
-  dryRunProcess.on('close', code => {
-    mainWindow?.webContents.send('dryrun-event', { type: 'closed', code });
-    dryRunProcess = null;
-    try { fs.unlinkSync(runnerPath); } catch {}
-  });
-  dryRunProcess.on('error', e => {
-    mainWindow?.webContents.send('dryrun-event', { type: 'fatal', error: e.message });
-  });
-
-  return { ok: true };
-});
-
-ipcMain.handle('dryrun-next', () => {
-  if (!dryRunProcess) return { ok: false, error: 'No dry run active' };
-  try { dryRunProcess.stdin.write('next\n'); return { ok: true }; }
-  catch (e) { return { ok: false, error: e.message }; }
-});
-
-ipcMain.handle('dryrun-nextrow', () => {
-  if (!dryRunProcess) return { ok: false, error: 'No dry run active' };
-  try { dryRunProcess.stdin.write('next-row\n'); return { ok: true }; }
-  catch (e) { return { ok: false, error: e.message }; }
-});
-
-ipcMain.handle('dryrun-runall', () => {
-  if (!dryRunProcess) return { ok: false, error: 'No dry run active' };
-  try { dryRunProcess.stdin.write('run-all\n'); return { ok: true }; }
-  catch (e) { return { ok: false, error: e.message }; }
-});
-
-ipcMain.handle('stop-dryrun', () => {
-  if (dryRunProcess) { try { dryRunProcess.kill(); } catch {} dryRunProcess = null; }
-  return { ok: true };
-});
-
 // ── RUNNER SCRIPT BUILDER ─────────────────────────────────────────────────────
-function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath) {
+function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode) {
   return `
 'use strict';
 const fs = require('fs');
@@ -466,6 +413,57 @@ const HEADLESS = ${headless};
 const ERR_HANDLE = ${JSON.stringify(errHandle)};
 const ROW_DELAY_MIN = ${Math.round(parseFloat(rowDelayMin) * 1000)};
 const ROW_DELAY_MAX = ${Math.round(parseFloat(rowDelayMax) * 1000)};
+
+// Run-mode state machine (v1.2.4).
+// START_MODE is the initial mode; currentMode is mutated by stdin commands.
+// Modes: 'step' = pause before each action; 'step-row' = pause after each row;
+//        'run-all' = no pausing; 'stop' = clean shutdown requested.
+const START_MODE = ${JSON.stringify(startMode || 'run-all')};
+let currentMode = START_MODE;
+
+// Stdin command reader. Each line is a JSON object: {"cmd":"next-step"|"next-row"|"run-all"|"stop"}.
+// 'next-step' / 'next-row' resolve a pending pause without changing mode.
+// 'run-all' switches mode to run-all (and resolves any pending pause).
+// 'stop' switches mode to stop and resolves any pending pause; the loop checks for it.
+const _readline = require('readline');
+let _pendingResolve = null;
+const _rl = _readline.createInterface({ input: process.stdin, terminal: false });
+_rl.on('line', function(line){
+  let msg;
+  try { msg = JSON.parse(line); } catch(e) { return; }
+  if (!msg || !msg.cmd) return;
+  if (msg.cmd === 'run-all') currentMode = 'run-all';
+  if (msg.cmd === 'stop') currentMode = 'stop';
+  if (_pendingResolve) { const r = _pendingResolve; _pendingResolve = null; r(msg.cmd); }
+});
+function waitForCommand(){
+  if (currentMode === 'run-all' || currentMode === 'stop') return Promise.resolve('auto');
+  return new Promise(function(r){ _pendingResolve = r; });
+}
+
+// Resolve a preview snapshot of what's about to happen, used during pauses.
+// Mirrors the substitution logic in runStep's r() but does not touch the page.
+function resolvePreview(step, row, creds){
+  const r = function(v){
+    if(!v) return '';
+    return v.replace(/{{CRED:companyKey}}/g, creds.companyKey||'')
+            .replace(/{{CRED:username}}/g, creds.username||'')
+            .replace(/{{CRED:password}}/g, creds.password||'')
+            .replace(/{{([^}]+)}}/g, function(_, col){ return row[col] !== undefined ? String(row[col]) : ''; });
+  };
+  let value = '';
+  if (step.type === 'type' || step.type === 'select') value = r(step.value || '');
+  else if (step.type === 'navigate') value = r(step.url || '');
+  else if (step.type === 'textedit') value = '(textedit: ' + (step.editMode || 'find-replace') + ')';
+  else if (step.type === 'checkbox') value = '(' + (step.checkAction || 'check') + ')';
+  else if (step.type === 'wait') value = '(' + (step.waitType || 'fixed') + ')';
+  return {
+    type: step.type,
+    label: step._label || step.type,
+    selector: step.selector || '',
+    value: value,
+  };
+}
 
 const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32);
 function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
@@ -707,7 +705,11 @@ async function main(){
 
   try{
     _hbState.phase='running';
+    // Emit initial mode so UI can position itself before the first row.
+    emit({type:'mode',mode:currentMode});
+    let _stopRequested=false;
     for await(const row of streamRows(SPREADSHEET)){
+      if(_stopRequested) break;
       ri++;
       if(ri<=RESUME_FROM)continue;
       _hbState.rowIndex=ri;
@@ -717,20 +719,53 @@ async function main(){
       const entry={row:ri,timestamp:new Date().toISOString(),url:row.URL||row.url||'',status:'ok',error:'',failedStep:'',fieldsWritten:'',durationMs:0};
       let done=[];
 
-      const attempt=async()=>{done=[];for(const s of DATA_STEPS){await runStep(page,s,row,creds);done.push(s._label||s.type);}};
+      // attempt() walks DATA_STEPS, pausing before each step when in 'step' mode.
+      // Throws '__STOP__' if user requested stop (caught below); throws '__NEXT_ROW__'
+      // to short-circuit out of the step loop and proceed to the next row.
+      const attempt=async()=>{
+        done=[];
+        for(let si=0;si<DATA_STEPS.length;si++){
+          const s=DATA_STEPS[si];
+          if(currentMode==='step'){
+            const preview=resolvePreview(s,row,creds);
+            emit({type:'pause-step',rowIndex:ri,totalRows,stepIndex:si,totalSteps:DATA_STEPS.length,step:preview,row,mode:currentMode});
+            const cmd=await waitForCommand();
+            if(currentMode==='stop') throw new Error('__STOP__');
+            if(cmd==='next-row') throw new Error('__NEXT_ROW__');
+            // 'next-step' / 'run-all' / 'auto' all fall through to execute
+          }
+          await runStep(page,s,row,creds);
+          done.push(s._label||s.type);
+        }
+      };
 
       try{
         await attempt();
         entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;ok++;
         emit({type:'row-done',rowIndex:ri,totalRows,status:'ok',url:entry.url,fieldsWritten:entry.fieldsWritten,durationMs:entry.durationMs,ok,errs,skipped,elapsed:Date.now()-start});
       }catch(e){
-        if(ERR_HANDLE==='retry'){
+        // Clean stop sentinel — bail out of the row loop entirely.
+        if(e && e.message==='__STOP__'){
+          entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;
+          addLog(entry);
+          emit({type:'stopped',rowIndex:ri,reason:'user'});
+          _stopRequested=true;
+          break;
+        }
+        // User chose Next-row mid-step — record what got done, count as skip, move on.
+        if(e && e.message==='__NEXT_ROW__'){
+          entry.status='skip';entry.error='Skipped via Next-row during step-through';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;
+          skipped++;
+          emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:'(user skipped)',url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
+        }else if(ERR_HANDLE==='retry'){
           emit({type:'row-retry',rowIndex:ri,error:e.message});
           try{
             await attempt();
             entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;entry.status='ok (retry)';ok++;
             emit({type:'row-done',rowIndex:ri,totalRows,status:'ok-retry',url:entry.url,fieldsWritten:entry.fieldsWritten,durationMs:entry.durationMs,ok,errs,skipped,elapsed:Date.now()-start});
           }catch(e2){
+            // Retry-attempt sentinels also possible
+            if(e2 && e2.message==='__STOP__'){entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;addLog(entry);emit({type:'stopped',rowIndex:ri,reason:'user'});_stopRequested=true;break;}
             entry.status='error';entry.error='Retry failed: '+e2.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;errs++;
             emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
             if(ERR_HANDLE==='stop'){addLog(entry);flush();await browser.close();process.exit(1);}
@@ -743,7 +778,16 @@ async function main(){
         }
       }
       addLog(entry);
-      if(ri<totalRows){const delay=Math.floor(Math.random()*(ROW_DELAY_MAX-ROW_DELAY_MIN+1))+ROW_DELAY_MIN;await page.waitForTimeout(delay);}
+
+      // Row-pause point: if we're in step-row mode and not the last row, wait for user.
+      // Pause comes BEFORE the inter-row delay so the wait isn't doubled while user is looking.
+      if(currentMode==='step-row' && ri<totalRows && !_stopRequested){
+        emit({type:'pause-row',rowIndex:ri,totalRows,ok,errs,skipped,elapsed:Date.now()-start,mode:currentMode});
+        await waitForCommand();
+        if(currentMode==='stop'){_stopRequested=true; break;}
+      }
+
+      if(ri<totalRows && !_stopRequested){const delay=Math.floor(Math.random()*(ROW_DELAY_MAX-ROW_DELAY_MIN+1))+ROW_DELAY_MIN;await page.waitForTimeout(delay);}
     }
   }finally{
     _hbState.phase='cleanup';
@@ -761,143 +805,6 @@ main().catch(e=>{emit({type:'fatal',error:e.message});try{flush();}catch{}proces
 }
 
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────
-// ── DRY RUN SCRIPT BUILDER ──────────────────────────────────────────────────
-function buildDryRunner(steps, creds, spreadsheetPath, startRow, chromiumExePath, nodeModulesPath) {
-  const loginSteps = steps.filter(s => s.locked && s.type !== 'pestpac-logout');
-  const dataSteps  = steps.filter(s => !s.locked && s.type !== 'pestpac-logout');
-  const logoutStep = steps.find(s => s.type === 'pestpac-logout') || { type: 'pestpac-logout' };
-  return `
-'use strict';
-const fs = require('fs');
-const path = require('path');
-const readline = require('readline');
-const _nm = ${JSON.stringify(nodeModulesPath)};
-if(process.env.NODE_PATH){try{require('module').Module._initPaths();}catch(e){}}
-function _req(mod){try{return require(mod);}catch(e){try{return require(path.join(_nm,mod));}catch(e2){throw new Error('Cannot find: '+mod);}}}
-const { chromium } = _req('playwright-core');
-const XLSX = _req('xlsx');
-function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
-
-const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
-const credsReal = ${JSON.stringify(creds)};
-const SPREADSHEET = ${JSON.stringify(spreadsheetPath)};
-const START_ROW = ${startRow};
-const LOGIN_STEPS = ${JSON.stringify(loginSteps)};
-const DATA_STEPS = ${JSON.stringify(dataSteps)};
-const LOGOUT_STEP = ${JSON.stringify(logoutStep)};
-
-function rv(v,row,c){if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,c.companyKey||'').replace(/{{CRED:username}}/g,c.username||'').replace(/{{CRED:password}}/g,c.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');}
-
-async function runStep(page,step,row,creds){
-  const ms=s=>Math.round(parseFloat(s||1)*1000);
-  switch(step.type){
-    case 'navigate':{const _navUrl=rv(step.url,row,creds);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:step.waitAfter==='networkidle'?'networkidle':'load',timeout:30000});break;}
-    case 'click':await page.waitForSelector(step.selector,{timeout:15000});await page.click(step.selector);if(step.waitFor)await page.waitForSelector(step.waitFor,{timeout:15000});break;
-    case 'type':await page.waitForSelector(step.selector,{timeout:15000});if(step.clearFirst!=='no')await page.fill(step.selector,'');await page.fill(step.selector,rv(step.value,row,creds));break;
-    case 'select':await page.waitForSelector(step.selector,{timeout:15000});await page.selectOption(step.selector,{label:rv(step.value,row,creds)});break;
-    case 'checkbox':await page.waitForSelector(step.selector,{timeout:15000});if(step.checkAction==='check')await page.check(step.selector);else if(step.checkAction==='uncheck')await page.uncheck(step.selector);else await page.click(step.selector);break;
-    case 'clear':await page.waitForSelector(step.selector,{timeout:15000});await page.fill(step.selector,'');break;
-    case 'wait':if(step.waitType==='element')await page.waitForSelector(step.waitSel||'',{timeout:30000});else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
-    case 'assert':await page.waitForSelector(step.selector,{timeout:15000});break;
-    case 'dialog':{const matchText=step.dialogMatch||'';const dialogAction=step.dialogAction||'accept';page.once('dialog',async dialog=>{const msg=dialog.message();const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase());if(matches){if(dialogAction==='dismiss')await dialog.dismiss();else await dialog.accept();}else{await dialog.dismiss();}});break;}
-    case 'pestpac-login':{await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});await page.waitForSelector('input[name="uid"]',{timeout:15000});await page.fill('input[name="uid"]','');await page.fill('input[name="uid"]',creds.companyKey||'');await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');await page.waitForSelector('input[name="username"]',{timeout:15000});await page.fill('input[name="username"]',creds.username||'');await page.fill('input[name="password"]',creds.password||'');await page.click('button[data-testid="loginBtn"]');await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});break;}
-    case 'pestpac-logout':{await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});try{await page.waitForSelector('div.select',{timeout:8000});await page.click('div.select');await page.waitForSelector('a.logout',{timeout:5000});await page.click('a.logout');await page.waitForTimeout(1500);}catch{}break;}
-    default:break;
-  }
-}
-
-function loadRows(){
-  const ext=path.extname(SPREADSHEET).toLowerCase();
-  if(ext==='.csv'){
-    const lines=fs.readFileSync(SPREADSHEET,'utf8').split('\\n').filter(Boolean);
-    const headers=lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''));
-    return lines.slice(1).map(l=>{const vals=l.split(',').map(v=>v.trim().replace(/^"|"$/g,''));const row={};headers.forEach((h,i)=>row[h]=vals[i]||'');return row;});
-  }
-  const wb=XLSX.readFile(SPREADSHEET);
-  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-}
-
-// Stdin command reader — supports next, next-row, run-all
-let pendingResolve=null;
-let autoMode=false;
-const rl=readline.createInterface({input:process.stdin,terminal:false});
-rl.on('line',line=>{
-  const cmd=line.trim();
-  if(cmd==='run-all'){autoMode=true;if(pendingResolve){const r=pendingResolve;pendingResolve=null;r('run-all');}}
-  else if(pendingResolve){const r=pendingResolve;pendingResolve=null;r(cmd);}
-});
-function waitInput(){if(autoMode)return Promise.resolve('auto');return new Promise(r=>{pendingResolve=r;});}
-
-async function main(){
-  emit({type:'starting'});
-  if(!fs.existsSync(CHROMIUM_EXE)){emit({type:'fatal',error:'Chromium not found: '+CHROMIUM_EXE});process.exit(1);}
-  const rows=loadRows();
-  const totalRows=rows.length;
-  emit({type:'rows-loaded',totalRows,startRow:START_ROW});
-
-  const browser=await chromium.launch({headless:false,executablePath:CHROMIUM_EXE});
-  const page=await(await browser.newContext()).newPage();
-
-  // Login once
-  emit({type:'login-start'});
-  for(const step of LOGIN_STEPS){
-    try{await runStep(page,step,{},credsReal);emit({type:'login-step-done',label:step._label||step.type});}
-    catch(e){emit({type:'fatal',error:'Login failed: '+e.message});await browser.close();process.exit(1);}
-  }
-  emit({type:'login-done',stepCount:DATA_STEPS.length,totalRows,startRow:START_ROW});
-
-  for(let ri=START_ROW;ri<totalRows;ri++){
-    const row=rows[ri];
-    emit({type:'row-start',rowIndex:ri,totalRows,url:row.URL||row.url||''});
-
-    // Step through data steps
-    for(let si=0;si<DATA_STEPS.length;si++){
-      const step=DATA_STEPS[si];
-      if(!autoMode){
-        emit({type:'step-ready',pos:si,stepId:step.id,total:DATA_STEPS.length,rowIndex:ri,totalRows});
-        const cmd=await waitInput();
-        if(cmd==='run-all'){autoMode=true;} // fall through to execute
-      }
-      try{
-        await runStep(page,step,row,credsReal);
-        if(!autoMode)emit({type:'step-done',pos:si,stepId:step.id,rowIndex:ri});
-      }catch(e){
-        if(!autoMode){
-          emit({type:'step-error',pos:si,stepId:step.id,error:e.message,rowIndex:ri});
-          // Wait for user to retry or move on
-          emit({type:'step-ready',pos:si,stepId:step.id,total:DATA_STEPS.length,rowIndex:ri,totalRows,retrying:true});
-          await waitInput();
-          try{await runStep(page,step,row,credsReal);emit({type:'step-done',pos:si,stepId:step.id,rowIndex:ri});}
-          catch(e2){emit({type:'step-error',pos:si,stepId:step.id,error:'Retry failed: '+e2.message,rowIndex:ri});}
-        } else {
-          emit({type:'row-error',rowIndex:ri,error:e.message});
-          break;
-        }
-      }
-    }
-
-    emit({type:'row-done',rowIndex:ri,totalRows});
-
-    // If not in auto mode, wait for user to decide next-row or run-all
-    if(!autoMode && ri<totalRows-1){
-      emit({type:'row-waiting',rowIndex:ri,totalRows,nextRowIndex:ri+1});
-      const cmd=await waitInput();
-      if(cmd==='run-all')autoMode=true;
-      // 'next-row' just continues the loop
-    }
-    if(autoMode && ri<totalRows-1){emit({type:'auto-row',rowIndex:ri+1,totalRows});}
-  }
-
-  // Logout once at the very end
-  try{await runStep(page,LOGOUT_STEP,{},credsReal);}catch{}
-  await browser.close();
-  emit({type:'all-done',totalRows});
-  process.exit(0);
-}
-main().catch(e=>{emit({type:'fatal',error:e.message});process.exit(1);});
-`;
-}
-
 function fetchJSON(url, redirects) {
   redirects = redirects || 0;
   return new Promise((res, rej) => {

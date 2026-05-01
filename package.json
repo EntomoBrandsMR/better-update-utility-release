@@ -1,6 +1,6 @@
 {
   "name": "better-update-utility",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Better Update Utility — PestPac automation",
   "author": "Entomo Brands",
   "main": "src/main.js",
