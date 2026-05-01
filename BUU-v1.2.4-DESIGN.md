@@ -6,6 +6,25 @@
 
 ---
 
+## 0. STRATEGIC CONTEXT (added 2026-05-01)
+
+**v1.2.4 is the LAST major release of the current BUU.** After v1.2.4 ships, the repo forks:
+- **Current BUU stays at v1.2.4 forever** as the "polished manual tool." Bug fixes only — no new features. It exists for one-off manual runs and selector-verification work indefinitely.
+- **A new product (working name: BUUA / v2.0)** forks from v1.2.4 as its starting point. ALL automation, multi-runner, queue, concurrency, notification, and headless-deployment work happens in BUUA, NOT in BUU.
+
+**This means several things are explicitly OUT of v1.2.4 scope, even if they'd be useful:**
+- Multi-runner concurrency (multi-window or multi-process). Belongs in BUUA from day one.
+- Cross-process file locking, mutex coordination, race-condition handling. BUUA will avoid this entirely by being one-process-many-runners.
+- The original handoff's Section 7 v1.3.0 plan (3-runner cap, queues, folder lifecycle, hybrid flow embedding, email pickup). All of that becomes BUUA scope.
+- Notification system (text/email/push/mobile companion app). BUUA scope.
+- Off-site / headless / cloud deployment. BUUA scope.
+
+**Why this line exists:** v1.2.4 should be a focused, finished product. Bolting automation features onto it would (a) blur the architectural boundary, (b) introduce subtle bugs into a tool meant to be stable, (c) duplicate work BUUA will do natively in cleaner ways. The discipline of "v1.2.4 stays focused" is what lets BUUA start from a solid base.
+
+**The one thing v1.2.4 DOES inherit from this strategic choice:** it should be designed as if it's the "feature freeze" version. Resist temptation to add. Polish what's there. Document what's not there as "BUUA scope."
+
+---
+
 ## 1. THE PROBLEM
 
 Today BUU has two completely separate code paths for running a flow:
@@ -27,13 +46,12 @@ A real automation run with adjustable verification depth at the start. There is 
 
 ### 2.1 What the user sees
 
-Run page → click Run. A **start-mode picker** appears (modal or pre-run panel) with these options:
+Run page → click Run. A **start-mode dropdown** sits above the Run button (always visible, default = Step through each step). User changes it before clicking Run if they want a different mode.
 
 | Mode | What happens |
 |---|---|
-| **Step through** | Browser opens, executes ONE step, then pauses. User clicks "Next step" to advance. After last step on a row, asks: "next row" / "run all" / "stop". |
+| **Step through each step** *(default)* | Browser opens. Before each action, runner pauses and emits a preview: rendered value, resolved selector, action type. User clicks "Next step" to fire the action. Pauses again before the next step. |
 | **Step through rows** | Browser opens, executes one full row end-to-end, then pauses. User clicks "Next row" or "Run all" or "Stop". |
-| **Pause after row N** | Runs N rows (default 1) end-to-end, then pauses with the same options. |
 | **Run all (no verification)** | Current Run behavior. Fire-and-forget through all rows. |
 
 User's chosen mode is the *starting* mode. From any pause point, they can switch to "Run all" to release the brake and let it finish autonomously.
@@ -164,15 +182,19 @@ Once v1.2.3 ships and is validated:
 
 ---
 
-## 5. OPEN QUESTIONS FOR MATTHEW
+## 5. OPEN QUESTIONS FOR MATTHEW (RESOLVED 2026-05-01)
 
-These don't block design but should be settled before coding:
+All five questions were settled in the same session. Locked decisions:
 
-1. **Default start mode?** Suggest "Step through rows" (pause after each row) — feels safest as the default. "Run all" stays one click away.
-2. **Where does the start-mode picker live?** Above the Run button as a dropdown (compact), or in a modal that appears after clicking Run (more deliberate)?
-3. **When in step-through-step mode, should it pause BEFORE executing each step (preview) or AFTER (review)?** Preview is more useful — lets you verify the action *before* it commits. But the value substitution happens at execute-time, so preview means we have to render values up front and pass them to the pause emit.
-4. **Pause-after-N: does N reset on each pause?** I.e., user says "pause after 5 more rows" while paused at row 3 — does it pause at row 8 (N additional from current)? Suggest yes.
-5. **What happens if a step errors during step-through?** Today's `errHandle` is `'stop'` or `'skip'`. In step mode, suggest a third option appears at the pause: "Retry this step / Skip this row / Stop run."
+1. **Default start mode: Step through each step.** Maximum verification by default. User explicitly switches to "Run all" or "Step through rows" for less friction. The reasoning: a tool operating on production data should default to maximum verification, not minimum. Yes, this means a default fresh launch shows the most-friction option pre-selected. That's intentional.
+
+2. **Start-mode picker location: Dropdown above the Run button.** Always visible. One-click change. Mode is configuration, not a confirmation gate. The existing run-confirm dialog stays unchanged.
+
+3. **Step-through-step pause timing: BEFORE each action.** Pause shows the rendered value (`{{column}}` already substituted) and the resolved selector before the action fires. User clicks Next-step, action executes. The "preview with stop power" flow. Critical reason: AFTER mode means every wrong step still fires before you can react.
+
+4. **Pause-after-N modes: REMOVED.** Final mode list is: Step through each step / Step through rows / Run all. No "pause after N rows" controls anywhere. The notification system in v1.3.0 will cover the "tell me when something needs my attention" use case so forced pauses are unnecessary.
+
+5. **Step-mode error handling: Honor pre-set `errHandle`.** Same as run-all mode — `stop` aborts, `skip` continues to next row, applied without a special interactive prompt. Keeps the runner state machine simpler. Future enhancement (Retry / Skip-step / Edit-and-retry) can come in v1.4+ if real errors prove transient enough to make it worth the UX complexity.
 
 ---
 
