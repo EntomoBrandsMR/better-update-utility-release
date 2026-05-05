@@ -1348,6 +1348,9 @@ function renderSteps() {
   document.getElementById('nb-builder').style.display = n ? '' : 'none';
   refreshRunBtn();
   initDragDrop();
+  // v1.2.5 item 2.6: re-validate after any structural change (add/del/reorder/load).
+  // Debounced so a flow load with N steps doesn't run validation N times.
+  scheduleValidationRefresh();
 }
 
 function initDragDrop() {
@@ -1497,7 +1500,7 @@ function bodyHTML(s) {
 function esc(v) { return (v||'').toString().replace(/"/g,'&quot;'); }
 function esc2(v) { return (v||'').toString().replace(/'/g,"\\'"); }
 function toggleStep(id) { const s=steps.find(x=>x.id===id); if(s){s.open=!s.open;renderSteps();} }
-function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s) s[f]=v; }
+function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s) s[f]=v; scheduleValidationRefresh(); }
 function delStep(e,id) { e.stopPropagation(); steps=steps.filter(s=>s.id!==id); renderSteps(); }
 function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id); const ni=i+d; if(ni<0||ni>=steps.length)return; [steps[i],steps[ni]]=[steps[ni],steps[i]]; renderSteps(); }
 function addStep(type) { steps.push({id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
@@ -1605,6 +1608,27 @@ function preRunValidationGate(){
   const showMe=confirm('Show me where the issues are?\n\nOK = Highlight flagged steps and scroll to the first one\nCancel = Just close this dialog');
   if(showMe) scrollToFirstFlaggedStep(result.items);
   return false;
+}
+
+// v1.2.5 item 2.6: live re-validation. Runs validation and re-applies highlights
+// after any step edit. Debounced 200ms to keep keystroke typing smooth.
+let _validationDebounceTimer = null;
+function scheduleValidationRefresh(){
+  if(_validationDebounceTimer) clearTimeout(_validationDebounceTimer);
+  _validationDebounceTimer = setTimeout(()=>{
+    _validationDebounceTimer = null;
+    // Only refresh if we're on the Build steps page - no point computing & applying
+    // highlights to a panel the user isn't looking at.
+    const builderPanel=document.getElementById('panel-builder');
+    if(!builderPanel||!builderPanel.classList.contains('active')){
+      // Still clear stale highlights from a previous active session, in case
+      // the user switches back later.
+      applyValidationHighlights(null);
+      return;
+    }
+    const result=runValidation();
+    applyValidationHighlights(result?result.items:null);
+  }, 200);
 }
 
 

@@ -15,6 +15,21 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.6 — Pre-run prompt uses two confirm() calls instead of a custom modal
+
+The design specifies a 3-way prompt (Run anyway / Show me / Cancel). Native browser `confirm()` only gives 2 buttons (OK/Cancel), and Electron inherits that. Implemented as two sequential prompts:
+
+1. First: "Run anyway?" — OK proceeds with the run, Cancel falls through to the second prompt.
+2. Second (only if first was Cancel): "Show me where the issues are?" — OK applies highlights and scrolls to the first flagged step, Cancel just closes.
+
+UX is functional but rougher than a custom modal would be. A real modal would unify this into one prompt with three buttons. Out of scope for v1.2.5 — we're not shipping a modal framework just for this. Worth revisiting in v1.2.6 if user feedback finds the two-step prompt confusing.
+
+### Item 2.6 — Live re-validation only paints highlights when on the Build page
+
+`scheduleValidationRefresh()` checks whether `panel-builder` is the active panel before re-applying highlights. If the user is on Import, Run progress, Run log, etc., the function clears any stale highlights but does not re-paint new ones (no point — they can't see the steps).
+
+This means: switching to a non-builder page right after editing leaves the highlight state where it was, then it clears on the next debounce tick. Switching back doesn't re-paint until the next edit. Acceptable behavior — switching away is normally rare, and the next edit re-paints correctly.
+
 ### Item 2.11 (settings UI) — `REAUTH_INTERVAL_MS` is dormant until Phase 7
 
 The re-auth interval input is wired through (renderer → IPC → checkpoint → runner template), and the runner sees the value as `REAUTH_INTERVAL_MS`, but no code consumes it yet. The actual three triggers (timer-based, connectivity-wait, detection-based) and shared `loginToPestPac()` function come in Phase 7's item 2.11 logic commit.
