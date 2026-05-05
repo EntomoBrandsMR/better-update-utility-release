@@ -315,6 +315,12 @@ textarea { resize: vertical; min-height: 60px; }
 }
 .step-card.open { border-color: var(--bmd); }
 .step-card.locked { background: var(--plt); border-color: var(--pmd); }
+/* v1.2.5 item 2.6: validation highlights — applied by applyValidationHighlights() */
+.step-card.validation-flag-err { border-color: var(--red); box-shadow: 0 0 0 1px var(--red), 0 0 12px -2px rgba(220,80,80,.35); }
+.step-card.validation-flag-warn { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber), 0 0 12px -2px rgba(220,160,60,.30); }
+.step-card .validation-flag-badge { display: none; margin-left: auto; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 700; line-height: 1.4; letter-spacing: .02em; }
+.step-card.validation-flag-err .validation-flag-badge { display: inline-block; background: var(--rlt); color: var(--red); }
+.step-card.validation-flag-warn .validation-flag-badge { display: inline-block; background: var(--alt); color: var(--amber); }
 .step-hd {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 13px; cursor: pointer; user-select: none;
@@ -1325,6 +1331,7 @@ function renderSteps() {
         (s.locked ? '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--purple)" stroke-width="1.5"><rect x="4" y="7" width="8" height="7" rx="1"/><path d="M5 7V5a3 3 0 0 1 6 0v2"/></svg>' : '') +
         '<span class="badge ' + m.badge + '">' + m.label + '</span>' +
         '<span class="step-desc">' + m.desc(s) + '</span>' +
+        '<span class="validation-flag-badge"></span>' +
         (s.locked
           ? '<span style="font-size:10px;color:var(--purple);margin-left:auto;padding-right:4px;opacity:.7">PestPac login — locked</span>'
           : '<div class="step-acts">' +
@@ -1538,6 +1545,68 @@ function runValidation() {
   return { items, errs, warns };
 }
 
+// v1.2.5 item 2.6: apply colored borders + badges to step cards based on validation
+// results. Pass the items array from runValidation(). Pass null to clear all.
+function applyValidationHighlights(items){
+  // Always clear first - this also handles the null/clear case.
+  document.querySelectorAll('.step-card').forEach(card=>{
+    card.classList.remove('validation-flag-err','validation-flag-warn');
+    const b=card.querySelector('.validation-flag-badge');
+    if(b) b.textContent='';
+  });
+  if(!items) return;
+  items.filter(x=>x.isStep && x.issues.length).forEach(item=>{
+    const card=document.querySelector('.step-card[data-step-id="'+item.stepId+'"]');
+    if(!card) return;  // step deleted between validation and apply, harmless
+    const cls=item.worst==='err'?'validation-flag-err':item.worst==='warn'?'validation-flag-warn':null;
+    if(!cls) return;
+    card.classList.add(cls);
+    const badge=card.querySelector('.validation-flag-badge');
+    if(badge){
+      const errCount=item.issues.filter(x=>x.t==='err').length;
+      const warnCount=item.issues.filter(x=>x.t==='warn').length;
+      badge.textContent = errCount ? errCount+' error'+(errCount>1?'s':'') : warnCount+' warning'+(warnCount>1?'s':'');
+    }
+  });
+}
+
+// v1.2.5 item 2.6: scroll to first flagged step and apply highlights. Used by
+// the pre-run "Show me" path. Returns true if there was a step to scroll to.
+function scrollToFirstFlaggedStep(items){
+  applyValidationHighlights(items);
+  const first=items.find(x=>x.isStep && x.issues.length && (x.worst==='err' || x.worst==='warn'));
+  if(!first) return false;
+  go('builder');  // make sure we're on the Build steps page
+  // Defer the scroll slightly so the panel-switch settles first.
+  setTimeout(()=>{
+    const card=document.querySelector('.step-card[data-step-id="'+first.stepId+'"]');
+    if(card) card.scrollIntoView({behavior:'smooth',block:'center'});
+  },50);
+  return true;
+}
+
+// v1.2.5 item 2.6: pre-run validation gate. Non-blocking — user can override.
+// Returns true if the run should proceed, false if it should abort.
+// 'Show me' aborts the run AND highlights+scrolls to the first issue.
+function preRunValidationGate(){
+  const result=runValidation();
+  if(!result || (result.errs===0 && result.warns===0)){
+    // No issues - clear any stale highlights and proceed silently.
+    applyValidationHighlights(null);
+    return true;
+  }
+  const total=result.errs+result.warns;
+  const summary='Validation found '+result.errs+' error'+(result.errs===1?'':'s')+' and '+result.warns+' warning'+(result.warns===1?'':'s')+'. Run anyway?';
+  // Ordering matters: 'Show me' is the safe middle option. confirm() only gives
+  // OK/Cancel, so we use a 3-state via a sequenced prompt.
+  const choice=confirm(summary+'\n\nOK = Run anyway\nCancel = Show me where (or stop)');
+  if(choice) return true;  // Run anyway
+  // User chose Cancel - now ask: "Show me" or just stop?
+  const showMe=confirm('Show me where the issues are?\n\nOK = Highlight flagged steps and scroll to the first one\nCancel = Just close this dialog');
+  if(showMe) scrollToFirstFlaggedStep(result.items);
+  return false;
+}
+
 
 function updateStartModeHint(){
   const sel=document.getElementById('startModeSel');
@@ -1554,6 +1623,8 @@ async function startRun(){
   if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
   if(!steps.length){alert('No steps defined. Build your flow first.');go('builder');return;}
   if(!ssPath){alert('No spreadsheet loaded. Import data first.');go('import');return;}
+  // v1.2.5 item 2.6: non-blocking pre-run validation. User can run anyway, view issues, or cancel.
+  if(!preRunValidationGate()) return;
   // v1.2.4 unified runner — read selected start mode. Verification modes force headless off.
   const startMode=(document.getElementById('startModeSel')||{}).value||'step';
   const effectiveHeadless = startMode==='run-all' ? !!headless : false;
