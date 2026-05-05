@@ -202,6 +202,8 @@ html, body {
 /* ── FORM ── */
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 10px; }
 .row:last-child { margin-bottom: 0; }
+.run-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px; margin-bottom: 12px; }
+@media (max-width: 720px) { .run-settings-grid { grid-template-columns: 1fr; } }
 .fg { display: flex; flex-direction: column; gap: 4px; }
 .fg label { font-size: 11px; font-weight: 600; color: var(--t2); }
 input[type=text], input[type=number], input[type=url], input[type=password], select, textarea {
@@ -823,7 +825,7 @@ textarea { resize: vertical; min-height: 60px; }
 
   <div class="card">
     <div class="card-hd"><div class="card-title">Run settings</div></div>
-    <div class="row">
+    <div class="run-settings-grid">
       <div class="fg">
         <label>Delay between rows (seconds)</label>
         <div style="display:flex;gap:8px;align-items:center">
@@ -831,7 +833,7 @@ textarea { resize: vertical; min-height: 60px; }
           <span style="color:var(--t3);font-size:12px">to</span>
           <input type="number" id="rowDelayMax" value="0" min="0" step="0.1" style="width:80px"/>
         </div>
-        <div class="hint">Random pause between min and max seconds after each row. Set both to the same value for a fixed delay.</div>
+        <div class="hint">Random pause between rows. Same value = fixed delay. PestPac doesn't rate-limit at burst.</div>
       </div>
       <div class="fg">
         <label>Error handling</label>
@@ -839,6 +841,25 @@ textarea { resize: vertical; min-height: 60px; }
           <option value="retry" selected>Retry</option>
           <option value="skip">Skip</option>
         </select>
+        <div class="hint">Retry: try again per retry count, then skip. Skip: log and continue immediately.</div>
+      </div>
+      <div class="fg">
+        <label>Selector timeout (seconds)</label>
+        <input type="number" id="selectorTimeout" value="5" min="1" max="60" step="1"/>
+        <div class="hint">How long to wait for each field/button to appear. Lower = faster failure on bad selectors.</div>
+      </div>
+      <div class="fg">
+        <label>Page load mode</label>
+        <select id="pageLoadMode">
+          <option value="domcontentloaded" selected>DOM content loaded (fast)</option>
+          <option value="load">Full load (waits for images/fonts)</option>
+        </select>
+        <div class="hint">When does a navigate step "finish"? DOM-only is faster and reliable for most flows.</div>
+      </div>
+      <div class="fg">
+        <label>Retry count</label>
+        <input type="number" id="retryCount" value="2" min="0" max="20" step="1"/>
+        <div class="hint">In Retry mode, how many extra attempts before giving up on a row.</div>
       </div>
       <div class="fg">
         <label>Browser visibility</label>
@@ -846,7 +867,7 @@ textarea { resize: vertical; min-height: 60px; }
           <button class="toggle on" id="visToggle" onclick="toggleVisibility()"></button>
           <span class="toggle-lbl" id="visLabel">Visible — watch it work</span>
         </div>
-        <div class="hint">Toggle off to run silently in background</div>
+        <div class="hint">Toggle off to run silently in background.</div>
       </div>
     </div>
     <div class="row">
@@ -1595,6 +1616,9 @@ async function startRun(){
       errHandle: document.getElementById('errHandle').value,
       rowDelayMin: parseFloat(document.getElementById('rowDelayMin').value||0),
       rowDelayMax: parseFloat(document.getElementById('rowDelayMax').value||0),
+      selectorTimeout: parseInt(document.getElementById('selectorTimeout').value||5),
+      pageLoadMode: document.getElementById('pageLoadMode').value||'domcontentloaded',
+      retryCount: parseInt(document.getElementById('retryCount').value||2),
       startMode: startMode
     });
     if(!result.ok){alert('Failed to start: ' + (result.error||'Unknown error'));runStopped();return;}
@@ -1725,6 +1749,9 @@ async function executeResume(orphan,profileId){
     errHandle:checkpoint.errHandle==='stop'?'retry':(checkpoint.errHandle||'retry'),
     rowDelayMin:checkpoint.rowDelayMin||0,
     rowDelayMax:checkpoint.rowDelayMax||0,
+    selectorTimeout:checkpoint.selectorTimeout||5,
+    pageLoadMode:(checkpoint.pageLoadMode==='networkidle'?'domcontentloaded':(checkpoint.pageLoadMode||'domcontentloaded')),
+    retryCount:(checkpoint.retryCount!=null?checkpoint.retryCount:2),
   });
   if(!result.ok){alert('Failed to resume: '+(result.error||'Unknown error'));runStopped();return;}
   currentLogPath=result.logPath;
@@ -1866,12 +1893,12 @@ async function saveProfile(){const name=document.getElementById('pName').value.t
 async function deleteProfile(){if(!editingProfileId)return;if(!confirm('Delete this profile?'))return;if(API.deleteProfile)await API.deleteProfile(editingProfileId);else profiles=profiles.filter(p=>p.id!==editingProfileId);if(activeProfileId===editingProfileId)activeProfileId=null;await loadProfiles();document.getElementById('profileForm').style.display='none';}
 function cancelProfile(){document.getElementById('profileForm').style.display='none';}
 
-async function saveFlow(){const json=JSON.stringify({version:'1.0',steps,config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value,flowNotes:document.getElementById('flowNotes').value,headless}},null,2);if(API.saveFlow){
+async function saveFlow(){const json=JSON.stringify({version:'1.0',steps,config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value,selectorTimeout:document.getElementById('selectorTimeout').value,pageLoadMode:document.getElementById('pageLoadMode').value,retryCount:document.getElementById('retryCount').value,flowNotes:document.getElementById('flowNotes').value,headless}},null,2);if(API.saveFlow){
     const flowName=document.getElementById('flowNotes').value.trim().replace(/[^a-z0-9_\-]/gi,'_').slice(0,40)||'buu-flow';
     const p=await API.saveFlow({json,name:flowName});
     if(p)alert('Flow saved to '+p);
   }else{const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(json);a.download='buu-flow.json';a.click();}}
-async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);steps=data.steps||[];nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=(c.errHandle==='stop'?'retry':c.errHandle);if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderSteps();}
+async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);steps=data.steps||[];nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=(c.errHandle==='stop'?'retry':c.errHandle);if(c.selectorTimeout)document.getElementById('selectorTimeout').value=c.selectorTimeout;if(c.pageLoadMode)document.getElementById('pageLoadMode').value=(c.pageLoadMode==='networkidle'?'domcontentloaded':c.pageLoadMode);if(c.retryCount!=null)document.getElementById('retryCount').value=c.retryCount;if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderSteps();}
 
 function openFlowsFolder(){if(API.openFlowsFolder)API.openFlowsFolder();}
 async function checkUpdates(){if(API.checkForUpdates)await API.checkForUpdates();else alert('Update checks only work in the desktop app.');}

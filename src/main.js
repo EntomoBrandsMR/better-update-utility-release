@@ -143,9 +143,13 @@ ipcMain.handle('install-chromium', async () => {
 
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
-ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, startMode }) => {
+ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, startMode }) => {
   // startMode: 'step' | 'step-row' | 'run-all'  (added v1.2.4). Defaults to 'run-all' for back-compat.
   startMode = startMode || 'run-all';
+  // v1.2.5 item 2.8: tunable speed/resilience settings. Defaults match design doc.
+  selectorTimeout = (selectorTimeout != null) ? Math.min(60, Math.max(1, parseInt(selectorTimeout))) : 5;
+  pageLoadMode = (pageLoadMode === 'load') ? 'load' : 'domcontentloaded';
+  retryCount = (retryCount != null) ? Math.min(20, Math.max(0, parseInt(retryCount))) : 2;
   // Concurrency guard — refuse if at cap. Prevents zombie runners.
   if (automationProcesses.size >= MAX_CONCURRENT_RUNS) {
     const running = Array.from(automationProcesses.values())[0];
@@ -195,6 +199,9 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
       errHandle: errHandle || 'retry',
       rowDelayMin: rowDelayMin || 0,
       rowDelayMax: rowDelayMax || 0,
+      selectorTimeout,
+      pageLoadMode,
+      retryCount,
       totalRows: totalRowsForCheckpoint,
       startedAt: new Date().toISOString(),
       rowIndex: resumeFromRow || 0,
@@ -229,7 +236,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   }
 
   // Write runner script with chromium path baked in
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode);
+  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode, selectorTimeout, pageLoadMode, retryCount);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env };
@@ -381,7 +388,7 @@ ipcMain.handle('discard-checkpoint', (_, checkpointPath) => {
 });
 
 // ── RUNNER SCRIPT BUILDER ─────────────────────────────────────────────────────
-function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode) {
+function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode, selectorTimeout, pageLoadMode, retryCount) {
   return `
 'use strict';
 const fs = require('fs');
@@ -413,6 +420,10 @@ const HEADLESS = ${headless};
 const ERR_HANDLE = ${JSON.stringify(errHandle)};
 const ROW_DELAY_MIN = ${Math.round(parseFloat(rowDelayMin) * 1000)};
 const ROW_DELAY_MAX = ${Math.round(parseFloat(rowDelayMax) * 1000)};
+// v1.2.5 item 2.8: tunable speed/resilience
+const SELECTOR_TIMEOUT = ${parseInt(selectorTimeout) * 1000};
+const PAGE_LOAD_MODE = ${JSON.stringify(pageLoadMode)};
+const RETRY_COUNT = ${parseInt(retryCount)};
 
 // Run-mode state machine (v1.2.4).
 // START_MODE is the initial mode; currentMode is mutated by stdin commands.
@@ -552,14 +563,14 @@ async function runStep(page,step,row,creds){
   const r=v=>{if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');};
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
-    case 'navigate':{const _navUrl=r(step.url);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step\\'s URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:step.waitAfter==='networkidle'?'networkidle':'load',timeout:30000});break;}
-    case 'click':await page.waitForSelector(step.selector,{timeout:15000});await page.click(step.selector);if(step.waitFor)await page.waitForSelector(step.waitFor,{timeout:15000});break;
-    case 'type':await page.waitForSelector(step.selector,{timeout:15000});if(step.clearFirst!=='no')await page.fill(step.selector,'');if(parseInt(step.typeDelay||0)>0)await page.type(step.selector,r(step.value),{delay:parseInt(step.typeDelay)});else await page.fill(step.selector,r(step.value));break;
-    case 'select':await page.waitForSelector(step.selector,{timeout:15000});await page.selectOption(step.selector,{label:r(step.value)});break;
-    case 'checkbox':await page.waitForSelector(step.selector,{timeout:15000});if(step.checkAction==='check')await page.check(step.selector);else if(step.checkAction==='uncheck')await page.uncheck(step.selector);else if(step.checkAction==='toggle')await page.click(step.selector);else if(step.checkAction==='conditional'){const tv=(step.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase());if(tv.includes(String(r(step.condCol)).trim().toLowerCase()))await page.check(step.selector);else await page.uncheck(step.selector);}break;
-    case 'clear':await page.waitForSelector(step.selector,{timeout:15000});await page.fill(step.selector,'');break;
+    case 'navigate':{const _navUrl=r(step.url);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step\\'s URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:PAGE_LOAD_MODE,timeout:30000});break;}
+    case 'click':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});await page.click(step.selector);if(step.waitFor)await page.waitForSelector(step.waitFor,{timeout:SELECTOR_TIMEOUT});break;
+    case 'type':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});if(step.clearFirst!=='no')await page.fill(step.selector,'');if(parseInt(step.typeDelay||0)>0)await page.type(step.selector,r(step.value),{delay:parseInt(step.typeDelay)});else await page.fill(step.selector,r(step.value));break;
+    case 'select':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});await page.selectOption(step.selector,{label:r(step.value)});break;
+    case 'checkbox':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});if(step.checkAction==='check')await page.check(step.selector);else if(step.checkAction==='uncheck')await page.uncheck(step.selector);else if(step.checkAction==='toggle')await page.click(step.selector);else if(step.checkAction==='conditional'){const tv=(step.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase());if(tv.includes(String(r(step.condCol)).trim().toLowerCase()))await page.check(step.selector);else await page.uncheck(step.selector);}break;
+    case 'clear':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});await page.fill(step.selector,'');break;
     case 'wait':if(step.waitType==='random'){const mn=ms(step.waitMin||1),mx=ms(step.waitMax||3);await page.waitForTimeout(Math.floor(Math.random()*(mx-mn+1))+mn);}else if(step.waitType==='element')await page.waitForSelector(step.waitSel||'',{timeout:30000});else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
-    case 'assert':await page.waitForSelector(step.selector,{timeout:15000});if(step.expected){const t=await page.locator(step.selector).textContent();if(!t.includes(step.expected))throw new Error('Assert failed: expected "'+step.expected+'" got "'+t+'"');}break;
+    case 'assert':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});if(step.expected){const t=await page.locator(step.selector).textContent();if(!t.includes(step.expected))throw new Error('Assert failed: expected "'+step.expected+'" got "'+t+'"');}break;
     case 'pestpac-login':{
       // Full PestPac login sequence in one step
       await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
@@ -599,7 +610,7 @@ async function runStep(page,step,row,creds){
       });
       break;}
     case 'textedit':{
-      await page.waitForSelector(step.selector,{timeout:15000});
+      await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});
       const currentVal = await page.$eval(step.selector, el => el.value || el.textContent || el.innerText || '');
       const rr = v => {if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');};
       const search = rr(step.searchVal||'');
@@ -758,15 +769,29 @@ async function main(){
           skipped++;
           emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:'(user skipped)',url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
         }else if(ERR_HANDLE==='retry'){
-          emit({type:'row-retry',rowIndex:ri,error:e.message});
-          try{
-            await attempt();
-            entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;entry.status='ok (retry)';ok++;
-            emit({type:'row-done',rowIndex:ri,totalRows,status:'ok-retry',url:entry.url,fieldsWritten:entry.fieldsWritten,durationMs:entry.durationMs,ok,errs,skipped,elapsed:Date.now()-start});
-          }catch(e2){
-            // Retry-attempt sentinels also possible
-            if(e2 && e2.message==='__STOP__'){entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;addLog(entry);emit({type:'stopped',rowIndex:ri,reason:'user'});_stopRequested=true;break;}
-            entry.status='skip';entry.error='Retry failed: '+e2.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;skipped++;
+          // v1.2.5 item 2.8: configurable retry count (was hardcoded 1 attempt).
+          let retryAttempt = 0;
+          let retrySucceeded = false;
+          let lastError = e;
+          while(retryAttempt < RETRY_COUNT && !retrySucceeded){
+            retryAttempt++;
+            emit({type:'row-retry',rowIndex:ri,error:lastError.message,attempt:retryAttempt,maxAttempts:RETRY_COUNT});
+            try{
+              await attempt();
+              entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;entry.status='ok (retry)';ok++;
+              emit({type:'row-done',rowIndex:ri,totalRows,status:'ok-retry',url:entry.url,fieldsWritten:entry.fieldsWritten,durationMs:entry.durationMs,ok,errs,skipped,elapsed:Date.now()-start});
+              retrySucceeded = true;
+            }catch(e2){
+              // Retry-attempt sentinels also possible
+              if(e2 && e2.message==='__STOP__'){entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;addLog(entry);emit({type:'stopped',rowIndex:ri,reason:'user'});_stopRequested=true;break;}
+              if(e2 && e2.message==='__NEXT_ROW__'){entry.status='skip';entry.error='Skipped via Next-row during step-through';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;skipped++;emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:'(user skipped)',url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});retrySucceeded=true;break;}
+              lastError = e2;
+            }
+          }
+          if(_stopRequested) break;
+          if(!retrySucceeded){
+            const errMsg = retryAttempt === 0 ? e.message : ('After '+retryAttempt+' retry attempt(s): '+lastError.message);
+            entry.status='skip';entry.error=errMsg;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;skipped++;
             emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
           }
         }else{

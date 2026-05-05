@@ -15,6 +15,22 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.8 — selector timeout default drop is the riskiest change in v1.2.5
+
+The default selector timeout drops from 15s (hardcoded in v1.2.4) to 5s (configurable, but defaulting low). For most PestPac flows on a healthy network this is fine — selectors typically resolve in <1s. But:
+
+- PestPac has slow days where individual selectors can take 6-10 seconds to render (modal animations, lazy-loaded React components, server lag during peak hours).
+- Saved flows from before v1.2.5 don't carry a `selectorTimeout` field, so they pick up the new 5s default automatically — no migration prompt.
+- A flow that worked at 15s but fails at 5s will start producing "TimeoutError: waiting for selector ..." errors that look like flow bugs but are actually environmental.
+
+**Watch the first real run carefully.** If you see a sudden cluster of selector-timeout errors that weren't there before, raise the global Selector timeout to 10s or 15s on the Build steps page Run settings. The setting persists per-flow once saved.
+
+If the new defaults regress a known-good flow, that's reportable as a bug and we adjust defaults in v1.2.6. The doc said to ship at 5s; we did. But this is the field that's most likely to bite.
+
+### Item 2.8 — `_validate-runner.js` is gitignored
+
+The validator script in `scripts/_validate-runner.js` is gitignored (the whole `scripts/` folder is). This means changes to it don't ship with the repo. I updated it for the new buildRunner signature (3 new args) but those changes are local-only. If anyone clones the repo fresh, they'll need to recreate the script's arg list to match the current buildRunner signature. Worth either un-ignoring this one helper, or documenting the expected sample-args shape somewhere persistent.
+
 ### Item 2.3 — Live UI says "FAILED" / status='error' for retry-then-skip rows
 
 The runner now writes `status='skip'` to the Excel log for rows that hit the retry-failed catch (per design — these are skip outcomes, not errors). However the runner still emits `type:'row-error'` to the renderer, so the live log shows "❌ Row N FAILED: Retry failed: ..." and the in-session log table shows `status:'error'`. The persisted Excel log is correct; only the live UI is misleading.
