@@ -15,6 +15,20 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.5 (Build-side) — `copyToken` and `tokenBar`'s `field` arg are now vestigial
+
+After 2.5-Build, chips are drag-only. The old click-to-insert path through `copyToken()` is no longer reachable from the UI (chips have no onclick). The function still exists in source because removing it cleanly would mean also removing the `pendingInsertId`/`pendingInsertField` globals it reads — and **those globals are still set by the paste-HTML modal flow** via input `onfocus` handlers and `openPasteModal()`. Pulling that thread is its own refactor.
+
+Similarly, `tokenBar(sid, field)` keeps its `field` parameter on the signature even though the function no longer consults it. Removing it would mean updating ~5 call sites in `bodyHTML()`. Cosmetic; not worth a separate commit.
+
+Both are safe to leave as-is for v1.2.5. Worth a small "remove orphaned token-insert code" cleanup commit in v1.2.6, paired with the paste-HTML modal cleanup if anyone touches that flow.
+
+### Item 2.5 (Build-side) — drag works, but no keyboard equivalent for accessibility
+
+The new chip behavior is mouse-only. Users who navigate via keyboard (or have motor difficulties with click-and-drag) have no way to insert tokens. The old click-to-copy worked from keyboard since chips were buttons. This is an accessibility regression on a feature that very few users probably hit, but worth naming.
+
+Out of scope for v1.2.5. A future fix could add Enter-on-focused-chip → insert at last-focused field's cursor (re-using the `pendingInsertId`/`pendingInsertField` machinery the paste-HTML modal uses). Acceptable to ship without.
+
 ### Item 2.6 — Pre-run prompt uses two confirm() calls instead of a custom modal
 
 The design specifies a 3-way prompt (Run anyway / Show me / Cancel). Native browser `confirm()` only gives 2 buttons (OK/Cancel), and Electron inherits that. Implemented as two sequential prompts:

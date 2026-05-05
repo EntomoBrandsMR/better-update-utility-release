@@ -364,15 +364,30 @@ textarea { resize: vertical; min-height: 60px; }
 
 /* ── CHIPS ── */
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+/* v1.2.5 item 2.5 (Build-side): drag-only chips with higher contrast.
+   Click does nothing; users drag chips onto any text input in the step body. */
 .chip {
   display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 9px; border-radius: 20px;
-  background: var(--surf3); border: 1px solid var(--bdr2);
-  font-size: 11px; cursor: pointer; color: var(--t2); transition: all .1s;
+  padding: 4px 10px; border-radius: 20px;
+  background: var(--blt); border: 1px solid var(--bmd);
+  font-size: 11px; font-weight: 600;
+  color: var(--blue);
+  cursor: grab; user-select: none;
+  transition: transform .08s, box-shadow .08s, opacity .15s;
 }
-.chip:hover { border-color: var(--blue); color: var(--blue); }
-.chip .cx { color: var(--t3); font-size: 9px; margin-left: 2px; }
-.chip .cx:hover { color: var(--red); }
+.chip:hover { box-shadow: 0 2px 6px -1px rgba(120,150,220,.35); transform: translateY(-1px); }
+.chip:active, .chip.chip-dragging { cursor: grabbing; opacity: .55; transform: scale(.97); }
+.chip .tok { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+/* Drop targets: text inputs inside step bodies become highlighted while a chip is being dragged. */
+.step-body input[type="text"].field-droppable {
+  border-color: var(--bmd);
+  box-shadow: 0 0 0 1px var(--bmd);
+}
+.step-body input[type="text"].field-droppable-hover {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px var(--blue), 0 0 12px -2px rgba(80,130,220,.45);
+  background: var(--blt);
+}
 
 /* ── COLUMN REFERENCE LIST (Import page, v1.2.5 item 2.5) ── */
 .col-ref-list {
@@ -1399,6 +1414,75 @@ function initDragDrop() {
       renderSteps();
     });
   });
+
+  // v1.2.5 item 2.5 (Build-side): chip drag onto step-body text inputs.
+  // Chips have draggable=true and data-token; drop zones are text inputs in step bodies.
+  // Per-element listeners (matching the per-card pattern above) - re-wired each render.
+  let chipDragToken = null;
+  list.querySelectorAll('.chip[draggable="true"]').forEach(chip => {
+    chip.addEventListener('dragstart', e => {
+      chipDragToken = chip.dataset.token || '';
+      chip.classList.add('chip-dragging');
+      e.dataTransfer.effectAllowed = 'copy';
+      try { e.dataTransfer.setData('text/plain', chipDragToken); } catch {}
+      // Mark valid drop targets so they pulse subtly during the drag.
+      list.querySelectorAll('.step-body input[type="text"]').forEach(inp => {
+        inp.classList.add('field-droppable');
+      });
+    });
+    chip.addEventListener('dragend', () => {
+      chip.classList.remove('chip-dragging');
+      list.querySelectorAll('.field-droppable, .field-droppable-hover').forEach(inp => {
+        inp.classList.remove('field-droppable', 'field-droppable-hover');
+      });
+      chipDragToken = null;
+    });
+  });
+  list.querySelectorAll('.step-body input[type="text"]').forEach(inp => {
+    inp.addEventListener('dragenter', e => {
+      if (chipDragToken === null) return;
+      e.preventDefault();
+      inp.classList.add('field-droppable-hover');
+    });
+    inp.addEventListener('dragover', e => {
+      if (chipDragToken === null) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    inp.addEventListener('dragleave', e => {
+      if (chipDragToken === null) return;
+      // Only remove the hover class if we're really leaving the input (not just crossing a child node).
+      if (e.relatedTarget && inp.contains(e.relatedTarget)) return;
+      inp.classList.remove('field-droppable-hover');
+    });
+    inp.addEventListener('drop', e => {
+      if (chipDragToken === null) return;
+      e.preventDefault();
+      const token = chipDragToken;
+      // Insert at cursor position; fall back to end if no selection state.
+      inp.focus();
+      const pos = (typeof inp.selectionStart === 'number') ? inp.selectionStart : inp.value.length;
+      const before = inp.value.slice(0, pos);
+      const after = inp.value.slice(pos);
+      inp.value = before + token + after;
+      // Move the cursor to just after the inserted token.
+      try {
+        const newPos = pos + token.length;
+        inp.setSelectionRange(newPos, newPos);
+      } catch {}
+      // Sync to the step data model. The input's id is fi-<stepId>-<field>.
+      const m = inp.id.match(/^fi-(\d+)-(.+)$/);
+      if (m) {
+        const stepId = parseInt(m[1]);
+        const field = m[2];
+        const s = steps.find(x => x.id === stepId);
+        if (s) s[field] = inp.value;
+      }
+      // Trigger live re-validation since field contents changed.
+      scheduleValidationRefresh();
+      inp.classList.remove('field-droppable-hover');
+    });
+  });
 }
 
 function selField(sid, field, value, placeholder, label) {
@@ -1417,9 +1501,20 @@ function valField(sid, field, value, placeholder, label) {
     '</div>';
 }
 function tokenBar(sid, field) {
+  // v1.2.5 item 2.5 (Build-side): chips are drag-only. The `field` arg is no longer
+  // consulted - chips can drop onto any text input in this step's body. Kept on
+  // the function signature so existing callers don't need to change.
+  if(!cols.length){
+    return '<div style="margin-bottom:10px">' +
+      '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert column token</div>' +
+      '<div class="chips" style="font-size:11px;color:var(--t3);font-style:italic;padding:4px 0">Load a spreadsheet to see column tokens you can drag.</div>' +
+      '</div>';
+  }
   return '<div style="margin-bottom:10px">' +
-    '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert column token</div>' +
-    '<div class="chips">' + cols.map(c => '<span class="chip" onclick="pendingInsertId=' + sid + ';pendingInsertField=\'' + field + '\';copyToken(\'' + esc2(c) + '\')"><span class="tok">{{' + c + '}}</span></span>').join('') + '</div>' +
+    '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert column token <span style="font-weight:500;text-transform:none;letter-spacing:0;color:var(--t3)">— drag onto any field below</span></div>' +
+    '<div class="chips">' + cols.map(c =>
+      '<span class="chip" draggable="true" data-token="{{' + esc(c) + '}}" title="Drag onto any field below"><span class="tok">{{' + c + '}}</span></span>'
+    ).join('') + '</div>' +
     '</div>';
 }
 
