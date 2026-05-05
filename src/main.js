@@ -818,12 +818,49 @@ async function main(){
   // the checkpoint and annotate it with lastStop info.
   let _userStopRequested=false;
 
+  // v1.2.5 item 2.10 (Phase 8, sub 2): synthetic log entries for run-level events
+  // (initial login, re-auth, breaker trip, fatal). These appear as All-rows timeline
+  // entries with empty row number and explicit Phase column, so the user can see WHEN
+  // auth events / failures happened relative to row processing.
+  // status values per design: 'success' | 'error' | 'reauth' | 'circuit-breaker'.
+  function synthLog(opts){
+    const u = (function(){ try { return page.url() || ''; } catch { return ''; } })();
+    addLog({
+      row: '',
+      timestamp: new Date().toISOString(),
+      url: u,
+      status: opts.status || 'success',
+      error: opts.error || '',
+      failedStep: '',
+      fieldsWritten: '',
+      durationMs: opts.durationMs || 0,
+      // 2.10 enrichment fields — synthetic entries set Phase, leave step columns empty
+      phase: opts.phase || '',
+      errorCategory: opts.errorCategory || '',
+      stepIndex: '',
+      stepType: '',
+      stepLabel: opts.label || '',  // label is the human description of the event
+      selector: '',
+      attemptedValue: ''
+    });
+  }
+
   // Run login steps once before the row loop
   _hbState.phase='logging-in';
+  const _loginStartedAt = Date.now();
   for(const step of LOGIN_STEPS){
     try{ await runStep(page,step,{},creds); }
-    catch(e){ emit({type:'fatal',error:'Login failed at step '+( step._label||step.type)+': '+e.message}); flush(); await browser.close(); process.exit(1); }
+    catch(e){
+      // v1.2.5 item 2.10 sub 2: synthetic 'init' entry for failed initial login.
+      synthLog({phase:'init',status:'error',label:'Initial login failed at step: '+(step._label||step.type),error:e.message,durationMs:Date.now()-_loginStartedAt,errorCategory:classifyError(e.message)});
+      emit({type:'fatal',error:'Login failed at step '+( step._label||step.type)+': '+e.message});
+      flush();
+      await browser.close();
+      process.exit(1);
+    }
   }
+  // v1.2.5 item 2.10 sub 2: synthetic 'init' entry for successful initial login.
+  synthLog({phase:'init',status:'success',label:'Initial login complete',durationMs:Date.now()-_loginStartedAt});
 
   // v1.2.5 item 2.11 (Phase 7): re-auth state and helpers.
   // Three triggers fire maybeReauth(reason):
@@ -836,6 +873,8 @@ async function main(){
   async function maybeReauth(reason){
     emit({type:'log',message:'Re-authenticating ('+reason+')…'});
     _hbState.phase='reauth-'+reason;
+    // v1.2.5 item 2.10 sub 2: synthetic timeline entry — re-auth started.
+    const _reauthStartedAt = Date.now();
     try{
       await loginToPestPac(page, creds);
       // Reset the timer regardless of which trigger fired — a fresh login means
@@ -843,7 +882,11 @@ async function main(){
       if(REAUTH_INTERVAL_MS > 0) nextReauthAt = Date.now() + REAUTH_INTERVAL_MS;
       emit({type:'log',message:'Re-auth complete ('+reason+'). Continuing.'});
       _hbState.phase='running';
+      // v1.2.5 item 2.10 sub 2: synthetic timeline entry — re-auth succeeded.
+      synthLog({phase:'reauth',status:'reauth',label:'Re-auth ('+reason+') succeeded',durationMs:Date.now()-_reauthStartedAt});
     }catch(e){
+      // v1.2.5 item 2.10 sub 2: synthetic timeline entry — re-auth failed.
+      synthLog({phase:'reauth',status:'error',label:'Re-auth ('+reason+') failed',error:e.message,durationMs:Date.now()-_reauthStartedAt,errorCategory:classifyError(e.message)});
       // Re-auth failure is fatal — we can't proceed without a valid session.
       emit({type:'fatal',error:'Re-auth failed ('+reason+'): '+e.message});
       throw e;  // Caught by main()'s outer catch which writes lastError and exits.
@@ -1067,6 +1110,8 @@ async function main(){
           emit({type:'log',message:'Warning: could not annotate checkpoint with breaker info: '+e.message});
         }
         emit({type:'circuit-breaker',rowIndex:ri,totalRows,consecutiveErrors,lastSuccessfulRow,ok,errs,skipped,elapsed:Date.now()-start});
+        // v1.2.5 item 2.10 sub 2: synthetic timeline entry — breaker trip.
+        synthLog({phase:'cleanup',status:'circuit-breaker',label:'Circuit breaker tripped after '+consecutiveErrors+' consecutive errors near row '+ri,error:'Last successful row: '+lastSuccessfulRow});
         _stopRequested=true;
         break;
       }

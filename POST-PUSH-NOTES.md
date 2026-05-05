@@ -15,6 +15,44 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.10 (Phase 8, sub 2) — Synthetic timeline entries for run-level events
+
+Five points now write a synthetic All-rows entry via `synthLog()`:
+
+1. Initial login complete → phase=`init`, status=`success`, label="Initial login complete"
+2. Initial login failed → phase=`init`, status=`error`, label includes failed step
+3. Re-auth succeeded → phase=`reauth`, status=`reauth`, label includes trigger reason
+4. Re-auth failed → phase=`reauth`, status=`error`, label includes trigger reason
+5. Circuit breaker tripped → phase=`cleanup`, status=`circuit-breaker`, label includes count
+
+Each entry has `row=''` (empty), populated `phase` and `status` columns, and (where
+relevant) `errorCategory` populated via the same classifier used for row failures.
+Timestamp + URL captured at the moment of the event.
+
+The All-rows sheet will now show events interleaved with row entries in chronological
+order: "Login complete" → row 1 → row 2 → ... → "Re-auth (timer) succeeded" → row 47 → ...
+Visible run history without needing to cross-reference the checkpoint or runner log.
+
+### Item 2.10 (Phase 8, sub 2) — Fatal main().catch does NOT write a synthetic entry
+
+The outer `main().catch(...)` block runs OUTSIDE main(), so it doesn't have access to
+the `synthLog` helper (which is defined inside main() because it closes over `page`).
+
+Trade-offs considered:
+- **Move synthLog to module scope**: would need to also pass `page` and `addLog` as
+  closures, complicating the helper signature for marginal benefit.
+- **Duplicate the addLog call inline**: doable but copy-pastes the entry shape.
+- **Skip it**: the checkpoint already preserves `lastError` with phase='fatal' and
+  the message, the resume modal surfaces it clearly, and the existing `try{flush();}`
+  in main().catch ensures partial log state is saved.
+
+Skipping for v1.2.5. The user-visible diagnostic story is: resume modal banner shows
+"Run crashed" with the message; the runner log file (`buu-runner-<runId>.log`) has the
+full stack trace. That's sufficient for the rare case of an uncaught fatal.
+
+If this turns out to be too thin in practice (e.g., users opening the Excel log expect
+to see a fatal entry there too), a v1.2.6 follow-up can move synthLog to module scope.
+
 ### Item 2.10 (Phase 8, sub 1) — Step context tracked in closure, not thrown with the error
 
 The cleanest way to attribute a row failure to a specific step would be to wrap each
