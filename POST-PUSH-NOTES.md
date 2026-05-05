@@ -15,6 +15,78 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.10 (Phase 8, sub 3) — Excel writer rewrite: column order, auto-filter, "Stopped reason"
+
+`flush()` was switched from `XLSX.utils.json_to_sheet(logEntries)` (auto-orders columns
+by JSON key insertion order — unpredictable, untunable) to `XLSX.utils.aoa_to_sheet`
+with explicit headers. The new column order matches the design:
+
+```
+Row | Status | Error category | Phase | Step # | Step type | Step label |
+Field/selector | Attempted value | URL | Error message | Timestamp |
+Failed step | Fields written | Duration (ms)
+```
+
+Most-actionable left, most-detailed right. Pivot-friendly. Applied to all three data
+sheets: All rows / Errors only / Skipped.
+
+**Auto-filter**: `ws['!autofilter']` is set with the full data range. SheetJS 0.18.5
+community edition writes this correctly — confirmed via XML inspection of the produced
+.xlsx (`<autoFilter ref="A1:O7"/>` present in `xl/worksheets/sheet*.xml`). Excel
+displays filter dropdowns + sort buttons in the header row when the file opens.
+
+**Column widths**: each column gets a sensible default width via `ws['!cols']` so the
+file looks reasonable on first open without the user manually expanding columns.
+
+**Stopped reason cell**: a new row in the Summary sheet, populated by walking
+`logEntries` backward to find the most recent terminal event. Maps to friendly text:
+- `circuit-breaker` → "Circuit breaker tripped after N consecutive errors near row X"
+- `error` + phase=`reauth` → "Re-auth failed: <message>"
+- `error` + phase=`init` → "Initial login failed: <message>"
+- `stopped` (user stop) → "Stopped by user at row X"
+- (none of the above) → empty (clean completion)
+
+### Item 2.10 (Phase 8, sub 3) — Freeze-pane NOT shipped; SheetJS 0.18.5 community limitation
+
+Per design line 386, freeze-pane was scoped for header rows of all three data sheets.
+Implementation set `ws['!views'] = [{ state: 'frozen', ySplit: 1, topLeftCell: 'A2' }]`,
+which is the documented SheetJS API for it.
+
+**Verification finding:** SheetJS 0.18.5 community edition does NOT actually write
+`<pane>` elements to the worksheet XML, even when `!views` is set. The produced .xlsx
+contains a bare `<sheetView workbookViewId="0"/>` with no pane info. This is a known
+limitation of the community edition (the pro edition writes panes correctly).
+
+Verified via reading the generated .xlsx as a zip and inspecting `xl/worksheets/sheet*.xml`.
+
+**Decision for v1.2.5:** ship without freeze-pane. The auto-filter on the header row
+already provides most of the navigation value (sticky filter dropdowns + visible
+column-sort buttons). User can manually enable freeze-pane via View > Freeze Panes
+if they want it for a specific log file.
+
+**Possible v1.2.6 follow-ups:**
+- Hand-patch the worksheet XML after SheetJS writes the file (open as zip, inject
+  `<pane>` element, repackage). Adds ~20 lines but is brittle if SheetJS ever
+  starts emitting panes itself.
+- Switch to `exceljs` for log writing. Larger dependency, fully supports freeze-pane.
+
+Neither is worth blocking on for v1.2.5.
+
+### Item 2.10 (Phase 8, sub 3) — Errors sheet was always empty pre-2.10; redefined now
+
+Pre-2.10, the Errors sheet filtered `logEntries.filter(e=>e.status==='error')`. The
+runner never used `'error'` as an entry status — rows that exhausted retries were
+written with `status='skip'`. So the Errors sheet was always empty (dead code).
+
+After 2.10's synthetic entries, `'error'` is now used by login/reauth failures and
+`'circuit-breaker'` by breaker-trip events. The Errors sheet now collects both:
+things that warrant investigation beyond a routine row-skip. Skipped rows are still
+in the Skipped sheet (separate, focused on retryable-row forensics).
+
+The Summary sheet's "Errors" count line now reflects the new definition. The
+"Total processed" / "Successful" lines explicitly filter on `e.row` (real rows
+only) so synthetic entries don't inflate the row count.
+
 ### Item 2.10 (Phase 8, sub 2) — Synthetic timeline entries for run-level events
 
 Five points now write a synthetic All-rows entry via `synthLog()`:

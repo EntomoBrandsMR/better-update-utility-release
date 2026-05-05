@@ -592,26 +592,99 @@ function flush(){
   // which meant a run that died before any row completed produced no Excel log.
   let attempt=0;
   const maxAttempts=3;
+  // v1.2.5 item 2.10 (Phase 8, sub 3): rich column ordering for Errors / Skipped /
+  // All-rows sheets. Most-actionable left, most-detailed right. Pivot-friendly.
+  // Headers map to log-entry field names. attemptedValue truncated by the runner.
+  const HEADERS = [
+    'Row','Status','Error category','Phase','Step #','Step type','Step label',
+    'Field/selector','Attempted value','URL','Error message','Timestamp','Failed step','Fields written','Duration (ms)'
+  ];
+  const HEADER_KEYS = [
+    'row','status','errorCategory','phase','stepIndex','stepType','stepLabel',
+    'selector','attemptedValue','url','error','timestamp','failedStep','fieldsWritten','durationMs'
+  ];
+  // Build a worksheet from a list of entries with explicit column order, auto-filter,
+  // and frozen header row. Returns the worksheet — caller appends it to the workbook.
+  function buildSheet(entries){
+    const aoa = [HEADERS];
+    for (const e of entries){
+      const row = HEADER_KEYS.map(k => (e[k] !== undefined && e[k] !== null) ? e[k] : '');
+      aoa.push(row);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    // Auto-filter on the header range. SheetJS 0.18 emits <autoFilter ref="..."/> from this.
+    const range = XLSX.utils.encode_range({s:{r:0,c:0},e:{r:Math.max(0,aoa.length-1),c:HEADERS.length-1}});
+    ws['!autofilter'] = { ref: range };
+    // Note: freeze-pane (per design line 386) was scoped here too, but SheetJS 0.18.5
+    // community edition doesn't write <pane> elements even when !views is set. The pro
+    // edition does. We get auto-filter + column ordering + Stopped reason as the
+    // bulk of the diagnostic value; freeze-pane is nice-to-have. Documented in
+    // POST-PUSH-NOTES. User can manually freeze rows in Excel via View > Freeze Panes.
+    // Reasonable column widths (in 'wch' units = approx character widths).
+    ws['!cols'] = [
+      {wch:6},{wch:12},{wch:18},{wch:12},{wch:14},{wch:12},{wch:18},
+      {wch:30},{wch:24},{wch:40},{wch:50},{wch:22},{wch:18},{wch:32},{wch:14}
+    ];
+    return ws;
+  }
   while(attempt<maxAttempts){
     attempt++;
     try{
       const wb=XLSX.utils.book_new();
-      const ok=logEntries.filter(e=>e.status==='ok'||e.status==='ok (retry)');
-      const errs=logEntries.filter(e=>e.status==='error');
+      // Filter the in-memory log into category buckets.
+      // 'success' / 'reauth' from synthetic entries are also considered "ok" for the rate calc.
+      const ok=logEntries.filter(e=>e.status==='ok'||e.status==='ok (retry)'||e.status==='success'||e.status==='reauth');
+      // 2.10 (Phase 8): redefine 'errors' as everything failure-like. Pre-2.10 the runner
+      // never wrote status='error' for rows (it used 'skip' for retry-exhausted), so the
+      // Errors sheet was always empty. After 2.10's synthetic entries, login/reauth
+      // failures DO use status='error', and breaker-trip entries use 'circuit-breaker'.
+      // The Errors sheet now collects all of these — the things that warrant investigation
+      // beyond a routine row-skip.
+      const errs=logEntries.filter(e=>e.status==='error'||e.status==='circuit-breaker');
       const skipped=logEntries.filter(e=>e.status==='skip');
-      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([
-        {Metric:'Total processed',Value:logEntries.length},
-        {Metric:'Successful',Value:ok.length},
+
+      // v1.2.5 item 2.10 sub 3: derive the "Stopped reason" Summary cell from the
+      // most recent terminal event in the log. Empty on clean completion.
+      let stoppedReason = '';
+      // Walk backwards through logEntries looking for a synthetic terminal event.
+      for (let i = logEntries.length - 1; i >= 0; i--){
+        const e = logEntries[i];
+        if (e.status === 'circuit-breaker') {
+          stoppedReason = e.stepLabel || ('Circuit breaker tripped (last successful row: ' + (e.error || '?') + ')');
+          break;
+        }
+        if (e.status === 'error' && e.phase === 'reauth') {
+          stoppedReason = 'Re-auth failed: ' + (e.error || 'unknown');
+          break;
+        }
+        if (e.status === 'error' && e.phase === 'init') {
+          stoppedReason = 'Initial login failed: ' + (e.error || 'unknown');
+          break;
+        }
+        if (e.status === 'stopped') {
+          stoppedReason = 'Stopped by user at row ' + (e.row || '?');
+          break;
+        }
+      }
+
+      const summaryRows = [
+        {Metric:'Total processed',Value:logEntries.filter(e=>e.row).length},
+        {Metric:'Successful',Value:ok.filter(e=>e.row).length},
         {Metric:'Errors',Value:errs.length},
         {Metric:'Skipped',Value:skipped.length},
-        {Metric:'Success rate',Value:logEntries.length?Math.round(ok.length/logEntries.length*100)+'%':'N/A'},
+        {Metric:'Success rate',Value:logEntries.filter(e=>e.row).length?Math.round(ok.filter(e=>e.row).length/logEntries.filter(e=>e.row).length*100)+'%':'N/A'},
+        {Metric:'Stopped reason',Value:stoppedReason},  // v1.2.5 2.10 sub 3 — empty on clean completion
         {Metric:'Last updated',Value:new Date().toLocaleString()},
         {Metric:'Phase at last flush',Value:(typeof _hbState!=='undefined'&&_hbState&&_hbState.phase)||'unknown'},
-      ]),'Summary');
+      ];
+      const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
+      summaryWs['!cols'] = [{wch:24},{wch:60}];
+      XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+
       if(logEntries.length){
-        XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(logEntries),'All rows');
-        if(errs.length)XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(errs),'Errors only');
-        if(skipped.length)XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(skipped),'Skipped');
+        XLSX.utils.book_append_sheet(wb, buildSheet(logEntries), 'All rows');
+        if(errs.length) XLSX.utils.book_append_sheet(wb, buildSheet(errs), 'Errors only');
+        if(skipped.length) XLSX.utils.book_append_sheet(wb, buildSheet(skipped), 'Skipped');
       } else {
         XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([
           {Note:'No rows were processed before this log was flushed. Check the runner log (.log file in the same folder) for diagnostic details.'}
