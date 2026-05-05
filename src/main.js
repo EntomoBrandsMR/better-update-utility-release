@@ -193,8 +193,8 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
       flowSnapshot: steps,
       headless: !!headless,
       errHandle: errHandle || 'retry',
-      rowDelayMin: rowDelayMin || 1,
-      rowDelayMax: rowDelayMax || 3,
+      rowDelayMin: rowDelayMin || 0,
+      rowDelayMax: rowDelayMax || 0,
       totalRows: totalRowsForCheckpoint,
       startedAt: new Date().toISOString(),
       rowIndex: resumeFromRow || 0,
@@ -229,7 +229,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   }
 
   // Write runner script with chromium path baked in
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 1, rowDelayMax || 3, chromiumExe, startMode);
+  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env };

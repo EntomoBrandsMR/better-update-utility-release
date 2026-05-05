@@ -32,4 +32,3 @@ The new Import-page header reads "Detected columns — drag from any step's chip
 ## Things I noticed but didn't change (potential future cleanups)
 
 - `src/main.js` line 16 comment says "v1.3.0 will lift this cap" referring to `MAX_CONCURRENT_RUNS`. Multi-runner moved to BUUA. Update this comment when in the area for item 2.3b (Phase 3).
-- `src/main.js` `start-automation` handler (line ~196-197) and `buildRunner` call (line ~232) still use fallback defaults `rowDelayMin || 1` and `rowDelayMax || 3`. Item 2.2 only updated the renderer; main.js fallbacks remain at 1/3. In practice the renderer always sends explicit values from the input fields (which are 0/0 per item 2.2), so these fallbacks never fire. Worth a small follow-up commit to align main.js with the new defaults.
