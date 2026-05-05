@@ -15,6 +15,30 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.7 — User Stop now preserves the checkpoint (behavior change from v1.2.4)
+
+In v1.2.4, clicking Stop while a run was active would terminate cleanly and **delete** the checkpoint. From v1.2.5 forward, clicking Stop preserves the checkpoint and annotates it with `lastStop: { phase: 'user-stop', rowIndex, lastSuccessfulRow, ts }`.
+
+On the next BUU launch, the resume modal will appear for that stopped run. The user has three options: Resume forward, Discard (deletes checkpoint), or Dismiss (leaves it for next launch).
+
+**Why this is the right call:** users sometimes Stop intending only to pause and reconsider. Today they lose the option to resume. After 2.7 they get the choice.
+
+**Trade-off:** users who genuinely want to abandon a run now need one extra click (Discard from the modal next launch). Net: better safety, marginal friction.
+
+### Item 2.7 — `skip-and-resume` shares runtime path with `resume`; visible distinction lands with 2.10
+
+The 3-option modal exposes a "Skip & resume" button that's only visible when the previous run hit the circuit breaker. Clicking it currently does the same thing as "Resume" — spawn from `rowIndex + 1`, leaving the failed cluster behind.
+
+The design's distinction is **logging-only**: skip-and-resume should mark the previously-failed rows as "skipped (breaker)" in the new run's Excel log, so a later analyst can tell which rows BUU intentionally bypassed. That requires touching the runner's log writer and the row-iteration logic to inject pseudo-entries before the resume row. Both are owned by item 2.10 (error log enrichment).
+
+For v1.2.5: the button's existence tells the user the system understands their intent, even though the runtime behavior is identical to Resume forward. Acceptable interim. If a user picks "Skip & resume" in this release and later asks "why doesn't my log show those skipped rows?" — that's a 2.10 follow-up, not a 2.7 bug.
+
+### Item 2.7 — `complete` event still fires after a user stop (pre-existing UX bug)
+
+Unrelated to 2.7 logic but observed while wiring the new state: when the user stops, the runner emits `stopped` then falls through the `finally` block, which lets execution exit naturally and the function emits `complete` with the partial row counts. The renderer's `handleRunEvent` for `complete` writes "Complete — N rows (X ok, Y errors, Z skipped)" which sounds like a successful finish.
+
+This was true in v1.2.4 too. Fix belongs to item 2.10 (live UI cleanup) where the emit shape gets revisited. Calling it out here so it doesn't get blamed on 2.7's user-stop behavior change.
+
 ### Item 2.5 (Build-side) — `copyToken` and `tokenBar`'s `field` arg are now vestigial
 
 After 2.5-Build, chips are drag-only. The old click-to-insert path through `copyToken()` is no longer reachable from the UI (chips have no onclick). The function still exists in source because removing it cleanly would mean also removing the `pendingInsertId`/`pendingInsertField` globals it reads — and **those globals are still set by the paste-HTML modal flow** via input `onfocus` handlers and `openPasteModal()`. Pulling that thread is its own refactor.

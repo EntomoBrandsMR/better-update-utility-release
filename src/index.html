@@ -665,11 +665,16 @@ textarea { resize: vertical; min-height: 60px; }
       <div style="margin-bottom:8px;color:var(--t2)">Choose a profile to resume with:</div>
       <select id="resumeProfileSelect" style="width:100%;padding:8px;background:var(--bg2);border:1px solid var(--brd);color:var(--t1);border-radius:6px"></select>
     </div>
+    <div id="resumeReason" style="display:none;background:rgba(220,160,60,0.08);border:1px solid var(--amber);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;line-height:1.55">
+      <div style="font-weight:600;margin-bottom:4px" id="resumeReasonTitle"></div>
+      <div style="color:var(--t2)" id="resumeReasonBody"></div>
+    </div>
     <div id="resumeFileMissing" style="display:none;background:rgba(255,80,80,0.08);border:1px solid var(--red);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px;color:var(--red)">
       ⚠ Spreadsheet file no longer at the original path. Resume is not possible — only Discard or Dismiss are available.
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn pri" id="resumeBtnResume" style="flex:1;min-width:120px" onclick="resumeChoice('resume')">▶ Resume</button>
+      <button class="btn pri" id="resumeBtnSkipResume" style="display:none;flex:1;min-width:120px;background:var(--amber);color:#1a1a1a" onclick="resumeChoice('skip-and-resume')">⤳ Skip & resume</button>
       <button class="btn" id="resumeBtnDiscard" style="flex:1;min-width:120px" onclick="resumeChoice('discard')">🗑 Discard</button>
       <button class="btn" id="resumeBtnDismiss" style="flex:1;min-width:120px" onclick="resumeChoice('dismiss')">Dismiss</button>
     </div>
@@ -1829,11 +1834,42 @@ async function showResumePrompt(orphan){
     const pct=orphan.totalRows>0?Math.round((orphan.rowIndex/orphan.totalRows)*100):0;
     document.getElementById('resumeProgress').textContent=orphan.rowIndex.toLocaleString()+' of '+orphan.totalRows.toLocaleString()+' rows ('+pct+'%)';
 
-    // File-missing case: hide Resume, only Discard/Dismiss work
+    // v1.2.5 item 2.7: contextual stop-reason banner + Skip-and-resume button.
+    // Three cases: lastError (breaker / fatal), lastStop (user stop), or neither (legacy/crash).
+    const reasonBox=document.getElementById('resumeReason');
+    const reasonTitle=document.getElementById('resumeReasonTitle');
+    const reasonBody=document.getElementById('resumeReasonBody');
+    const skipBtn=document.getElementById('resumeBtnSkipResume');
+    skipBtn.style.display='none';  // default hidden, only breaker case shows it
+    if(orphan.lastError && orphan.lastError.phase==='circuit-breaker'){
+      reasonBox.style.display='';
+      reasonTitle.textContent='Circuit breaker tripped';
+      reasonBody.textContent='The previous run hit '+orphan.lastError.consecutiveErrors+' consecutive errors and stopped to prevent further wasted time. Last successful row: '+(orphan.lastError.lastSuccessfulRow||'?')+'. You can resume forward (the failed rows will be re-attempted) or skip forward past them.';
+      skipBtn.style.display='';
+    }else if(orphan.lastError && orphan.lastError.phase==='fatal'){
+      reasonBox.style.display='';
+      reasonTitle.textContent='Run crashed';
+      reasonBody.textContent='The previous run hit a fatal error: '+(orphan.lastError.message||'unknown')+'. Resume will pick up from the last checkpoint.';
+    }else if(orphan.lastStop && orphan.lastStop.phase==='user-stop'){
+      reasonBox.style.display='';
+      reasonTitle.textContent='Run was stopped';
+      reasonBody.textContent='You stopped the previous run at row '+orphan.lastStop.rowIndex+'. Resume will pick up where it left off, or Discard to abandon it.';
+    }else{
+      reasonBox.style.display='none';
+    }
+
+    // File-missing case: hide Resume + Skip-and-resume, only Discard/Dismiss work
     const fileMissing=document.getElementById('resumeFileMissing');
     const resumeBtn=document.getElementById('resumeBtnResume');
-    if(!orphan.fileExists){fileMissing.style.display='';resumeBtn.disabled=true;resumeBtn.style.opacity='0.5';}
-    else{fileMissing.style.display='none';resumeBtn.disabled=false;resumeBtn.style.opacity='';}
+    if(!orphan.fileExists){
+      fileMissing.style.display='';
+      resumeBtn.disabled=true;resumeBtn.style.opacity='0.5';
+      skipBtn.disabled=true;skipBtn.style.opacity='0.5';
+    }else{
+      fileMissing.style.display='none';
+      resumeBtn.disabled=false;resumeBtn.style.opacity='';
+      skipBtn.disabled=false;skipBtn.style.opacity='';
+    }
 
     // Profile-missing case: show profile picker
     const profilePicker=document.getElementById('resumeProfilePicker');
@@ -1841,7 +1877,7 @@ async function showResumePrompt(orphan){
       profilePicker.style.display='';
       const sel=document.getElementById('resumeProfileSelect');
       sel.innerHTML='';
-      if(profiles.length===0){sel.innerHTML='<option value="">No profiles configured — create one first</option>';resumeBtn.disabled=true;resumeBtn.style.opacity='0.5';}
+      if(profiles.length===0){sel.innerHTML='<option value="">No profiles configured — create one first</option>';resumeBtn.disabled=true;resumeBtn.style.opacity='0.5';skipBtn.disabled=true;skipBtn.style.opacity='0.5';}
       else{profiles.forEach(p=>{const opt=document.createElement('option');opt.value=p.id;opt.textContent=p.name;sel.appendChild(opt);});}
     }else{profilePicker.style.display='none';}
 
@@ -1861,15 +1897,19 @@ async function resumeChoice(action){
   else if(action==='dismiss'){
     _resumeResolver('dismiss');
   }
-  else if(action==='resume'){
+  else if(action==='resume' || action==='skip-and-resume'){
     let profileToUse=orphan.profileId;
     if(!orphan.profileExists){
       const sel=document.getElementById('resumeProfileSelect');
       profileToUse=sel.value;
       if(!profileToUse){alert('No profile selected.');document.getElementById('resumeOverlay').classList.add('show');return;}
     }
-    _resumeResolver('resume');
-    // Hydrate full checkpoint and execute resume
+    _resumeResolver(action);
+    // Hydrate full checkpoint and execute resume.
+    // v1.2.5 item 2.7: 'skip-and-resume' currently routes through the same code path
+    // as 'resume'. Both spawn from rowIndex+1, ignoring the cluster of previously-failed
+    // rows. The visible distinction (marking those rows as "skipped (breaker)" in the new
+    // log) lands with item 2.10 (error log enrichment), which owns the log-writer.
     await executeResume(orphan,profileToUse);
   }
   _currentOrphan=null;_resumeResolver=null;

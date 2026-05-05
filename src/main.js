@@ -373,6 +373,9 @@ ipcMain.handle('find-orphan-checkpoints', () => {
         checkpointPath,
         profileExists: !!allProfiles.find(p => p.id === c.profileId),
         fileExists: fs.existsSync(c.spreadsheetPath),
+        // v1.2.5 item 2.7: forward the stop-reason annotations so the modal can show them.
+        lastError: c.lastError || null,
+        lastStop: c.lastStop || null,
       });
     } catch {}
   }
@@ -718,6 +721,9 @@ async function main(){
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
   // v1.2.5 item 2.3b: circuit breaker state
   let consecutiveErrors=0,lastSuccessfulRow=0,_breakerTripped=false;
+  // v1.2.5 item 2.7: track user-initiated stops so the finally block can preserve
+  // the checkpoint and annotate it with lastStop info.
+  let _userStopRequested=false;
 
   // Run login steps once before the row loop
   _hbState.phase='logging-in';
@@ -774,6 +780,7 @@ async function main(){
           entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;
           addLog(entry);
           emit({type:'stopped',rowIndex:ri,reason:'user'});
+          _userStopRequested=true;
           _stopRequested=true;
           break;
         }
@@ -797,7 +804,7 @@ async function main(){
               retrySucceeded = true;
             }catch(e2){
               // Retry-attempt sentinels also possible
-              if(e2 && e2.message==='__STOP__'){entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;addLog(entry);emit({type:'stopped',rowIndex:ri,reason:'user'});_stopRequested=true;break;}
+              if(e2 && e2.message==='__STOP__'){entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;addLog(entry);emit({type:'stopped',rowIndex:ri,reason:'user'});_userStopRequested=true;_stopRequested=true;break;}
               if(e2 && e2.message==='__NEXT_ROW__'){entry.status='skip';entry.error='Skipped via Next-row during step-through';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;skipped++;emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:'(user skipped)',url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});retrySucceeded=true;break;}
               lastError = e2;
             }
@@ -847,7 +854,7 @@ async function main(){
       if(currentMode==='step-row' && ri<totalRows && !_stopRequested){
         emit({type:'pause-row',rowIndex:ri,totalRows,ok,errs,skipped,elapsed:Date.now()-start,mode:currentMode});
         await waitForCommand();
-        if(currentMode==='stop'){_stopRequested=true; break;}
+        if(currentMode==='stop'){_userStopRequested=true;_stopRequested=true; break;}
       }
 
       if(ri<totalRows && !_stopRequested){const delay=Math.floor(Math.random()*(ROW_DELAY_MAX-ROW_DELAY_MIN+1))+ROW_DELAY_MIN;await page.waitForTimeout(delay);}
@@ -855,9 +862,23 @@ async function main(){
   }finally{
     _hbState.phase='cleanup';
     flush();
-    // v1.2.5 item 2.3b: preserve checkpoint when the breaker tripped, so the user can resume.
-    // (Item 2.7 will generalize this with a proper lastError/lastStop schema covering more exit paths.)
-    if(!_breakerTripped){
+    // v1.2.5 item 2.7: preserve checkpoint for any non-clean exit (breaker, user stop, fatal).
+    // The runner's stop paths set _breakerTripped or _userStopRequested. The fatal path
+    // (main().catch) writes lastError directly before exit and never reaches this finally.
+    const _preserveCheckpoint = _breakerTripped || _userStopRequested;
+    // Annotate user stops with lastStop. Breaker already wrote its own lastError above.
+    if(_userStopRequested){
+      try{
+        if(fs.existsSync(CHECKPOINT)){
+          const cp=JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));
+          cp.lastStop={phase:'user-stop',rowIndex:ri,lastSuccessfulRow,ts:new Date().toISOString()};
+          fs.writeFileSync(CHECKPOINT,JSON.stringify(cp));
+        }
+      }catch(e){
+        emit({type:'log',message:'Warning: could not annotate checkpoint with stop info: '+e.message});
+      }
+    }
+    if(!_preserveCheckpoint){
       try{fs.unlinkSync(CHECKPOINT);}catch{}
     }
     try{await runStep(page,LOGOUT_STEP,{},creds);}catch{}
@@ -867,7 +888,21 @@ async function main(){
   emit({type:'complete',totalRows:ri,ok,errs,skipped,elapsed:Date.now()-start,logPath:LOG_PATH});
 }
 
-main().catch(e=>{emit({type:'fatal',error:e.message});try{flush();}catch{}process.exit(1);});
+main().catch(e=>{
+  emit({type:'fatal',error:e.message});
+  // v1.2.5 item 2.7: annotate checkpoint so the resume modal can show what went wrong.
+  // The finally block in main() never ran, so we write directly here. Checkpoint is preserved
+  // by virtue of NOT calling unlinkSync (the only deletion path lives in the finally block).
+  try{
+    if(fs.existsSync(CHECKPOINT)){
+      const cp=JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));
+      cp.lastError={phase:'fatal',message:e.message,stack:(e.stack||'').split('\\n').slice(0,5).join('\\n'),ts:new Date().toISOString()};
+      fs.writeFileSync(CHECKPOINT,JSON.stringify(cp));
+    }
+  }catch{}
+  try{flush();}catch{}
+  process.exit(1);
+});
 `;
 }
 
