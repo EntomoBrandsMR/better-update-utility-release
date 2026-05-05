@@ -626,6 +626,25 @@ async function countRows(fp){
   const wb=XLSX.readFile(fp);return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]).length;
 }
 
+// v1.2.5 item 2.11 (Phase 7): shared login function. Used by:
+//   1. The initial LOGIN_STEPS run (via the pestpac-login step case below)
+//   2. Timer-based re-auth (every REAUTH_INTERVAL_MS at row boundaries)
+//   3. Connectivity-wait > 10 min (after waitForNetwork() returns)
+//   4. Detection-based re-auth (when row-start detects login URL)
+// Throws if any step in the sequence fails. Caller decides whether that's fatal.
+async function loginToPestPac(page, creds){
+  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  await page.waitForSelector('input[name="uid"]',{timeout:15000});
+  await page.fill('input[name="uid"]','');
+  await page.fill('input[name="uid"]',creds.companyKey||'');
+  await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+  await page.waitForSelector('input[name="username"]',{timeout:15000});
+  await page.fill('input[name="username"]',creds.username||'');
+  await page.fill('input[name="password"]',creds.password||'');
+  await page.click('button[data-testid="loginBtn"]');
+  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
+}
+
 async function runStep(page,step,row,creds){
   const r=v=>{if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');};
   const ms=s=>Math.round(parseFloat(s||1)*1000);
@@ -639,17 +658,10 @@ async function runStep(page,step,row,creds){
     case 'wait':if(step.waitType==='random'){const mn=ms(step.waitMin||1),mx=ms(step.waitMax||3);await page.waitForTimeout(Math.floor(Math.random()*(mx-mn+1))+mn);}else if(step.waitType==='element')await page.waitForSelector(step.waitSel||'',{timeout:30000});else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
     case 'assert':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});if(step.expected){const t=await page.locator(step.selector).textContent();if(!t.includes(step.expected))throw new Error('Assert failed: expected "'+step.expected+'" got "'+t+'"');}break;
     case 'pestpac-login':{
-      // Full PestPac login sequence in one step
-      await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
-      await page.waitForSelector('input[name="uid"]',{timeout:15000});
-      await page.fill('input[name="uid"]','');
-      await page.fill('input[name="uid"]',creds.companyKey||'');
-      await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
-      await page.waitForSelector('input[name="username"]',{timeout:15000});
-      await page.fill('input[name="username"]',creds.username||'');
-      await page.fill('input[name="password"]',creds.password||'');
-      await page.click('button[data-testid="loginBtn"]');
-      await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
+      // v1.2.5 item 2.11 (Phase 7): delegate to shared helper. The body lives in
+      // loginToPestPac() above so the same sequence is used by the three re-auth
+      // triggers (timer / connectivity-wait / detection) without duplication.
+      await loginToPestPac(page, creds);
       break;}
     case 'pestpac-logout':{
       // Navigate to search, click user menu, click Log Out
@@ -786,6 +798,38 @@ async function main(){
     catch(e){ emit({type:'fatal',error:'Login failed at step '+( step._label||step.type)+': '+e.message}); flush(); await browser.close(); process.exit(1); }
   }
 
+  // v1.2.5 item 2.11 (Phase 7): re-auth state and helpers.
+  // Three triggers fire maybeReauth(reason):
+  //   1. Timer: at row boundaries when Date.now() >= nextReauthAt (REAUTH_INTERVAL_MS=0 disables)
+  //   2. Connectivity-wait: after waitForNetwork() returns waitedMs > 10*60*1000
+  //   3. Detection: at row-start when isOnLoginPage() returns true
+  // Re-auth never interleaves with row execution — all triggers fire at row boundaries
+  // (or during the network-wait gate, which is between rows by definition).
+  let nextReauthAt = REAUTH_INTERVAL_MS > 0 ? Date.now() + REAUTH_INTERVAL_MS : 0;
+  async function maybeReauth(reason){
+    emit({type:'log',message:'Re-authenticating ('+reason+')…'});
+    _hbState.phase='reauth-'+reason;
+    try{
+      await loginToPestPac(page, creds);
+      // Reset the timer regardless of which trigger fired — a fresh login means
+      // we don't need another timer-based re-auth for REAUTH_INTERVAL_MS.
+      if(REAUTH_INTERVAL_MS > 0) nextReauthAt = Date.now() + REAUTH_INTERVAL_MS;
+      emit({type:'log',message:'Re-auth complete ('+reason+'). Continuing.'});
+      _hbState.phase='running';
+    }catch(e){
+      // Re-auth failure is fatal — we can't proceed without a valid session.
+      emit({type:'fatal',error:'Re-auth failed ('+reason+'): '+e.message});
+      throw e;  // Caught by main()'s outer catch which writes lastError and exits.
+    }
+  }
+  function isOnLoginPage(){
+    try{
+      const u = page.url() || '';
+      // Match login.pestpac.com domain (initial login destination + session-expired redirect).
+      return /login\\.pestpac\\.com/i.test(u);
+    }catch{return false;}
+  }
+
   try{
     _hbState.phase='running';
     // Emit initial mode so UI can position itself before the first row.
@@ -800,6 +844,21 @@ async function main(){
       if(IS_RETRY_RUN && !RETRY_ROW_INDEXES.has(ri)) continue;
       _hbState.rowIndex=ri;
       saveChk(ri);
+
+      // v1.2.5 item 2.11 (Phase 7): re-auth at row boundary.
+      // Trigger 1 (timer): proactive re-auth before session expires. nextReauthAt=0 disables.
+      if(nextReauthAt > 0 && Date.now() >= nextReauthAt){
+        try{ await maybeReauth('timer'); }
+        catch(e){ _stopRequested=true; break; }
+      }
+      // Trigger 3 (detection): if we're sitting on the login page, the session expired.
+      // Re-auth before the row's navigate steps so they don't all fail with "selector not found".
+      // Skipped if trigger 1 already ran (page is now post-login).
+      else if(isOnLoginPage()){
+        try{ await maybeReauth('detected-login-page'); }
+        catch(e){ _stopRequested=true; break; }
+      }
+
       emit({type:'row-start',rowIndex:ri,rowNum:ri,totalRows,url:row.URL||row.url||''});
       const t0=Date.now();
       const entry={row:ri,timestamp:new Date().toISOString(),url:row.URL||row.url||'',status:'ok',error:'',failedStep:'',fieldsWritten:'',durationMs:0};
@@ -859,8 +918,12 @@ async function main(){
               emit({type:'log',message:'Network down detected at row '+ri+' — waiting for reconnection before retry. (User Stop will exit cleanly.)'});
               const waitedMs = await waitForNetwork();
               emit({type:'log',message:'Network restored after '+Math.round(waitedMs/1000)+'s. Resuming row '+ri+'.'});
-              // Phase 7 sub 2 (item 2.11) hook: if waitedMs > 10*60*1000, trigger re-auth
-              // here before the retry attempts. Session may have expired during the outage.
+              // v1.2.5 item 2.11 trigger 2: long outage probably expired the session.
+              // Re-auth before the retry attempts so they don't waste budget hitting the login page.
+              if (waitedMs > 10 * 60 * 1000) {
+                try { await maybeReauth('connectivity-wait'); }
+                catch(e){ _stopRequested=true; break; }
+              }
             }
           } catch (waitErr) {
             // waitForNetwork() throws __STOP__ when user clicks Stop during the wait loop.

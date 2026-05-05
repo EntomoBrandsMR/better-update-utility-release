@@ -2162,6 +2162,16 @@ function handleRunEvent(evt){
     if(evt.phase==='logging-in'){document.getElementById('runStatusMsg').textContent='Logging in…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
     else if(evt.phase==='starting'){document.getElementById('runStatusMsg').textContent='Starting…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
     else if(evt.phase==='cleanup'){document.getElementById('runStatusMsg').textContent='Logging out and saving…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
+    // v1.2.5 item 2.11 (Phase 7): re-auth phases. Three reasons map to one user-visible message.
+    else if(evt.phase && evt.phase.indexOf('reauth-')===0){
+      const reason=evt.phase.replace('reauth-','');
+      const friendly = reason==='timer' ? 'session refresh (scheduled)'
+                     : reason==='connectivity-wait' ? 'session refresh (after long outage)'
+                     : reason==='detected-login-page' ? 'session refresh (login page detected)'
+                     : 'session refresh ('+reason+')';
+      document.getElementById('runStatusMsg').textContent='Re-authenticating — '+friendly+'…';
+      document.getElementById('runStatusMsg').style.color='var(--blue)';
+    }
     // v1.2.5 item 2.8 (Phase 7): network-aware retry. Wait loop emits this every backoff iteration.
     else if(evt.phase==='waiting-for-internet'){
       const totalSec=Math.round((evt.totalWaitedMs||0)/1000);

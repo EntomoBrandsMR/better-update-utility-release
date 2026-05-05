@@ -15,6 +15,36 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.11 (Phase 7) — Re-auth fires at row boundaries, never mid-row
+
+The design called for three triggers (timer / connectivity-wait / detection). All three are implemented but converge on a single rule: **re-auth never interleaves with row execution.**
+
+- **Timer-based** is *not* a `setInterval` — that would risk firing mid-row. Instead, `nextReauthAt` is checked at the top of each row (after retry-skip filter, before `row-start` emit). When `Date.now() >= nextReauthAt`, `maybeReauth('timer')` runs synchronously, then the row proceeds. Worst-case drift: a 2-hour-and-3-min row delay vs the locked 2-hour interval. PestPac sessions are believed to last 4+ hours so this is well-margined.
+- **Detection-based** also fires at row-start, via `isOnLoginPage()` checking `page.url()` against `/login\.pestpac\.com/i`. Mid-row session expiry is therefore NOT caught — the row will fail with a confusing "selector not found" error, then the per-row retry logic kicks in (which itself doesn't currently re-auth, so the retries also fail, then the row skips). The next row's row-start will detect the login page and re-auth, so subsequent rows recover. Acceptable for v1.2.5; mid-row detection could be added in v1.2.6 if mid-row expiry turns out to be common.
+- **Connectivity-wait** fires inside the network gate (between rows by definition, since the gate runs AFTER a row's first failure). Threshold: `waitedMs > 10*60*1000`. Below 10 min, no re-auth — PestPac sessions tolerate brief outages.
+
+All three triggers route through `maybeReauth(reason)`, which calls a shared `loginToPestPac(page, creds)` helper. The `pestpac-login` step case in `runStep` was simplified to delegate to the same helper, so the initial login and the three re-auth triggers all use one code path.
+
+### Item 2.11 (Phase 7) — Re-auth failure is fatal
+
+`maybeReauth()` does NOT retry on its own failure. If `loginToPestPac` throws (network error during re-auth, PestPac down, credentials rejected, login page changed), the runner emits a fatal event, the outer main().catch writes `lastError: { phase: 'fatal', message: 'Re-auth failed (...)' }` to the checkpoint, and the runner exits with code 1.
+
+User sees: resume modal next launch with banner "Run crashed" and the re-auth failure message. Clear actionable feedback.
+
+This is the right default for v1.2.5: re-auth failure during a 6-hour overnight job suggests something deeply wrong (credentials wiped, network down for hours, PestPac changed their login flow). Continuing would just produce 4,000 confused rows. Better to stop, preserve the checkpoint, surface the issue, let the user investigate.
+
+A future v1.2.6 could add a small re-auth retry (3 attempts, 30s apart) for transient network blips during the re-auth itself. Out of scope for v1.2.5.
+
+### Item 2.11 (Phase 7) — `_hbState.phase` carries the re-auth reason
+
+While re-auth is in progress, the heartbeat phase is set to `reauth-timer` / `reauth-connectivity-wait` / `reauth-detected-login-page`. The renderer's heartbeat handler maps these to friendly status messages ("session refresh (scheduled)", etc.). After `loginToPestPac` returns successfully, phase resets to `running`.
+
+This means: if the user is watching the live log, they'll see the status flip to "Re-authenticating — session refresh (scheduled)…" for ~10–15 seconds (the duration of the login sequence), then back to "Row N…". Clear visual feedback that the system is healthy and being proactive.
+
+### Item 2.11 (Phase 7) — `nextReauthAt = 0` disables timer trigger; default 120 min stays
+
+Per the locked design and the dormant constant from commit `ddf98bf`, REAUTH_INTERVAL_MS defaults to 120 min. Setting reauthInterval=0 in Settings disables the timer trigger entirely. Detection and connectivity-wait triggers still work — they're independent of the timer.
+
 ### Item 2.8 (Phase 7) — Network probe is TCP, not DNS or HTTP HEAD
 
 The design (line 627) flagged the ping mechanism as an open question. Picked **TCP connect to `app.pestpac.com:443`** via Node's builtin `net` module. Reasoning:
