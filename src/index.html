@@ -971,6 +971,7 @@ textarea { resize: vertical; min-height: 60px; }
     <div class="card-hd" style="margin-bottom:6px">
       <div id="runStatusMsg" style="font-size:14px;font-weight:700;color:var(--t2)">Idle</div>
       <div style="display:flex;gap:6px">
+        <button class="btn pri sm" id="retryFailedBtn" onclick="retryFailedRows()" style="display:none;background:var(--amber);color:#1a1a1a;font-weight:700">↺ Retry failed rows</button>
         <button class="btn sm" id="openLogBtn" onclick="openCurrentLog()" style="display:none">Open log file</button>
         <button class="btn sm" onclick="go('log')">View log table</button>
       </div>
@@ -1104,6 +1105,14 @@ let currentLogPath = null, runStartTime = null, runRowsDone = 0, runTotal = 0;
 let currentRunId = null;
 let currentRunMode = 'run-all'; // tracks runner's current mode for UI; updated by 'mode' / 'pause-*' events
 let logEntries = [], runOk = 0, runErr = 0, runSkip = 0;
+// v1.2.5 item 2.12: track failed source-row indexes for the in-progress / just-completed run.
+// Uncapped (unlike logEntries which is sliced to last 500) - we need every failed row to
+// build the retry list. Each entry is just an integer (the source-row number, 1-based).
+let _failedRowIndexesThisRun = [];
+// Snapshot of the run config used for the just-completed run, so a Retry click reuses
+// the right spreadsheet/profile/settings without depending on UI state that may have
+// drifted (user edits steps, swaps spreadsheet, etc).
+let _lastRunSnapshot = null;
 
 const LOGIN_STEPS = [
   {id:'pp1',type:'pestpac-login',locked:true,_label:'Log in to PestPac'},
@@ -1757,6 +1766,9 @@ async function startRun(){
   if(!confirmed)return;
   const flowJson=JSON.stringify({allSteps:allSteps(),config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value}});
   runOk=0;runErr=0;runSkip=0;runRowsDone=0;runTotal=ssRowCount||0;runStartTime=Date.now();
+  // v1.2.5 item 2.12: reset failed-row tracker for this run + hide any retry button from a prior run.
+  _failedRowIndexesThisRun=[];
+  const _retryBtn=document.getElementById('retryFailedBtn');if(_retryBtn)_retryBtn.style.display='none';
   updateRunStats(0,0,0,0);
   startElapsedTicker();
   document.getElementById('liveLog').innerHTML='';
@@ -1800,10 +1812,103 @@ async function startRun(){
     });
     if(!result.ok){alert('Failed to start: ' + (result.error||'Unknown error'));runStopped();return;}
     currentLogPath=result.logPath;
+    // v1.2.5 item 2.12: snapshot run config so a Retry click later doesn't depend on
+    // current UI state (which may drift if user edits steps or swaps spreadsheet).
+    _lastRunSnapshot = {
+      stepsJson: JSON.stringify(flow.allSteps||[]),
+      spreadsheetPath: ssPath,
+      spreadsheetName: ssName,
+      sourceRowCount: ssRowCount,
+      profileId: activeProfileId,
+      headless: effectiveHeadless,
+      errHandle: document.getElementById('errHandle').value,
+      rowDelayMin: parseFloat(document.getElementById('rowDelayMin').value||0),
+      rowDelayMax: parseFloat(document.getElementById('rowDelayMax').value||0),
+      selectorTimeout: parseInt(document.getElementById('selectorTimeout').value||30),
+      pageLoadMode: document.getElementById('pageLoadMode').value||'domcontentloaded',
+      retryCount: parseInt(document.getElementById('retryCount').value||2),
+      breakerThreshold: parseInt(document.getElementById('breakerThreshold').value||20),
+      reauthInterval: parseInt(document.getElementById('reauthInterval').value||120),
+      startMode: startMode
+    };
     document.getElementById('openLogBtn').style.display='';
     document.getElementById('openLastLogBtn').style.display='';
   }
 }
+// v1.2.5 item 2.12: retry the failed rows from the just-completed run.
+// Uses the snapshot taken at run start so we don't depend on UI state that may have
+// drifted (user editing steps, swapping spreadsheet, etc).
+async function retryFailedRows(){
+  if(isRunning){alert('A run is already in progress.');return;}
+  if(!_lastRunSnapshot){alert('No prior run to retry from.');return;}
+  if(!_failedRowIndexesThisRun.length){alert('No failed rows to retry.');return;}
+  const snap = _lastRunSnapshot;
+  // Source-spreadsheet integrity check: row count must match what the original run saw.
+  // If the user has edited the spreadsheet between runs, indexes may map to different
+  // rows entirely. Refuse rather than silently process the wrong data.
+  if(ssPath !== snap.spreadsheetPath){
+    alert('Spreadsheet path has changed since the original run.\n\nOriginal: '+snap.spreadsheetName+'\nCurrent: '+ssName+'\n\nRe-load the original spreadsheet to retry, or run a fresh full run.');
+    return;
+  }
+  if(ssRowCount !== snap.sourceRowCount){
+    alert('Spreadsheet row count has changed.\n\nOriginal run saw: '+snap.sourceRowCount.toLocaleString()+' rows\nCurrent file has: '+ssRowCount.toLocaleString()+' rows\n\nRow indexes may not map correctly. Refusing to retry. Re-load the original spreadsheet at its original size, or run a fresh full run.');
+    return;
+  }
+  const n = _failedRowIndexesThisRun.length;
+  const confirmed = confirm('Retry '+n+' failed row'+(n===1?'':'s')+'?\n\n• Spreadsheet: '+snap.spreadsheetName+'\n• Profile: '+(profiles.find(p=>p.id===snap.profileId)||{}).name+'\n• Settings: same as original run (selector timeout, retry count, etc.)\n• A separate log file will be written for this retry.\n\nFailed rows: '+_failedRowIndexesThisRun.slice(0,20).join(', ')+(n>20?', + '+(n-20)+' more':''));
+  if(!confirmed) return;
+  // Set up renderer state for the retry run, mirroring startRun()'s lead-in.
+  isRunning=true;isPaused=false;
+  refreshRunBtn();
+  go('run');
+  if(!API.startAutomation){alert('Internal error: automation API not available.');isRunning=false;refreshRunBtn();return;}
+  const runId = Date.now().toString();
+  currentRunId = runId;
+  // Fresh stats for the retry run.
+  runOk=0;runErr=0;runSkip=0;runRowsDone=0;runStartTime=Date.now();
+  runTotal = n;  // for progress %, "n of n" rather than "n of source-total"
+  const failedRowsToRetry = _failedRowIndexesThisRun.slice();
+  // Reset trackers BEFORE calling startAutomation so the new run's row-error events
+  // populate a fresh _failedRowIndexesThisRun (in case the retry itself has failures).
+  _failedRowIndexesThisRun = [];
+  document.getElementById('retryFailedBtn').style.display='none';
+  updateRunStats(0,0,0,0);
+  startElapsedTicker();
+  document.getElementById('liveLog').innerHTML='';
+  addLiveLog('Retry run starting — '+n+' rows','info');
+  document.getElementById('runStatusMsg').textContent='Starting retry…';
+  document.getElementById('runStatusMsg').style.color='var(--blue)';
+  document.getElementById('runBtn').style.display='none';
+  document.getElementById('stopBtn').style.display='';
+  document.getElementById('pauseBtn').style.display='';
+  document.getElementById('nb-run').style.display='';
+  const _smSel=document.getElementById('startModeSel');if(_smSel)_smSel.disabled=true;
+  const result = await API.startAutomation({
+    stepsJson: snap.stepsJson,
+    spreadsheetPath: snap.spreadsheetPath,
+    profileId: snap.profileId,
+    headless: snap.headless,
+    runId,
+    resumeFromRow: 0,
+    errHandle: snap.errHandle,
+    rowDelayMin: snap.rowDelayMin,
+    rowDelayMax: snap.rowDelayMax,
+    selectorTimeout: snap.selectorTimeout,
+    pageLoadMode: snap.pageLoadMode,
+    retryCount: snap.retryCount,
+    breakerThreshold: snap.breakerThreshold,
+    reauthInterval: snap.reauthInterval,
+    retryRowIndexes: failedRowsToRetry,
+    startMode: snap.startMode
+  });
+  if(!result.ok){alert('Failed to start retry: '+(result.error||'Unknown error'));runStopped();return;}
+  currentLogPath=result.logPath;
+  // Update the snapshot so a Retry-of-the-retry would also work, with the latest config.
+  _lastRunSnapshot = Object.assign({}, snap);  // same config, distinct object
+  document.getElementById('openLogBtn').style.display='';
+  document.getElementById('openLastLogBtn').style.display='';
+}
+
 // v1.2.5 item 2.4: Single stop path. Both toolbar Stop and pause-panel Stop route here.
 // Uses clean-shutdown semantics (stdin command -> runner's __STOP__ sentinel -> finally block
 // runs with all the 2.7 checkpoint preservation logic). Disables Run button immediately so
@@ -2045,7 +2150,10 @@ function handleRunEvent(evt){
   }
   else if(evt.type==='row-start'){hidePause();addLiveLog('Row '+evt.rowIndex+'/'+evt.totalRows+': '+(evt.url||''),'info');document.getElementById('runStatusMsg').textContent='Row '+evt.rowIndex+' of '+evt.totalRows.toLocaleString()+'…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
   else if(evt.type==='row-done'){runRowsDone=evt.rowIndex;runOk=evt.ok||runOk+1;runErr=evt.errs||runErr;runSkip=evt.skipped||runSkip;addLiveLog('✓ Row '+evt.rowIndex+' done ('+evt.durationMs+'ms)','ok');addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:'ok',duration:evt.durationMs,url:evt.url||'',fieldsWritten:evt.fieldsWritten||'',failedStep:'',error:''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
-  else if(evt.type==='row-error'){runRowsDone=evt.rowIndex;runErr=evt.errs||runErr+1;runOk=evt.ok||runOk;runSkip=evt.skipped||runSkip;addLiveLog('✗ Row '+evt.rowIndex+' FAILED: '+evt.error,'err');addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:'error',duration:0,url:evt.url||'',fieldsWritten:'',failedStep:evt.failedStep||'',error:evt.error||''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
+  else if(evt.type==='row-error'){runRowsDone=evt.rowIndex;runErr=evt.errs||runErr+1;runOk=evt.ok||runOk;runSkip=evt.skipped||runSkip;addLiveLog('✗ Row '+evt.rowIndex+' FAILED: '+evt.error,'err');addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:'error',duration:0,url:evt.url||'',fieldsWritten:'',failedStep:evt.failedStep||'',error:evt.error||''});updateRunStats(runRowsDone,runOk,runErr,runSkip);
+    // v1.2.5 item 2.12: track failed rows for the post-completion Retry button.
+    if(typeof evt.rowIndex==='number') _failedRowIndexesThisRun.push(evt.rowIndex);
+  }
   else if(evt.type==='row-retry'){addLiveLog('↺ Retrying row '+evt.rowIndex+'…','warn');}
   else if(evt.type==='dialog'){addLiveLog('Dialog: '+evt.message+' → '+evt.action,'warn');}
   else if(evt.type==='log-error'){addLiveLog('⚠ Excel log save FAILED: '+(evt.message||'unknown')+' — check the logs folder. The run is continuing but its Excel report may be incomplete or absent.','err');}
@@ -2056,7 +2164,16 @@ function handleRunEvent(evt){
     else if(evt.phase==='cleanup'){document.getElementById('runStatusMsg').textContent='Logging out and saving…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
   }
   else if(evt.type==='fatal'){addLiveLog('FATAL: '+evt.error,'err');document.getElementById('runStatusMsg').textContent='Fatal error — stopped';document.getElementById('runStatusMsg').style.color='var(--red)';hidePause();runStopped();}
-  else if(evt.type==='complete'){const processed=evt.ok+evt.errs+evt.skipped;const msg='Complete — '+processed+' rows ('+evt.ok+' ok, '+evt.errs+' errors, '+evt.skipped+' skipped)';addLiveLog(msg,'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color='var(--green)';document.getElementById('runProgBar').style.width='100%';document.getElementById('rs-pct').textContent='100%';hidePause();runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log: '+evt.logPath,'info');}}
+  else if(evt.type==='complete'){const processed=evt.ok+evt.errs+evt.skipped;const msg='Complete — '+processed+' rows ('+evt.ok+' ok, '+evt.errs+' errors, '+evt.skipped+' skipped)';addLiveLog(msg,'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color='var(--green)';document.getElementById('runProgBar').style.width='100%';document.getElementById('rs-pct').textContent='100%';hidePause();runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log: '+evt.logPath,'info');}
+    // v1.2.5 item 2.12: surface a Retry-failed-rows button if any rows failed.
+    if(_failedRowIndexesThisRun.length > 0 && _lastRunSnapshot){
+      const btn=document.getElementById('retryFailedBtn');
+      if(btn){
+        btn.textContent='↺ Retry '+_failedRowIndexesThisRun.length+' failed row'+(_failedRowIndexesThisRun.length===1?'':'s');
+        btn.style.display='';
+      }
+    }
+  }
   else if(evt.type==='done'||evt.type==='closed'){if(isRunning){addLiveLog('Process exited (code '+( evt.code||0)+')','warn');hidePause();runStopped();}if(evt.logPath&&!currentLogPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';}}
 }
 

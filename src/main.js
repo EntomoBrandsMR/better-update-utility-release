@@ -143,7 +143,7 @@ ipcMain.handle('install-chromium', async () => {
 
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
-ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, startMode }) => {
+ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes, startMode }) => {
   // startMode: 'step' | 'step-row' | 'run-all'  (added v1.2.4). Defaults to 'run-all' for back-compat.
   startMode = startMode || 'run-all';
   // v1.2.5 item 2.8: tunable speed/resilience settings. Defaults match design doc.
@@ -154,6 +154,9 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   breakerThreshold = (breakerThreshold != null) ? Math.max(0, parseInt(breakerThreshold)) : 20;
   // v1.2.5 item 2.11: re-auth interval in minutes. 0 = disabled. Logic comes in Phase 7.
   reauthInterval = (reauthInterval != null) ? Math.min(480, Math.max(0, parseInt(reauthInterval))) : 120;
+  // v1.2.5 item 2.12: retry-failed-rows. When set, runner processes ONLY these row indexes
+  // (source-row numbers, 1-based). Empty/null means normal full-run behavior.
+  retryRowIndexes = Array.isArray(retryRowIndexes) ? retryRowIndexes.map(n => parseInt(n)).filter(n => n > 0) : [];
   // Concurrency guard — refuse if at cap. Prevents zombie runners.
   if (automationProcesses.size >= MAX_CONCURRENT_RUNS) {
     const running = Array.from(automationProcesses.values())[0];
@@ -208,6 +211,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
       retryCount,
       breakerThreshold,
       reauthInterval,
+      retryRowIndexes,
       totalRows: totalRowsForCheckpoint,
       startedAt: new Date().toISOString(),
       rowIndex: resumeFromRow || 0,
@@ -242,7 +246,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   }
 
   // Write runner script with chromium path baked in
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval);
+  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env };
@@ -397,7 +401,7 @@ ipcMain.handle('discard-checkpoint', (_, checkpointPath) => {
 });
 
 // ── RUNNER SCRIPT BUILDER ─────────────────────────────────────────────────────
-function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval) {
+function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes) {
   return `
 'use strict';
 const fs = require('fs');
@@ -437,6 +441,10 @@ const RETRY_COUNT = ${parseInt(retryCount)};
 const BREAKER_THRESHOLD = ${parseInt(breakerThreshold)};
 // v1.2.5 item 2.11: re-auth interval in ms. 0 = disabled. Logic comes in Phase 7.
 const REAUTH_INTERVAL_MS = ${parseInt(reauthInterval) * 60 * 1000};
+// v1.2.5 item 2.12: retry-failed-rows. When non-empty, runner processes ONLY these source-row
+// numbers (1-based). Use a Set for O(1) lookup since retry runs scan every source row.
+const RETRY_ROW_INDEXES = new Set(${JSON.stringify(retryRowIndexes || [])});
+const IS_RETRY_RUN = RETRY_ROW_INDEXES.size > 0;
 
 // Run-mode state machine (v1.2.4).
 // START_MODE is the initial mode; currentMode is mutated by stdin commands.
@@ -741,6 +749,9 @@ async function main(){
       if(_stopRequested) break;
       ri++;
       if(ri<=RESUME_FROM)continue;
+      // v1.2.5 item 2.12: retry-failed mode skips any source row not in the retry set.
+      // Increment ri (so log row numbers match source) but skip processing entirely.
+      if(IS_RETRY_RUN && !RETRY_ROW_INDEXES.has(ri)) continue;
       _hbState.rowIndex=ri;
       saveChk(ri);
       emit({type:'row-start',rowIndex:ri,rowNum:ri,totalRows,url:row.URL||row.url||''});

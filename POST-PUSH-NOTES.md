@@ -15,6 +15,30 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.12 — Retry-failed is in-session only; cross-launch retry deferred
+
+The "Retry N failed rows" button appears in the Run progress panel after a run completes with at least one failure. Clicking it spawns a new runner with `retryRowIndexes: [list of failed source rows]` and processes only those rows.
+
+**Scope intentionally narrow:**
+
+- **In-session only.** The button is populated from `_failedRowIndexesThisRun`, an in-memory array tracked from `row-error` events. Quitting BUU loses this state. Cross-launch retry (re-opening yesterday's log file and retrying its failures) requires the v1.2.4 backlog item to make historical logs scannable, which is out of scope for v1.2.5.
+- **`logEntries` cap doesn't matter.** The display log table is capped at 500 entries via `slice(-500)`, but `_failedRowIndexesThisRun` is uncapped — failures from any point in a 100k-row run are kept. Memory cost is negligible (8 bytes per int).
+- **Source-spreadsheet integrity check.** Retry refuses to proceed if `ssPath` or `ssRowCount` doesn't match the snapshot taken at original-run start. Prevents row-index mis-mapping if the user edited the spreadsheet between runs.
+
+**What's NOT in v1.2.5:**
+
+- Reading failures from a saved Excel log file (cross-launch). Belongs to a future "historical log scan" feature.
+- Auto-merge retry results into the original log. Per design, separate logs for audit clarity.
+- Auto-re-retry on new failures. The user clicks Retry again if the first retry produced more failures.
+
+**Edge case worth flagging:** if the user *navigates away from the Run progress panel* between completion and clicking Retry, the button state persists fine (it's a DOM element with `display:''`), but if the user runs a *fresh* full run before clicking Retry, `_failedRowIndexesThisRun` resets to empty and the button hides. That's correct behavior — retry-of-the-prior-run after starting a new run would be a footgun.
+
+### Item 2.12 — `runTotal` set to retry count, not source total
+
+When a retry run starts, the renderer sets `runTotal = n` (the retry list length) so the progress bar and "Row N of M" status reads naturally as "Row 47 of 12" rather than "Row 47 of 6,278." However the runner's own emit events use `totalRows` from the source (whatever `streamRows` reports), so `evt.totalRows` will still be the source count. The renderer ignores that for retry runs and uses its locally-set `runTotal`.
+
+This produces a small inconsistency: live log lines like "Row 47/6278" come from the `row-start` event's `evt.totalRows`, while the run-progress stat box uses `runTotal=12`. Acceptable for v1.2.5 — both numbers are meaningful in context (source row index vs retry progress). Could be polished in v1.2.6.
+
 ### Item 2.4 — Both Stop buttons now use clean shutdown (force-kill removed from primary path)
 
 In v1.2.4, the toolbar Stop and pause-panel Stop took different paths:
