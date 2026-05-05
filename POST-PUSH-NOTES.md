@@ -15,6 +15,14 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.11 (settings UI) — `REAUTH_INTERVAL_MS` is dormant until Phase 7
+
+The re-auth interval input is wired through (renderer → IPC → checkpoint → runner template), and the runner sees the value as `REAUTH_INTERVAL_MS`, but no code consumes it yet. The actual three triggers (timer-based, connectivity-wait, detection-based) and shared `loginToPestPac()` function come in Phase 7's item 2.11 logic commit.
+
+If the input is at default 120 (or any non-zero value) and a run hits the ~6 hour PestPac session ceiling, **the run will fail the same way the 5/1 Duncan run did** — that's the safety gap until Phase 7 lands. The circuit breaker (2.3b) catches it at 20 consecutive errors, so worst case is ~10 minutes of failed rows before stop, not 18 hours.
+
+Acceptable interim state. Don't ship v1.2.5 to fleet without finishing Phase 7.
+
 ### Item 2.3b — circuit breaker ships with minimal checkpoint preservation; full resume UX deferred to 2.7
 
 The breaker correctly preserves the checkpoint when it trips (skips the `unlinkSync(CHECKPOINT)` in the `finally` block when `_breakerTripped` is true). On the next launch, the existing v1.2.3 resume-on-launch logic will detect the orphan checkpoint and prompt to resume from the last `rowIndex`.

@@ -143,7 +143,7 @@ ipcMain.handle('install-chromium', async () => {
 
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
-ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, startMode }) => {
+ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, startMode }) => {
   // startMode: 'step' | 'step-row' | 'run-all'  (added v1.2.4). Defaults to 'run-all' for back-compat.
   startMode = startMode || 'run-all';
   // v1.2.5 item 2.8: tunable speed/resilience settings. Defaults match design doc.
@@ -152,6 +152,8 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   retryCount = (retryCount != null) ? Math.min(20, Math.max(0, parseInt(retryCount))) : 2;
   // v1.2.5 item 2.3b: consecutive-error circuit breaker. 0 = disabled.
   breakerThreshold = (breakerThreshold != null) ? Math.max(0, parseInt(breakerThreshold)) : 20;
+  // v1.2.5 item 2.11: re-auth interval in minutes. 0 = disabled. Logic comes in Phase 7.
+  reauthInterval = (reauthInterval != null) ? Math.min(480, Math.max(0, parseInt(reauthInterval))) : 120;
   // Concurrency guard — refuse if at cap. Prevents zombie runners.
   if (automationProcesses.size >= MAX_CONCURRENT_RUNS) {
     const running = Array.from(automationProcesses.values())[0];
@@ -205,6 +207,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
       pageLoadMode,
       retryCount,
       breakerThreshold,
+      reauthInterval,
       totalRows: totalRowsForCheckpoint,
       startedAt: new Date().toISOString(),
       rowIndex: resumeFromRow || 0,
@@ -239,7 +242,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   }
 
   // Write runner script with chromium path baked in
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold);
+  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env };
@@ -391,7 +394,7 @@ ipcMain.handle('discard-checkpoint', (_, checkpointPath) => {
 });
 
 // ── RUNNER SCRIPT BUILDER ─────────────────────────────────────────────────────
-function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold) {
+function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval) {
   return `
 'use strict';
 const fs = require('fs');
@@ -429,6 +432,8 @@ const PAGE_LOAD_MODE = ${JSON.stringify(pageLoadMode)};
 const RETRY_COUNT = ${parseInt(retryCount)};
 // v1.2.5 item 2.3b: consecutive-error circuit breaker (0 = disabled)
 const BREAKER_THRESHOLD = ${parseInt(breakerThreshold)};
+// v1.2.5 item 2.11: re-auth interval in ms. 0 = disabled. Logic comes in Phase 7.
+const REAUTH_INTERVAL_MS = ${parseInt(reauthInterval) * 60 * 1000};
 
 // Run-mode state machine (v1.2.4).
 // START_MODE is the initial mode; currentMode is mutated by stdin commands.

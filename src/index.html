@@ -867,6 +867,11 @@ textarea { resize: vertical; min-height: 60px; }
         <div class="hint">Circuit breaker. After this many failures in a row, stop and preserve the checkpoint. 0 = disabled.</div>
       </div>
       <div class="fg">
+        <label>Re-auth every N minutes</label>
+        <input type="number" id="reauthInterval" value="120" min="0" max="480" step="1"/>
+        <div class="hint">Re-login to PestPac on a timer to dodge the ~6 hour session ceiling. 0 = disabled.</div>
+      </div>
+      <div class="fg">
         <label>Browser visibility</label>
         <div class="toggle-wrap" style="margin-top:8px">
           <button class="toggle on" id="visToggle" onclick="toggleVisibility()"></button>
@@ -1625,6 +1630,7 @@ async function startRun(){
       pageLoadMode: document.getElementById('pageLoadMode').value||'domcontentloaded',
       retryCount: parseInt(document.getElementById('retryCount').value||2),
       breakerThreshold: parseInt(document.getElementById('breakerThreshold').value||20),
+      reauthInterval: parseInt(document.getElementById('reauthInterval').value||120),
       startMode: startMode
     });
     if(!result.ok){alert('Failed to start: ' + (result.error||'Unknown error'));runStopped();return;}
@@ -1759,6 +1765,7 @@ async function executeResume(orphan,profileId){
     pageLoadMode:(checkpoint.pageLoadMode==='networkidle'?'domcontentloaded':(checkpoint.pageLoadMode||'domcontentloaded')),
     retryCount:(checkpoint.retryCount!=null?checkpoint.retryCount:2),
     breakerThreshold:(checkpoint.breakerThreshold!=null?checkpoint.breakerThreshold:20),
+    reauthInterval:(checkpoint.reauthInterval!=null?checkpoint.reauthInterval:120),
   });
   if(!result.ok){alert('Failed to resume: '+(result.error||'Unknown error'));runStopped();return;}
   currentLogPath=result.logPath;
@@ -1909,12 +1916,12 @@ async function saveProfile(){const name=document.getElementById('pName').value.t
 async function deleteProfile(){if(!editingProfileId)return;if(!confirm('Delete this profile?'))return;if(API.deleteProfile)await API.deleteProfile(editingProfileId);else profiles=profiles.filter(p=>p.id!==editingProfileId);if(activeProfileId===editingProfileId)activeProfileId=null;await loadProfiles();document.getElementById('profileForm').style.display='none';}
 function cancelProfile(){document.getElementById('profileForm').style.display='none';}
 
-async function saveFlow(){const json=JSON.stringify({version:'1.0',steps,config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value,selectorTimeout:document.getElementById('selectorTimeout').value,pageLoadMode:document.getElementById('pageLoadMode').value,retryCount:document.getElementById('retryCount').value,breakerThreshold:document.getElementById('breakerThreshold').value,flowNotes:document.getElementById('flowNotes').value,headless}},null,2);if(API.saveFlow){
+async function saveFlow(){const json=JSON.stringify({version:'1.0',steps,config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value,selectorTimeout:document.getElementById('selectorTimeout').value,pageLoadMode:document.getElementById('pageLoadMode').value,retryCount:document.getElementById('retryCount').value,breakerThreshold:document.getElementById('breakerThreshold').value,reauthInterval:document.getElementById('reauthInterval').value,flowNotes:document.getElementById('flowNotes').value,headless}},null,2);if(API.saveFlow){
     const flowName=document.getElementById('flowNotes').value.trim().replace(/[^a-z0-9_\-]/gi,'_').slice(0,40)||'buu-flow';
     const p=await API.saveFlow({json,name:flowName});
     if(p)alert('Flow saved to '+p);
   }else{const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(json);a.download='buu-flow.json';a.click();}}
-async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);steps=data.steps||[];nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=(c.errHandle==='stop'?'retry':c.errHandle);if(c.selectorTimeout)document.getElementById('selectorTimeout').value=c.selectorTimeout;if(c.pageLoadMode)document.getElementById('pageLoadMode').value=(c.pageLoadMode==='networkidle'?'domcontentloaded':c.pageLoadMode);if(c.retryCount!=null)document.getElementById('retryCount').value=c.retryCount;if(c.breakerThreshold!=null)document.getElementById('breakerThreshold').value=c.breakerThreshold;if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderSteps();}
+async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);steps=data.steps||[];nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=(c.errHandle==='stop'?'retry':c.errHandle);if(c.selectorTimeout)document.getElementById('selectorTimeout').value=c.selectorTimeout;if(c.pageLoadMode)document.getElementById('pageLoadMode').value=(c.pageLoadMode==='networkidle'?'domcontentloaded':c.pageLoadMode);if(c.retryCount!=null)document.getElementById('retryCount').value=c.retryCount;if(c.breakerThreshold!=null)document.getElementById('breakerThreshold').value=c.breakerThreshold;if(c.reauthInterval!=null)document.getElementById('reauthInterval').value=c.reauthInterval;if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderSteps();}
 
 function openFlowsFolder(){if(API.openFlowsFolder)API.openFlowsFolder();}
 async function checkUpdates(){if(API.checkForUpdates)await API.checkForUpdates();else alert('Update checks only work in the desktop app.');}
