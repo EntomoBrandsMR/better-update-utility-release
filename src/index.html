@@ -814,9 +814,9 @@ textarea { resize: vertical; min-height: 60px; }
       <div class="fg">
         <label>Delay between rows (seconds)</label>
         <div style="display:flex;gap:8px;align-items:center">
-          <input type="number" id="rowDelayMin" value="1" min="0" step="0.1" style="width:80px" oninput="syncDelayMax()"/>
+          <input type="number" id="rowDelayMin" value="0" min="0" step="0.1" style="width:80px" oninput="syncDelayMax()"/>
           <span style="color:var(--t3);font-size:12px">to</span>
-          <input type="number" id="rowDelayMax" value="3" min="0" step="0.1" style="width:80px"/>
+          <input type="number" id="rowDelayMax" value="0" min="0" step="0.1" style="width:80px"/>
         </div>
         <div class="hint">Random pause between min and max seconds after each row. Set both to the same value for a fixed delay.</div>
       </div>
@@ -1470,7 +1470,7 @@ function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id)
 function addStep(type) { steps.push({id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
 function toggleAddMenu() { document.getElementById('addMenu').classList.toggle('open'); }
 function syncDelayMax() {
-  const min = parseFloat(document.getElementById('rowDelayMin').value||1);
+  const min = parseFloat(document.getElementById('rowDelayMin').value||0);
   const maxEl = document.getElementById('rowDelayMax');
   if (parseFloat(maxEl.value) < min) maxEl.value = min;
 }
@@ -1575,8 +1575,8 @@ async function startRun(){
       runId,
       resumeFromRow: 0,
       errHandle: document.getElementById('errHandle').value,
-      rowDelayMin: parseFloat(document.getElementById('rowDelayMin').value||1),
-      rowDelayMax: parseFloat(document.getElementById('rowDelayMax').value||3),
+      rowDelayMin: parseFloat(document.getElementById('rowDelayMin').value||0),
+      rowDelayMax: parseFloat(document.getElementById('rowDelayMax').value||0),
       startMode: startMode
     });
     if(!result.ok){alert('Failed to start: ' + (result.error||'Unknown error'));runStopped();return;}
@@ -1705,8 +1705,8 @@ async function executeResume(orphan,profileId){
     runId,
     resumeFromRow:checkpoint.rowIndex||0,
     errHandle:checkpoint.errHandle||'stop',
-    rowDelayMin:checkpoint.rowDelayMin||1,
-    rowDelayMax:checkpoint.rowDelayMax||3,
+    rowDelayMin:checkpoint.rowDelayMin||0,
+    rowDelayMax:checkpoint.rowDelayMax||0,
   });
   if(!result.ok){alert('Failed to resume: '+(result.error||'Unknown error'));runStopped();return;}
   currentLogPath=result.logPath;
