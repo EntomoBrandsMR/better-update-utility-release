@@ -895,28 +895,6 @@ textarea { resize: vertical; min-height: 60px; }
   </div>
 </div>
 
-<!-- ══ VALIDATE ══ -->
-<div class="panel" id="panel-validate">
-  <div class="page-header">
-    <div class="page-title">Validate</div>
-    <div class="page-sub">Check your flow for errors before running</div>
-  </div>
-  <div class="card">
-    <div class="card-hd">
-      <div class="card-title">Flow validation</div>
-      <button class="btn pri sm" onclick="runValidation()">Run checks</button>
-    </div>
-    <p style="font-size:12px;color:var(--t2);margin-bottom:14px;line-height:1.65">
-      Checks every step for missing selectors, unresolved column references, and logical issues. Fix all errors before running — warnings are advisory.
-    </p>
-    <div id="valSummary"></div>
-    <div id="valResults"><div class="empty">Click "Run checks" to validate.</div></div>
-    <div id="valNext" style="display:none" class="btn-row">
-      <button class="btn grn" onclick="go('run')">Continue to Run →</button>
-    </div>
-  </div>
-</div>
-
 <!-- ══ RUN PROGRESS ══ -->
 <div class="panel" id="panel-run">
   <div class="page-header">
@@ -1188,7 +1166,6 @@ function go(id) {
   const nav = document.getElementById('nav-' + id);
   if (nav) nav.classList.add('on');
   document.getElementById('mainContent').scrollTop = 0;
-  if (id === 'validate') runValidation();
 }
 
 async function openSpreadsheet() {
@@ -1554,18 +1531,11 @@ function runValidation() {
     }
     [s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')){const colMatch=cols.find(c=>c.toLowerCase()===ref.toLowerCase());if(!colMatch){issues.push({t:'err',msg:'{{' + ref + '}} not in spreadsheet.'});errs++;}}});});
     const worst=issues.length?(issues.some(x=>x.t==='err')?'err':issues.some(x=>x.t==='warn')?'warn':'ok'):'ok';
-    const smEntry=SM[s.type]||{label:s.type,badge:'bd-nav',desc:()=>s._label||s.type};items.push({isStep:true,stepNum:n,type:s.type,label:smEntry.label,desc:smEntry.desc(s),issues,worst});
+    const smEntry=SM[s.type]||{label:s.type,badge:'bd-nav',desc:()=>s._label||s.type};items.push({isStep:true,stepId:s.id,stepNum:n,type:s.type,label:smEntry.label,desc:smEntry.desc(s),issues,worst});
   });
-  const badge=document.getElementById('nb-validate');
-  if(errs){badge.style.display='';badge.textContent=errs+'e';badge.style.background='var(--rlt)';badge.style.color='var(--red)';}
-  else if(warns){badge.style.display='';badge.textContent=warns+'w';badge.style.background='var(--alt)';badge.style.color='var(--amber)';}
-  else{badge.style.display='none';}
-  document.getElementById('valSummary').innerHTML='<div class="stat-grid" style="grid-template-columns:repeat(5,1fr)"><div class="stat-box"><div class="stat-val">' + all.length + '</div><div class="stat-lbl">Total</div></div><div class="stat-box"><div class="stat-val" style="color:var(--purple)">' + LOGIN_STEPS.length + '</div><div class="stat-lbl">Login</div></div><div class="stat-box"><div class="stat-val" style="color:var(--green)">' + (all.filter(s=>!s.locked).length-items.filter(x=>x.isStep&&x.worst==='err').length) + '</div><div class="stat-lbl">Clean</div></div><div class="stat-box"><div class="stat-val" style="color:var(--red)">' + errs + '</div><div class="stat-lbl">Errors</div></div><div class="stat-box"><div class="stat-val" style="color:var(--amber)">' + warns + '</div><div class="stat-lbl">Warnings</div></div></div>';
-  let html='';
-  items.filter(x=>!x.isStep).forEach(item=>{html+='<div class="vrow v-' + item.t + '"><div class="vdot"></div><span>' + item.msg + '</span></div>';});
-  items.filter(x=>x.isStep).forEach(item=>{html+='<div class="vstep ' + item.worst + '"><div style="display:flex;align-items:center;gap:8px;margin-bottom:' + (item.issues.length?'6px':'0') + '"><span class="badge ' + SM[item.type].badge + '">' + item.label + '</span><span style="font-size:11px;color:var(--t2)">Step ' + item.stepNum + ': ' + item.desc + '</span>' + (!item.issues.length?'<span style="font-size:10px;font-weight:700;color:var(--green);margin-left:auto">✓ OK</span>':'') + '</div>' + item.issues.map(iss=>'<div class="vrow v-' + iss.t + '" style="margin-bottom:3px"><div class="vdot"></div><span>' + iss.msg + '</span></div>').join('') + '</div>';});
-  document.getElementById('valResults').innerHTML=html||'<div class="empty">No issues found.</div>';
-  document.getElementById('valNext').style.display=errs===0?'':'none';
+  // v1.2.5 item 2.6: Validate page is gone. Return structured results so callers
+  // (pre-run prompt, live re-validation badge, etc.) can render where appropriate.
+  return { items, errs, warns };
 }
 
 
