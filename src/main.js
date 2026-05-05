@@ -407,6 +407,8 @@ function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHa
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+// v1.2.5 item 2.8 (Phase 7): TCP probe for network-aware retry. Builtin module — no NODE_PATH needed.
+const net = require('net');
 
 const SPREADSHEET = process.argv[2];
 const CRED_PATH = process.argv[3];
@@ -471,6 +473,50 @@ _rl.on('line', function(line){
 function waitForCommand(){
   if (currentMode === 'run-all' || currentMode === 'stop') return Promise.resolve('auto');
   return new Promise(function(r){ _pendingResolve = r; });
+}
+
+// v1.2.5 item 2.8 (Phase 7): Network-aware retry.
+// probeNetwork() does a single TCP connect to PestPac and resolves true/false within 5s.
+// Source of truth for "are we connected" — error strings from Playwright are heterogeneous
+// and unreliable as a sole classifier. We probe AFTER any row failure to decide whether
+// to enter the wait-and-ping loop or fall through to the existing retry/skip logic.
+function probeNetwork(){
+  return new Promise(function(resolve){
+    const sock = net.connect({ host: 'app.pestpac.com', port: 443, timeout: 5000 });
+    let done = false;
+    const finish = function(ok){
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch (_) {}
+      resolve(ok);
+    };
+    sock.once('connect', function(){ finish(true); });
+    sock.once('error', function(){ finish(false); });
+    sock.once('timeout', function(){ finish(false); });
+  });
+}
+
+// waitForNetwork() loops with backoff until probeNetwork() returns true.
+// Honors the user-stop sentinel — if currentMode flips to 'stop' during the wait,
+// throws __STOP__ so the row catch handler bails cleanly. Returns total ms waited.
+async function waitForNetwork(){
+  const startWait = Date.now();
+  let attempt = 0;
+  const backoffs = [5000, 10000, 30000, 60000];
+  while (true) {
+    if (await probeNetwork()) return Date.now() - startWait;
+    const wait = backoffs[Math.min(attempt, backoffs.length - 1)];
+    attempt++;
+    emit({
+      type: 'heartbeat',
+      phase: 'waiting-for-internet',
+      attempt: attempt,
+      waitMs: wait,
+      totalWaitedMs: Date.now() - startWait
+    });
+    await new Promise(function(r){ setTimeout(r, wait); });
+    if (currentMode === 'stop') throw new Error('__STOP__');
+  }
 }
 
 // Resolve a preview snapshot of what's about to happen, used during pauses.
@@ -800,7 +846,38 @@ async function main(){
           entry.status='skip';entry.error='Skipped via Next-row during step-through';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;
           skipped++;
           emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:'(user skipped)',url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
-        }else if(ERR_HANDLE==='retry'){
+        }else{
+          // v1.2.5 item 2.8 (Phase 7): Network-aware retry gate.
+          // Probe AFTER the failure to decide what kind of failure this is. If PestPac is
+          // unreachable, wait for connectivity to come back and only THEN fall through to
+          // the existing retry/skip logic — so the bounded retry attempts run on a fresh
+          // connection instead of burning all 2 attempts during a multi-minute outage.
+          // (This is the fix for the 5/1 disaster pattern: lost connectivity at row N,
+          // 1991 subsequent rows all 'failed' because retries hit the same dead network.)
+          try {
+            if (await probeNetwork() === false) {
+              emit({type:'log',message:'Network down detected at row '+ri+' — waiting for reconnection before retry. (User Stop will exit cleanly.)'});
+              const waitedMs = await waitForNetwork();
+              emit({type:'log',message:'Network restored after '+Math.round(waitedMs/1000)+'s. Resuming row '+ri+'.'});
+              // Phase 7 sub 2 (item 2.11) hook: if waitedMs > 10*60*1000, trigger re-auth
+              // here before the retry attempts. Session may have expired during the outage.
+            }
+          } catch (waitErr) {
+            // waitForNetwork() throws __STOP__ when user clicks Stop during the wait loop.
+            if (waitErr && waitErr.message === '__STOP__') {
+              entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;
+              addLog(entry);
+              emit({type:'stopped',rowIndex:ri,reason:'user-during-network-wait'});
+              _userStopRequested=true;
+              _stopRequested=true;
+              break;
+            }
+            // Unexpected error from the network gate itself — log and fall through.
+            emit({type:'log',message:'Network gate unexpected error: '+(waitErr && waitErr.message)+' — continuing with retry logic'});
+          }
+          // Fall through to the existing retry/skip handling. If we just waited for
+          // connectivity, the retry attempts now operate on a fresh connection.
+          if(ERR_HANDLE==='retry'){
           // v1.2.5 item 2.8: configurable retry count (was hardcoded 1 attempt).
           let retryAttempt = 0;
           let retrySucceeded = false;
@@ -828,13 +905,14 @@ async function main(){
             consecutiveErrors++;
             emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
           }
-        }else{
-          // ERR_HANDLE === 'skip' (legacy 'stop' handled by renderer-side upgrade per item 2.3)
-          entry.status='skip';entry.error=e.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;
-          skipped++;
-          // v1.2.5 item 2.3b: counts toward circuit breaker
-          consecutiveErrors++;
-          emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
+          }else{
+            // ERR_HANDLE === 'skip' (legacy 'stop' handled by renderer-side upgrade per item 2.3)
+            entry.status='skip';entry.error=e.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;
+            skipped++;
+            // v1.2.5 item 2.3b: counts toward circuit breaker
+            consecutiveErrors++;
+            emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
+          }
         }
       }
       addLog(entry);

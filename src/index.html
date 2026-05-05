@@ -2162,6 +2162,15 @@ function handleRunEvent(evt){
     if(evt.phase==='logging-in'){document.getElementById('runStatusMsg').textContent='Logging in…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
     else if(evt.phase==='starting'){document.getElementById('runStatusMsg').textContent='Starting…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
     else if(evt.phase==='cleanup'){document.getElementById('runStatusMsg').textContent='Logging out and saving…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
+    // v1.2.5 item 2.8 (Phase 7): network-aware retry. Wait loop emits this every backoff iteration.
+    else if(evt.phase==='waiting-for-internet'){
+      const totalSec=Math.round((evt.totalWaitedMs||0)/1000);
+      const mins=Math.floor(totalSec/60), secs=totalSec%60;
+      const elapsedStr=mins>0?(mins+'m '+secs+'s'):(secs+'s');
+      document.getElementById('runStatusMsg').textContent='Waiting for internet (attempt '+(evt.attempt||1)+', '+elapsedStr+' so far)…';
+      document.getElementById('runStatusMsg').style.color='var(--amber)';
+      addLiveLog('Network probe failed — waiting '+Math.round((evt.waitMs||0)/1000)+'s before retry (total '+elapsedStr+' offline)','warn');
+    }
   }
   else if(evt.type==='fatal'){addLiveLog('FATAL: '+evt.error,'err');document.getElementById('runStatusMsg').textContent='Fatal error — stopped';document.getElementById('runStatusMsg').style.color='var(--red)';hidePause();runStopped();}
   else if(evt.type==='complete'){const processed=evt.ok+evt.errs+evt.skipped;const msg='Complete — '+processed+' rows ('+evt.ok+' ok, '+evt.errs+' errors, '+evt.skipped+' skipped)';addLiveLog(msg,'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color='var(--green)';document.getElementById('runProgBar').style.width='100%';document.getElementById('rs-pct').textContent='100%';hidePause();runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log: '+evt.logPath,'info');}

@@ -15,6 +15,36 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.8 (Phase 7) — Network probe is TCP, not DNS or HTTP HEAD
+
+The design (line 627) flagged the ping mechanism as an open question. Picked **TCP connect to `app.pestpac.com:443`** via Node's builtin `net` module. Reasoning:
+
+- **DNS lookup** is too lenient. Cached DNS will resolve even when the network is genuinely down (router up, ISP routing dead). False positive: probe says "connected" but every HTTP request fails.
+- **HTTP HEAD** is too aggressive. Every probe adds load to PestPac's servers. Run an overnight job through 6 outages, that's hundreds of needless requests. Also opens the door to rate-limiting / "are you a bot" responses, which would themselves look like network failure.
+- **TCP connect** confirms the network path end-to-end (ISP, routing, PestPac's load balancer accepting connections) without paying the HTTP cost. 5-second timeout. Sock destroyed immediately on connect. ~10–50ms when up, fails fast when down.
+
+The probe runs AFTER any row failure, regardless of error string. The probe result is the source of truth — error strings from Playwright are heterogeneous (`net::ERR_INTERNET_DISCONNECTED`, `Navigation failed because page crashed`, plain timeouts) and unreliable as a sole classifier.
+
+### Item 2.8 (Phase 7) — Network gate placed BEFORE the bounded retry loop, not after
+
+Initial plan was to add a probe inside each retry attempt. Final design probes once, BEFORE entering the retry loop. Reasoning:
+
+- If the network is genuinely down, the first 1–2 retry attempts will fail with network errors, exhausting the retry budget while the user waits for nothing. The breaker eventually trips (20 errors). That's the 5/1 disaster pattern.
+- Probing once before the retry loop converts a "burn the row's retry budget on a dead network" situation into "wait for network, then give the row its full retry budget on a live connection." Net effect: a 30-min outage costs the user 30 minutes of wall time, but ZERO row failures.
+- If the post-wait retry still fails, the existing retry/skip logic runs unchanged. Real selector errors still skip after their bounded retries; the breaker still trips on persistent real errors. The gate just removes "network down" from the breaker's input.
+
+### Item 2.8 (Phase 7) — User Stop honored during network wait
+
+`waitForNetwork()` checks `currentMode === 'stop'` after every sleep. If the user clicks Stop during a 6-hour network outage, the wait loop throws `__STOP__` and the row catch handler exits cleanly with a checkpoint annotated as `lastStop: { phase: 'user-stop', ... }` (item 2.7's path).
+
+The emitted `stopped` event uses `reason: 'user-during-network-wait'` (vs the normal `reason: 'user'`) so the runner log distinguishes the two cases. Renderer treats them identically — the row was stopped, no further processing.
+
+### Item 2.11 (Phase 7 sub 2) — Re-auth hook placed but not yet wired
+
+Inside the network gate, after `waitForNetwork()` returns the total ms waited, there's a comment-marked hook for item 2.11: if `waitedMs > 10*60*1000` (10 minutes), trigger re-auth before continuing. PestPac's session likely expired during a 10+ minute outage; the post-wait retry would just hit the login page and fail with a confusing "selector not found" error.
+
+Sub-commit 2 of Phase 7 will fill this in alongside the timer-based and detection-based re-auth triggers. All three triggers will share a single `loginToPestPac()` helper extracted from the existing `pestpac-login` step logic.
+
 ### Item 2.12 — Retry-failed is in-session only; cross-launch retry deferred
 
 The "Retry N failed rows" button appears in the Run progress panel after a run completes with at least one failure. Clicking it spawns a new runner with `retryRowIndexes: [list of failed source rows]` and processes only those rows.
