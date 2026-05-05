@@ -519,6 +519,33 @@ async function waitForNetwork(){
   }
 }
 
+// v1.2.5 item 2.10 (Phase 8): error classifier.
+// Maps an error message to one of seven categories for the new Excel log column.
+// String-based heuristic (vs 2.8's probe-based gate) — sufficient for forensic column,
+// not used for runtime decisions. Order matters: more-specific patterns checked first.
+function classifyError(errMsg){
+  const m = String(errMsg || '');
+  if (/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ERR_NAME_NOT_RESOLVED|ENOTFOUND|getaddrinfo/i.test(m)) return 'internet-down';
+  if (/ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ECONNREFUSED|ECONNRESET/i.test(m)) return 'pestpac-down';
+  if (/ERR_|net::/i.test(m)) return 'unknown-network';
+  if (/waitForSelector.*Timeout|waiting for selector/i.test(m)) return 'selector';
+  if (/Timeout|timed out|TimeoutError/i.test(m)) return 'timeout';
+  if (/Assert failed|HTTP 4\\d\\d|status code 4\\d\\d/i.test(m)) return 'validation';
+  return 'unknown';
+}
+
+// v1.2.5 item 2.10 (Phase 8): phase classifier from error message.
+// Heuristic — distinguishes pre-action (waitForSelector failed) from action (click/type
+// itself failed) from post-action (assert / follow-up wait failed). Saves us from
+// instrumenting every runStep case individually for v1.2.5.
+function classifyPhase(errMsg){
+  const m = String(errMsg || '');
+  if (/waitForSelector|waiting for selector|timeout.*selector/i.test(m)) return 'pre-action';
+  if (/Assert failed/i.test(m)) return 'post-action';
+  if (/Navigation failed|page\\.goto/i.test(m)) return 'action';
+  return 'action';  // default — most errors are action-phase
+}
+
 // Resolve a preview snapshot of what's about to happen, used during pauses.
 // Mirrors the substitution logic in runStep's r() but does not touch the page.
 function resolvePreview(step, row, creds){
@@ -861,8 +888,13 @@ async function main(){
 
       emit({type:'row-start',rowIndex:ri,rowNum:ri,totalRows,url:row.URL||row.url||''});
       const t0=Date.now();
-      const entry={row:ri,timestamp:new Date().toISOString(),url:row.URL||row.url||'',status:'ok',error:'',failedStep:'',fieldsWritten:'',durationMs:0};
+      const entry={row:ri,timestamp:new Date().toISOString(),url:row.URL||row.url||'',status:'ok',error:'',failedStep:'',fieldsWritten:'',durationMs:0,
+        // v1.2.5 item 2.10 (Phase 8): rich error-attribution columns. Populated only on failure.
+        errorCategory:'',phase:'',stepIndex:'',stepType:'',stepLabel:'',selector:'',attemptedValue:''};
       let done=[];
+      // v1.2.5 item 2.10: tracks the in-flight step for attribution when runStep throws.
+      // Updated by attempt() before each runStep call. Read by the outer catch.
+      let _currentStepCtx=null;
 
       // attempt() walks DATA_STEPS, pausing before each step when in 'step' mode.
       // Throws '__STOP__' if user requested stop (caught below); throws '__NEXT_ROW__'
@@ -871,9 +903,19 @@ async function main(){
         done=[];
         for(let si=0;si<DATA_STEPS.length;si++){
           const s=DATA_STEPS[si];
+          // v1.2.5 item 2.10: capture step context BEFORE runStep so the outer catch
+          // (which doesn't have access to si) can attribute the error correctly.
+          const _preview=resolvePreview(s,row,creds);
+          _currentStepCtx={
+            stepIndex:si,
+            totalSteps:DATA_STEPS.length,
+            stepType:s.type||'',
+            stepLabel:s._label||'',
+            selector:s.selector||'',
+            attemptedValue:_preview.value||''
+          };
           if(currentMode==='step'){
-            const preview=resolvePreview(s,row,creds);
-            emit({type:'pause-step',rowIndex:ri,totalRows,stepIndex:si,totalSteps:DATA_STEPS.length,step:preview,row,mode:currentMode});
+            emit({type:'pause-step',rowIndex:ri,totalRows,stepIndex:si,totalSteps:DATA_STEPS.length,step:_preview,row,mode:currentMode});
             const cmd=await waitForCommand();
             if(currentMode==='stop') throw new Error('__STOP__');
             if(cmd==='next-row') throw new Error('__NEXT_ROW__');
@@ -882,6 +924,8 @@ async function main(){
           await runStep(page,s,row,creds);
           done.push(s._label||s.type);
         }
+        // Cleared after a successful walk so retry attempts don't carry stale context.
+        _currentStepCtx=null;
       };
 
       try{
@@ -964,17 +1008,43 @@ async function main(){
           if(!retrySucceeded){
             const errMsg = retryAttempt === 0 ? e.message : ('After '+retryAttempt+' retry attempt(s): '+lastError.message);
             entry.status='skip';entry.error=errMsg;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;skipped++;
+            // v1.2.5 item 2.10 (Phase 8): populate rich error-attribution columns from
+            // the in-flight step ctx + classifier. Truncate attemptedValue per design.
+            if(_currentStepCtx){
+              entry.stepIndex='Step '+(_currentStepCtx.stepIndex+1)+' of '+_currentStepCtx.totalSteps;
+              entry.stepType=_currentStepCtx.stepType;
+              entry.stepLabel=_currentStepCtx.stepLabel;
+              entry.selector=_currentStepCtx.selector;
+              const av=_currentStepCtx.attemptedValue||'';
+              entry.attemptedValue = av.length > 100 ? (av.slice(0,100)+'…') : av;
+            }
+            entry.errorCategory=classifyError(errMsg);
+            entry.phase=classifyPhase(errMsg);
             // v1.2.5 item 2.3b: counts toward circuit breaker (BUU tried, couldn't make it work)
             consecutiveErrors++;
-            emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
+            emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start,
+              // v1.2.5 item 2.10: pass enrichment fields through to the live UI so the renderer can show e.g. status='skip' instead of misclassifying as 'FAILED'.
+              status:entry.status,errorCategory:entry.errorCategory,phase:entry.phase,stepIndex:entry.stepIndex,stepType:entry.stepType});
           }
           }else{
             // ERR_HANDLE === 'skip' (legacy 'stop' handled by renderer-side upgrade per item 2.3)
             entry.status='skip';entry.error=e.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;
+            // v1.2.5 item 2.10 (Phase 8): same enrichment as the retry-exhausted branch above.
+            if(_currentStepCtx){
+              entry.stepIndex='Step '+(_currentStepCtx.stepIndex+1)+' of '+_currentStepCtx.totalSteps;
+              entry.stepType=_currentStepCtx.stepType;
+              entry.stepLabel=_currentStepCtx.stepLabel;
+              entry.selector=_currentStepCtx.selector;
+              const av=_currentStepCtx.attemptedValue||'';
+              entry.attemptedValue = av.length > 100 ? (av.slice(0,100)+'…') : av;
+            }
+            entry.errorCategory=classifyError(e.message);
+            entry.phase=classifyPhase(e.message);
             skipped++;
             // v1.2.5 item 2.3b: counts toward circuit breaker
             consecutiveErrors++;
-            emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
+            emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start,
+              status:entry.status,errorCategory:entry.errorCategory,phase:entry.phase,stepIndex:entry.stepIndex,stepType:entry.stepType});
           }
         }
       }

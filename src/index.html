@@ -2150,7 +2150,22 @@ function handleRunEvent(evt){
   }
   else if(evt.type==='row-start'){hidePause();addLiveLog('Row '+evt.rowIndex+'/'+evt.totalRows+': '+(evt.url||''),'info');document.getElementById('runStatusMsg').textContent='Row '+evt.rowIndex+' of '+evt.totalRows.toLocaleString()+'…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
   else if(evt.type==='row-done'){runRowsDone=evt.rowIndex;runOk=evt.ok||runOk+1;runErr=evt.errs||runErr;runSkip=evt.skipped||runSkip;addLiveLog('✓ Row '+evt.rowIndex+' done ('+evt.durationMs+'ms)','ok');addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:'ok',duration:evt.durationMs,url:evt.url||'',fieldsWritten:evt.fieldsWritten||'',failedStep:'',error:''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
-  else if(evt.type==='row-error'){runRowsDone=evt.rowIndex;runErr=evt.errs||runErr+1;runOk=evt.ok||runOk;runSkip=evt.skipped||runSkip;addLiveLog('✗ Row '+evt.rowIndex+' FAILED: '+evt.error,'err');addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:'error',duration:0,url:evt.url||'',fieldsWritten:'',failedStep:evt.failedStep||'',error:evt.error||''});updateRunStats(runRowsDone,runOk,runErr,runSkip);
+  else if(evt.type==='row-error'){runRowsDone=evt.rowIndex;runErr=evt.errs||runErr+1;runOk=evt.ok||runOk;runSkip=evt.skipped||runSkip;
+    // v1.2.5 item 2.10 (Phase 8): runner now passes evt.status so we can distinguish
+    // 'skip' (BUU gave up after retries / errHandle=skip) from 'error' (true failure).
+    // Pre-2.10, the runner emitted plain row-error and the renderer always wrote 'FAILED'
+    // even when the actual log entry said status='skip'. Cosmetic but confusing.
+    const _wasSkip = evt.status === 'skip';
+    const _liveLabel = _wasSkip ? 'SKIPPED' : 'FAILED';
+    const _liveCls = _wasSkip ? 'warn' : 'err';
+    const _liveIcon = _wasSkip ? '⊘' : '✗';
+    // Build a richer one-liner using the new error-attribution fields when present.
+    let _liveExtra='';
+    if(evt.errorCategory) _liveExtra += ' ['+evt.errorCategory+']';
+    if(evt.stepIndex) _liveExtra += ' '+evt.stepIndex;
+    addLiveLog(_liveIcon+' Row '+evt.rowIndex+' '+_liveLabel+_liveExtra+': '+evt.error,_liveCls);
+    addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:_wasSkip?'skip':'error',duration:0,url:evt.url||'',fieldsWritten:'',failedStep:evt.failedStep||'',error:evt.error||''});
+    updateRunStats(runRowsDone,runOk,runErr,runSkip);
     // v1.2.5 item 2.12: track failed rows for the post-completion Retry button.
     if(typeof evt.rowIndex==='number') _failedRowIndexesThisRun.push(evt.rowIndex);
   }

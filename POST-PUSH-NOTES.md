@@ -15,6 +15,48 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.10 (Phase 8, sub 1) — Step context tracked in closure, not thrown with the error
+
+The cleanest way to attribute a row failure to a specific step would be to wrap each
+`runStep` call in a try/catch and re-throw with attached metadata. That requires
+modifying every case in the runStep switch (15+ cases) which is invasive and error-prone.
+
+Instead: a closure variable `_currentStepCtx` is updated by `attempt()` BEFORE each
+`runStep` call. If `runStep` throws, the outer catch reads the still-set ctx to
+populate the rich error columns. Cleared after a successful walk so retry attempts
+don't carry stale context.
+
+Trade-off: phase column is heuristic (regex on error message), not from the call site
+that actually failed. `pre-action` matches "waitForSelector timeout" patterns, `action`
+is the default for everything else, `post-action` matches "Assert failed". For v1.2.5
+this gives 80% of the diagnostic value with 5% of the implementation risk.
+
+### Item 2.10 (Phase 8, sub 1) — `errorCategory` is string-based, separate from 2.8's probe
+
+2.8's network gate uses `probeNetwork()` (TCP probe) as the source of truth for "are
+we connected" — string-based classification was deemed too unreliable for a runtime
+decision. 2.10's `classifyError()` is also string-based but only populates a forensic
+column, never drives runtime behavior.
+
+The two could disagree (e.g., a pure Playwright timeout with no network involvement
+would: probe=connected, errorCategory=timeout). That's correct — the gate said "we're
+connected, your row legitimately failed", and the column says "the failure looked
+like a timeout to the parser." Both true.
+
+### Item 2.10 (Phase 8, sub 1) — Row-error event payload extended; live UI now distinguishes skip from FAILED
+
+Pre-2.10, the runner emitted `row-error` events without `status` and the renderer
+always wrote "✗ Row N FAILED" — even though the actual Excel log entry said
+`status: 'skip'`. Cosmetic but confusing during retry-then-skip flows.
+
+After 2.10, the runner includes `status`, `errorCategory`, `phase`, `stepIndex`,
+`stepType` in the `row-error` payload. The renderer:
+- Shows "⊘ Row N SKIPPED [internet-down] Step 4 of 12: <error>" in amber for skips.
+- Shows "✗ Row N FAILED [selector] Step 4 of 12: <error>" in red for true errors.
+- Marks the log table entry with the matching status class.
+
+The Excel log writer (sub 3) will use the same fields to populate the new columns.
+
 ### Item 2.11 (Phase 7) — Re-auth fires at row boundaries, never mid-row
 
 The design called for three triggers (timer / connectivity-wait / detection). All three are implemented but converge on a single rule: **re-auth never interleaves with row execution.**
