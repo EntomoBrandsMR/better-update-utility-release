@@ -845,7 +845,7 @@ textarea { resize: vertical; min-height: 60px; }
       </div>
       <div class="fg">
         <label>Selector timeout (seconds)</label>
-        <input type="number" id="selectorTimeout" value="5" min="1" max="60" step="1"/>
+        <input type="number" id="selectorTimeout" value="30" min="1" max="60" step="1"/>
         <div class="hint">How long to wait for each field/button to appear. Lower = faster failure on bad selectors.</div>
       </div>
       <div class="fg">
@@ -1749,7 +1749,7 @@ async function executeResume(orphan,profileId){
     errHandle:checkpoint.errHandle==='stop'?'retry':(checkpoint.errHandle||'retry'),
     rowDelayMin:checkpoint.rowDelayMin||0,
     rowDelayMax:checkpoint.rowDelayMax||0,
-    selectorTimeout:checkpoint.selectorTimeout||5,
+    selectorTimeout:checkpoint.selectorTimeout||30,
     pageLoadMode:(checkpoint.pageLoadMode==='networkidle'?'domcontentloaded':(checkpoint.pageLoadMode||'domcontentloaded')),
     retryCount:(checkpoint.retryCount!=null?checkpoint.retryCount:2),
   });

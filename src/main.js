@@ -147,7 +147,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   // startMode: 'step' | 'step-row' | 'run-all'  (added v1.2.4). Defaults to 'run-all' for back-compat.
   startMode = startMode || 'run-all';
   // v1.2.5 item 2.8: tunable speed/resilience settings. Defaults match design doc.
-  selectorTimeout = (selectorTimeout != null) ? Math.min(60, Math.max(1, parseInt(selectorTimeout))) : 5;
+  selectorTimeout = (selectorTimeout != null) ? Math.min(60, Math.max(1, parseInt(selectorTimeout))) : 30;
   pageLoadMode = (pageLoadMode === 'load') ? 'load' : 'domcontentloaded';
   retryCount = (retryCount != null) ? Math.min(20, Math.max(0, parseInt(retryCount))) : 2;
   // Concurrency guard — refuse if at cap. Prevents zombie runners.

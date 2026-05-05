@@ -15,17 +15,21 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
-### Item 2.8 — selector timeout default drop is the riskiest change in v1.2.5
+### Item 2.8 — selector timeout default: 30s (deviated from design's 5s)
 
-The default selector timeout drops from 15s (hardcoded in v1.2.4) to 5s (configurable, but defaulting low). For most PestPac flows on a healthy network this is fine — selectors typically resolve in <1s. But:
+The design doc specified 5s as the new selector timeout default. Matthew opted for 30s instead (raised, not lowered, vs. v1.2.4's hardcoded 15s) to ensure no saved flows regress. Rationale:
 
-- PestPac has slow days where individual selectors can take 6-10 seconds to render (modal animations, lazy-loaded React components, server lag during peak hours).
-- Saved flows from before v1.2.5 don't carry a `selectorTimeout` field, so they pick up the new 5s default automatically — no migration prompt.
-- A flow that worked at 15s but fails at 5s will start producing "TimeoutError: waiting for selector ..." errors that look like flow bugs but are actually environmental.
+- 5s is correct for healthy PestPac runs but risks regressing flows that depended on the historical 15s tolerance during slow PestPac days.
+- The circuit breaker (item 2.3b) caps the worst case at 20 consecutive failures regardless of per-row timeout, so even if a flow hangs hard at 30s/row × 20 rows, that's ~10 minutes before the breaker stops the run. Acceptable.
+- Field is configurable per-flow on the Run settings card, so users with confidence in their flows can lower it to 5s.
 
-**Watch the first real run carefully.** If you see a sudden cluster of selector-timeout errors that weren't there before, raise the global Selector timeout to 10s or 15s on the Build steps page Run settings. The setting persists per-flow once saved.
+Defaults landed at 30s in:
+- index.html input value attribute
+- main.js `selectorTimeout` IPC fallback when value is null
+- index.html `executeResume` checkpoint fallback for legacy v1 checkpoints
+- _validate-runner.js test args use 5s deliberately (faster validator runs; not a runtime path)
 
-If the new defaults regress a known-good flow, that's reportable as a bug and we adjust defaults in v1.2.6. The doc said to ship at 5s; we did. But this is the field that's most likely to bite.
+If a future v1.2.6 wants to revisit this back toward the original 5s, treat it as a real product decision based on observed data, not a "fix."
 
 ### Item 2.8 — `_validate-runner.js` is gitignored
 
