@@ -192,7 +192,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
       spreadsheetName: path.basename(spreadsheetPath),
       flowSnapshot: steps,
       headless: !!headless,
-      errHandle: errHandle || 'stop',
+      errHandle: errHandle || 'retry',
       rowDelayMin: rowDelayMin || 1,
       rowDelayMax: rowDelayMax || 3,
       totalRows: totalRowsForCheckpoint,
@@ -229,7 +229,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   }
 
   // Write runner script with chromium path baked in
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'stop', rowDelayMin || 1, rowDelayMax || 3, chromiumExe, startMode);
+  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 1, rowDelayMax || 3, chromiumExe, startMode);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env };
@@ -766,15 +766,14 @@ async function main(){
           }catch(e2){
             // Retry-attempt sentinels also possible
             if(e2 && e2.message==='__STOP__'){entry.status='stopped';entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;addLog(entry);emit({type:'stopped',rowIndex:ri,reason:'user'});_stopRequested=true;break;}
-            entry.status='error';entry.error='Retry failed: '+e2.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;errs++;
+            entry.status='skip';entry.error='Retry failed: '+e2.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;skipped++;
             emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
-            if(ERR_HANDLE==='stop'){addLog(entry);flush();await browser.close();process.exit(1);}
           }
         }else{
-          entry.status=ERR_HANDLE==='skip'?'skip':'error';entry.error=e.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;
-          if(entry.status==='skip')skipped++;else errs++;
+          // ERR_HANDLE === 'skip' (legacy 'stop' handled by renderer-side upgrade per item 2.3)
+          entry.status='skip';entry.error=e.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;
+          skipped++;
           emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
-          if(ERR_HANDLE==='stop'){addLog(entry);flush();await browser.close();process.exit(1);}
         }
       }
       addLog(entry);

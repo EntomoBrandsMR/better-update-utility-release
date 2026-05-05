@@ -836,9 +836,8 @@ textarea { resize: vertical; min-height: 60px; }
       <div class="fg">
         <label>Error handling</label>
         <select id="errHandle">
-          <option value="stop">Stop on first error</option>
-          <option value="skip">Skip row, continue</option>
-          <option value="retry">Retry once then skip</option>
+          <option value="retry" selected>Retry</option>
+          <option value="skip">Skip</option>
         </select>
       </div>
       <div class="fg">
@@ -1723,7 +1722,7 @@ async function executeResume(orphan,profileId){
     headless:!!checkpoint.headless,
     runId,
     resumeFromRow:checkpoint.rowIndex||0,
-    errHandle:checkpoint.errHandle||'stop',
+    errHandle:checkpoint.errHandle==='stop'?'retry':(checkpoint.errHandle||'retry'),
     rowDelayMin:checkpoint.rowDelayMin||0,
     rowDelayMax:checkpoint.rowDelayMax||0,
   });
@@ -1872,7 +1871,7 @@ async function saveFlow(){const json=JSON.stringify({version:'1.0',steps,config:
     const p=await API.saveFlow({json,name:flowName});
     if(p)alert('Flow saved to '+p);
   }else{const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(json);a.download='buu-flow.json';a.click();}}
-async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);steps=data.steps||[];nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=c.errHandle;if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderSteps();}
+async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);steps=data.steps||[];nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=(c.errHandle==='stop'?'retry':c.errHandle);if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderSteps();}
 
 function openFlowsFolder(){if(API.openFlowsFolder)API.openFlowsFolder();}
 async function checkUpdates(){if(API.checkForUpdates)await API.checkForUpdates();else alert('Update checks only work in the desktop app.');}
