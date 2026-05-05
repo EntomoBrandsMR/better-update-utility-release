@@ -15,6 +15,26 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.4 — Both Stop buttons now use clean shutdown (force-kill removed from primary path)
+
+In v1.2.4, the toolbar Stop and pause-panel Stop took different paths:
+- Toolbar called `API.stopAutomation()` which **force-killed** the runner process (synchronous; `runStopped()` cleared UI immediately).
+- Pause-panel called `API.runControl({cmd:'stop'})` which sent a clean stdin command (asynchronous; UI relied on `done` event to clear `isRunning`).
+
+The pause-panel async chain had a race where a fast double-click hit "An automation is already running" because `isRunning` hadn't synced yet.
+
+After v1.2.5, both buttons route through a new `requestStop()` function that:
+1. Disables the Run button immediately (visible feedback during stop window)
+2. Sends the clean stdin command via `runControl`
+3. Sets `_stopInProgress` flag so subsequent clicks during the window are ignored
+4. Lets the runner's exit fire `done`/`closed` which calls `runStopped()` (re-enables buttons)
+
+The `API.stopAutomation` IPC handler (force-kill) still exists in main.js for backward compatibility; the renderer only calls it as a fallback if `API.runControl` is missing (older preload bridges). No production path exercises force-kill anymore.
+
+**Why this matters with 2.7:** force-kill bypasses the runner's `finally` block, which is where 2.7 writes `lastStop` and decides about checkpoint preservation. Force-killing would leave checkpoint state ambiguous (was the user-stop annotated? was the breaker preserved?). Clean shutdown gives 2.7's logic a chance to run.
+
+**Open question from design:** "Does `proc.on('close')` fire reliably on the clean-exit path?" The chain has multiple async steps (runner finally block → emit complete → main() returns → process exits → IPC fires `done`), but it's the same chain v1.2.4's pause-panel path used. Trusted to work; would surface as "buttons stuck disabled after stop" if it doesn't, easy to spot.
+
 ### Item 2.7 — User Stop now preserves the checkpoint (behavior change from v1.2.4)
 
 In v1.2.4, clicking Stop while a run was active would terminate cleanly and **delete** the checkpoint. From v1.2.5 forward, clicking Stop preserves the checkpoint and annotates it with `lastStop: { phase: 'user-stop', rowIndex, lastSuccessfulRow, ts }`.

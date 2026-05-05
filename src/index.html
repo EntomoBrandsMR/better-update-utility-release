@@ -1804,9 +1804,50 @@ async function startRun(){
     document.getElementById('openLastLogBtn').style.display='';
   }
 }
-async function stopRun(){if(!confirm('Stop the automation? The current row will be abandoned and the log saved.'))return;if(API.stopAutomation)await API.stopAutomation();runStopped();}
+// v1.2.5 item 2.4: Single stop path. Both toolbar Stop and pause-panel Stop route here.
+// Uses clean-shutdown semantics (stdin command -> runner's __STOP__ sentinel -> finally block
+// runs with all the 2.7 checkpoint preservation logic). Disables Run button immediately so
+// a double-click during the stop window doesn't hit "already running."
+let _stopInProgress = false;
+async function requestStop(){
+  if(_stopInProgress) return;  // ignore double-clicks during stop window
+  if(!confirm('Stop the automation? The current row will finish, the log will be saved, and you can resume next launch from the Discard/Resume modal.')) return;
+  _stopInProgress = true;
+  // Disable both Stop buttons too — clicking them again won't hurt but is misleading.
+  document.getElementById('runBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = true;
+  document.getElementById('runStatusMsg').textContent = 'Stopping… (waiting for current row to finish)';
+  document.getElementById('runStatusMsg').style.color = 'var(--amber)';
+  hidePause();
+  if(API.runControl){
+    await API.runControl({runId: currentRunId, cmd: 'stop'});
+  }else if(API.stopAutomation){
+    // Fallback for older preload bridges. Force-kill is worse but better than nothing.
+    await API.stopAutomation();
+    runStopped();  // synchronous fallback since force-kill bypasses the done event
+  }
+  // Don't call runStopped() here on the clean path — the runner's exit will fire
+  // 'done' or 'closed' and handleRunEvent will call runStopped() then.
+}
+
+async function stopRun(){return requestStop();}
+async function paneStop(){return requestStop();}
 async function togglePause(){if(isPaused){if(API.resumeRun)await API.resumeRun();isPaused=false;document.getElementById('pauseBtn').textContent='⏸ Pause';document.getElementById('runStatusMsg').textContent='Running…';document.getElementById('runStatusMsg').style.color='var(--green)';}else{if(API.pauseRun)await API.pauseRun();isPaused=true;document.getElementById('pauseBtn').textContent='▶ Resume';document.getElementById('runStatusMsg').textContent='Paused';document.getElementById('runStatusMsg').style.color='var(--amber)';}}
-function runStopped(){isRunning=false;isPaused=false;document.getElementById('runBtn').style.display='';document.getElementById('stopBtn').style.display='none';document.getElementById('pauseBtn').style.display='none';document.getElementById('nb-run').style.display='none';document.getElementById('runStatusMsg').textContent='Stopped';document.getElementById('runStatusMsg').style.color='var(--red)';refreshRunBtn();stopElapsedTicker();const _smSel=document.getElementById('startModeSel');if(_smSel)_smSel.disabled=false;currentRunId=null;const _pp=document.getElementById('pausePanel');if(_pp)_pp.style.display='none';}
+function runStopped(){
+  isRunning=false;isPaused=false;
+  // v1.2.5 item 2.4: clear stop-in-progress and re-enable buttons disabled by requestStop().
+  _stopInProgress=false;
+  const runBtn=document.getElementById('runBtn');runBtn.style.display='';runBtn.disabled=false;
+  const stopBtn=document.getElementById('stopBtn');stopBtn.style.display='none';stopBtn.disabled=false;
+  document.getElementById('pauseBtn').style.display='none';
+  document.getElementById('nb-run').style.display='none';
+  document.getElementById('runStatusMsg').textContent='Stopped';
+  document.getElementById('runStatusMsg').style.color='var(--red)';
+  refreshRunBtn();stopElapsedTicker();
+  const _smSel=document.getElementById('startModeSel');if(_smSel)_smSel.disabled=false;
+  currentRunId=null;
+  const _pp=document.getElementById('pausePanel');if(_pp)_pp.style.display='none';
+}
 
 // ── RESUME-ON-LAUNCH ──────────────────────────────────────────────────────
 // Tracks the orphan currently being decided on. Used by resumeChoice() callbacks.
@@ -2075,11 +2116,7 @@ async function paneRunAll(){
   hidePause();
   addLiveLog('Released — running through to end','info');
 }
-async function paneStop(){
-  if(!confirm('Stop the automation? The current row will be abandoned and the log saved.')) return;
-  if(API.runControl) await API.runControl({runId:currentRunId, cmd:'stop'});
-  hidePause();
-}
+// Note: paneStop is defined earlier (it routes to requestStop per v1.2.5 item 2.4).
 
 function addLiveLog(msg,type){const log=document.getElementById('liveLog');const cls=type==='ok'?'log-ok':type==='err'?'log-err':type==='warn'?'log-warn':'log-info';const time=new Date().toLocaleTimeString();log.innerHTML+='<span class="' + cls + '">[' + time + '] ' + msg + '</span>\n';log.scrollTop=log.scrollHeight;const lines=log.innerHTML.split('\n');if(lines.length>220)log.innerHTML=lines.slice(-200).join('\n');}
 // Elapsed-time ticker — refreshes the elapsed display every second while a run is active.
