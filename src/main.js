@@ -143,13 +143,15 @@ ipcMain.handle('install-chromium', async () => {
 
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
-ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, startMode }) => {
+ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, startMode }) => {
   // startMode: 'step' | 'step-row' | 'run-all'  (added v1.2.4). Defaults to 'run-all' for back-compat.
   startMode = startMode || 'run-all';
   // v1.2.5 item 2.8: tunable speed/resilience settings. Defaults match design doc.
   selectorTimeout = (selectorTimeout != null) ? Math.min(60, Math.max(1, parseInt(selectorTimeout))) : 30;
   pageLoadMode = (pageLoadMode === 'load') ? 'load' : 'domcontentloaded';
   retryCount = (retryCount != null) ? Math.min(20, Math.max(0, parseInt(retryCount))) : 2;
+  // v1.2.5 item 2.3b: consecutive-error circuit breaker. 0 = disabled.
+  breakerThreshold = (breakerThreshold != null) ? Math.max(0, parseInt(breakerThreshold)) : 20;
   // Concurrency guard — refuse if at cap. Prevents zombie runners.
   if (automationProcesses.size >= MAX_CONCURRENT_RUNS) {
     const running = Array.from(automationProcesses.values())[0];
@@ -202,6 +204,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
       selectorTimeout,
       pageLoadMode,
       retryCount,
+      breakerThreshold,
       totalRows: totalRowsForCheckpoint,
       startedAt: new Date().toISOString(),
       rowIndex: resumeFromRow || 0,
@@ -236,7 +239,7 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   }
 
   // Write runner script with chromium path baked in
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode, selectorTimeout, pageLoadMode, retryCount);
+  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env };
@@ -388,7 +391,7 @@ ipcMain.handle('discard-checkpoint', (_, checkpointPath) => {
 });
 
 // ── RUNNER SCRIPT BUILDER ─────────────────────────────────────────────────────
-function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode, selectorTimeout, pageLoadMode, retryCount) {
+function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold) {
   return `
 'use strict';
 const fs = require('fs');
@@ -424,6 +427,8 @@ const ROW_DELAY_MAX = ${Math.round(parseFloat(rowDelayMax) * 1000)};
 const SELECTOR_TIMEOUT = ${parseInt(selectorTimeout) * 1000};
 const PAGE_LOAD_MODE = ${JSON.stringify(pageLoadMode)};
 const RETRY_COUNT = ${parseInt(retryCount)};
+// v1.2.5 item 2.3b: consecutive-error circuit breaker (0 = disabled)
+const BREAKER_THRESHOLD = ${parseInt(breakerThreshold)};
 
 // Run-mode state machine (v1.2.4).
 // START_MODE is the initial mode; currentMode is mutated by stdin commands.
@@ -706,6 +711,8 @@ async function main(){
   const browser = await chromium.launch({ headless: HEADLESS, executablePath: CHROMIUM_EXE });
   const page=await(await browser.newContext()).newPage();
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
+  // v1.2.5 item 2.3b: circuit breaker state
+  let consecutiveErrors=0,lastSuccessfulRow=0,_breakerTripped=false;
 
   // Run login steps once before the row loop
   _hbState.phase='logging-in';
@@ -753,6 +760,8 @@ async function main(){
       try{
         await attempt();
         entry.fieldsWritten=done.join(' | ');entry.durationMs=Date.now()-t0;ok++;
+        // v1.2.5 item 2.3b: success resets the circuit breaker
+        consecutiveErrors=0;lastSuccessfulRow=ri;
         emit({type:'row-done',rowIndex:ri,totalRows,status:'ok',url:entry.url,fieldsWritten:entry.fieldsWritten,durationMs:entry.durationMs,ok,errs,skipped,elapsed:Date.now()-start});
       }catch(e){
         // Clean stop sentinel — bail out of the row loop entirely.
@@ -792,16 +801,41 @@ async function main(){
           if(!retrySucceeded){
             const errMsg = retryAttempt === 0 ? e.message : ('After '+retryAttempt+' retry attempt(s): '+lastError.message);
             entry.status='skip';entry.error=errMsg;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;skipped++;
+            // v1.2.5 item 2.3b: counts toward circuit breaker (BUU tried, couldn't make it work)
+            consecutiveErrors++;
             emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
           }
         }else{
           // ERR_HANDLE === 'skip' (legacy 'stop' handled by renderer-side upgrade per item 2.3)
           entry.status='skip';entry.error=e.message;entry.failedStep=done[done.length-1]||'?';entry.fieldsWritten=done.slice(0,-1).join(' | ');entry.durationMs=Date.now()-t0;
           skipped++;
+          // v1.2.5 item 2.3b: counts toward circuit breaker
+          consecutiveErrors++;
           emit({type:'row-error',rowIndex:ri,totalRows,error:entry.error,failedStep:entry.failedStep,url:entry.url,ok,errs,skipped,elapsed:Date.now()-start});
         }
       }
       addLog(entry);
+
+      // v1.2.5 item 2.3b: circuit breaker check. After threshold consecutive failures, stop the run
+      // and preserve the checkpoint so user can resume. User-initiated skips (__NEXT_ROW__) don't
+      // increment the counter, so they don't trip this.
+      if(BREAKER_THRESHOLD > 0 && consecutiveErrors >= BREAKER_THRESHOLD){
+        _breakerTripped=true;
+        // Annotate the checkpoint with breaker info. Schema additions are forward-compatible — Phase 6 (item 2.7)
+        // will generalize this with a richer lastError/lastStop schema, but this minimal write is enough today.
+        try{
+          if(fs.existsSync(CHECKPOINT)){
+            const cp=JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));
+            cp.lastError={phase:'circuit-breaker',consecutiveErrors,lastSuccessfulRow,rowIndex:ri,ts:new Date().toISOString()};
+            fs.writeFileSync(CHECKPOINT,JSON.stringify(cp));
+          }
+        }catch(e){
+          emit({type:'log',message:'Warning: could not annotate checkpoint with breaker info: '+e.message});
+        }
+        emit({type:'circuit-breaker',rowIndex:ri,totalRows,consecutiveErrors,lastSuccessfulRow,ok,errs,skipped,elapsed:Date.now()-start});
+        _stopRequested=true;
+        break;
+      }
 
       // Row-pause point: if we're in step-row mode and not the last row, wait for user.
       // Pause comes BEFORE the inter-row delay so the wait isn't doubled while user is looking.
@@ -816,7 +850,11 @@ async function main(){
   }finally{
     _hbState.phase='cleanup';
     flush();
-    try{fs.unlinkSync(CHECKPOINT);}catch{}
+    // v1.2.5 item 2.3b: preserve checkpoint when the breaker tripped, so the user can resume.
+    // (Item 2.7 will generalize this with a proper lastError/lastStop schema covering more exit paths.)
+    if(!_breakerTripped){
+      try{fs.unlinkSync(CHECKPOINT);}catch{}
+    }
     try{await runStep(page,LOGOUT_STEP,{},creds);}catch{}
     await browser.close();
     clearInterval(_heartbeat);

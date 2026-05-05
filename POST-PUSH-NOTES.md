@@ -15,6 +15,23 @@ These cannot be tested before ship — they need a live PestPac session and/or r
 
 ## Implementation deviations / open questions surfaced during impl
 
+### Item 2.3b — circuit breaker ships with minimal checkpoint preservation; full resume UX deferred to 2.7
+
+The breaker correctly preserves the checkpoint when it trips (skips the `unlinkSync(CHECKPOINT)` in the `finally` block when `_breakerTripped` is true). On the next launch, the existing v1.2.3 resume-on-launch logic will detect the orphan checkpoint and prompt to resume from the last `rowIndex`.
+
+**What works today:**
+- Breaker counts only "real" failures (retry-exhausted + Skip-mode immediate skip). User-initiated `__NEXT_ROW__` skips don't count.
+- Counter resets to 0 on any successful row.
+- On trip: checkpoint annotated with `lastError: { phase: 'circuit-breaker', consecutiveErrors, lastSuccessfulRow, rowIndex, ts }`. Schema is forward-compatible with item 2.7.
+- Live UI shows a clear status message and a follow-up alert dialog (so an unattended overnight job lands a visible signal in the morning).
+- Resume path can read `breakerThreshold` from checkpoint to keep the same threshold across the resume.
+
+**What's deferred to item 2.7 (Phase 6):**
+- Resume modal currently shows the existing v1.2.3 prompt — "Last run stopped at row X. Resume from this row, or start fresh?" — not the richer 3-option modal the design specifies (Resume / Skip-and-resume / Start fresh, with explicit counts of failed rows).
+- Resume currently re-attempts row X+1 onward; it doesn't re-attempt the cluster of failed rows that triggered the breaker. The 3-option modal in 2.7 will provide both behaviors as user choices.
+
+If a breaker trip happens before 2.7 lands, the user gets correct minimum behavior (work preserved, can resume forward), just not the cluster-retry option. Acceptable.
+
 ### Item 2.8 — selector timeout default: 30s (deviated from design's 5s)
 
 The design doc specified 5s as the new selector timeout default. Matthew opted for 30s instead (raised, not lowered, vs. v1.2.4's hardcoded 15s) to ensure no saved flows regress. Rationale:
