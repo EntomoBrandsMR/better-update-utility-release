@@ -891,13 +891,16 @@ ipcMain.handle('install-update', async (_, { downloadUrl }) => {
 
 // ── FILE I/O ──────────────────────────────────────────────────────────────────
 ipcMain.handle('open-spreadsheet', async () => {
+  const lastDir = (readConfig() || {}).lastSpreadsheetDir;
   const r = await dialog.showOpenDialog(mainWindow, {
     title: 'Open spreadsheet',
     filters: [{ name: 'Spreadsheets', extensions: ['xlsx', 'xls', 'csv'] }],
-    properties: ['openFile']
+    properties: ['openFile'],
+    ...(lastDir ? { defaultPath: lastDir } : {})
   });
   if (r.canceled) return null;
   const fp = r.filePaths[0];
+  try { writeConfig({ lastSpreadsheetDir: path.dirname(fp) }); } catch {}
   const XLSX = require('xlsx');
   const ext = fp.split('.').pop().toLowerCase();
   let headers = [], previewRows = [], totalRows = 0;
