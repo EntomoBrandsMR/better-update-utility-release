@@ -745,18 +745,191 @@ async function loginToPestPac(page, creds){
   await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
 }
 
+// v1.2.6: automatic iframe traversal for selector-based steps.
+// PestPac renders form pages (and especially modal dialogs like attach-to-lead)
+// inside iframes. Playwright's page.locator() queries the top frame only, so a
+// selector that resolves fine in DevTools (which auto-scopes to the active frame)
+// never matches from page-level. findLocator() walks the top frame first, then
+// every iframe, and returns a locator scoped to the frame that contains the match.
+//
+// Returns: a Locator. Throws if no frame contains the selector after the timeout window.
+// Note: behaves identically to page.locator(...) when the selector IS in the top frame —
+// just adds one extra count() call. ~10–30ms overhead per step in the worst case.
+async function findLocator(page, selector, opts){
+  opts = opts || {};
+  const timeoutMs = opts.timeout || 30000;
+  const pollMs = 250;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    // Top frame first (most common; cheapest path).
+    try {
+      const top = page.locator(selector);
+      if (await top.count() > 0) return top;
+    } catch (_) {}
+    // Walk every iframe. page.frames() includes the main frame, so skip it.
+    const main = page.mainFrame();
+    for (const f of page.frames()) {
+      if (f === main) continue;
+      try {
+        const inFrame = f.locator(selector);
+        if (await inFrame.count() > 0) return inFrame;
+      } catch (_) {
+        // Cross-origin frames throw on access; skip silently.
+      }
+    }
+    // Not found yet — wait briefly and re-scan. This handles "selector appears
+    // a few hundred ms after the previous step" without exhausting the timeout immediately.
+    await new Promise(function(r){ setTimeout(r, pollMs); });
+  }
+  // Final attempt with detailed error so the user knows where to look.
+  const frameInfo = page.frames().map(function(f){ return f.url() || '(blank)'; }).join(', ');
+  throw new Error('Selector "' + selector + '" not found in any frame after ' + timeoutMs + 'ms. Frames searched: [' + frameInfo + ']');
+}
+
+// v1.2.6: diagnostic dump for any selector. Called by step types when the user
+// has flipped the debug checkbox on (originally only on click steps in v1.2.5-debug1;
+// now extended to all selector-using steps). Shape of output is the same shape
+// produced by the original inline debug branch — preserves the [debug-click] log
+// prefix so existing log-greps still work, but the second arg distinguishes step type.
+async function debugDumpSelector(page, selector, kind){
+  const tag = '[debug-' + (kind || 'click') + ']';
+  try{
+    emit({type:'log', message: tag + ' === START === selector: ' + selector});
+    // Top-frame match info
+    const top = page.locator(selector);
+    const topCount = await top.count();
+    emit({type:'log', message: tag + ' page.locator.count(): ' + topCount});
+    for (let i = 0; i < topCount; i++) {
+      const nth = top.nth(i);
+      let visible='?', enabled='?', box='?', hidden='?';
+      try { visible = await nth.isVisible(); } catch (e) { visible = 'ERR:' + e.message; }
+      try { enabled = await nth.isEnabled(); } catch (e) { enabled = 'ERR:' + e.message; }
+      try { hidden  = await nth.isHidden();  } catch (e) { hidden  = 'ERR:' + e.message; }
+      try { box     = JSON.stringify(await nth.boundingBox()); } catch (e) { box = 'ERR:' + e.message; }
+      emit({type:'log', message: tag + ' match[' + i + '] visible=' + visible + ' hidden=' + hidden + ' enabled=' + enabled + ' box=' + box});
+    }
+    // What's at the visual center of the first top-frame match?
+    if (topCount > 0) {
+      try {
+        const handle = await top.first().elementHandle();
+        if (handle) {
+          const ownerInfo = await page.evaluate(function(el){
+            const r = el.getBoundingClientRect();
+            const cx = r.left + r.width / 2;
+            const cy = r.top + r.height / 2;
+            const t = document.elementFromPoint(cx, cy);
+            const cs = getComputedStyle(el);
+            let hiddenAncestor = null;
+            let p = el.parentElement;
+            while (p) {
+              const ps = getComputedStyle(p);
+              if (ps.display === 'none' || ps.visibility === 'hidden' || ps.opacity === '0') {
+                hiddenAncestor = p.tagName + '#' + (p.id || '') + '.' + (p.className || '') + ' (' + ps.display + '/' + ps.visibility + '/' + ps.opacity + ')';
+                break;
+              }
+              p = p.parentElement;
+            }
+            return {
+              rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+              elementAtCenter: t ? t.tagName + '#' + (t.id || '') + '.' + (t.className || '') : 'null',
+              elementAtCenterIsTarget: t === el,
+              pointerEvents: cs.pointerEvents,
+              hiddenAncestor: hiddenAncestor,
+              documentReadyState: document.readyState,
+              nodeName: el.nodeName,
+              isConnected: el.isConnected
+            };
+          }, handle);
+          emit({type:'log', message: tag + ' page.evaluate(): ' + JSON.stringify(ownerInfo)});
+        } else {
+          emit({type:'log', message: tag + ' elementHandle was null'});
+        }
+      } catch (e) { emit({type:'log', message: tag + ' elementHandle/evaluate error: ' + e.message}); }
+    }
+    // Walk every iframe — this is what surfaces the "modal lives in a separate frame" case.
+    const frames = page.frames();
+    emit({type:'log', message: tag + ' page.frames() count: ' + frames.length});
+    for (const f of frames) {
+      try {
+        const fcount = await f.locator(selector).count();
+        emit({type:'log', message: tag + ' frame "' + f.url() + '" matches: ' + fcount});
+      } catch (e) {
+        emit({type:'log', message: tag + ' frame "' + f.url() + '" error: ' + e.message});
+      }
+    }
+    emit({type:'log', message: tag + ' === END === proceeding to action...'});
+  } catch (diagErr) {
+    emit({type:'log', message: tag + ' diagnostic itself errored: ' + diagErr.message});
+  }
+}
+
 async function runStep(page,step,row,creds){
   const r=v=>{if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');};
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
     case 'navigate':{const _navUrl=r(step.url);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step\\'s URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:PAGE_LOAD_MODE,timeout:30000});break;}
-    case 'click':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});await page.click(step.selector);if(step.waitFor)await page.waitForSelector(step.waitFor,{timeout:SELECTOR_TIMEOUT});break;
-    case 'type':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});if(step.clearFirst!=='no')await page.fill(step.selector,'');if(parseInt(step.typeDelay||0)>0)await page.type(step.selector,r(step.value),{delay:parseInt(step.typeDelay)});else await page.fill(step.selector,r(step.value));break;
-    case 'select':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});await page.selectOption(step.selector,{label:r(step.value)});break;
-    case 'checkbox':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});if(step.checkAction==='check')await page.check(step.selector);else if(step.checkAction==='uncheck')await page.uncheck(step.selector);else if(step.checkAction==='toggle')await page.click(step.selector);else if(step.checkAction==='conditional'){const tv=(step.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase());if(tv.includes(String(r(step.condCol)).trim().toLowerCase()))await page.check(step.selector);else await page.uncheck(step.selector);}break;
-    case 'clear':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});await page.fill(step.selector,'');break;
-    case 'wait':if(step.waitType==='random'){const mn=ms(step.waitMin||1),mx=ms(step.waitMax||3);await page.waitForTimeout(Math.floor(Math.random()*(mx-mn+1))+mn);}else if(step.waitType==='element')await page.waitForSelector(step.waitSel||'',{timeout:30000});else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
-    case 'assert':await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});if(step.expected){const t=await page.locator(step.selector).textContent();if(!t.includes(step.expected))throw new Error('Assert failed: expected "'+step.expected+'" got "'+t+'"');}break;
+    case 'click':{
+      // v1.2.5-debug1 / v1.2.6: opt-in diagnostic dump. Originally added in the
+      // local-only -debug1 build to investigate "Playwright doesn't see this button"
+      // failures; v1.2.6 keeps it as a permanent feature (off by default) since it's
+      // exactly what you want when iframe traversal or selector matching gets weird.
+      if(step.debugClick){
+        await debugDumpSelector(page, step.selector, 'click');
+      }
+      // v1.2.6: findLocator handles iframe traversal automatically.
+      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
+      await loc.first().click();
+      if(step.waitFor){
+        const waitLoc = await findLocator(page, step.waitFor, {timeout: SELECTOR_TIMEOUT});
+        await waitLoc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
+      }
+      break;}
+    case 'type':{
+      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
+      if(step.clearFirst!=='no') await loc.first().fill('');
+      const _val = r(step.value);
+      const _delay = parseInt(step.typeDelay||0);
+      if(_delay>0) await loc.first().pressSequentially(_val, {delay:_delay});
+      else await loc.first().fill(_val);
+      break;}
+    case 'select':{
+      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
+      await loc.first().selectOption({label: r(step.value)});
+      break;}
+    case 'checkbox':{
+      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
+      if(step.checkAction==='check') await loc.first().check();
+      else if(step.checkAction==='uncheck') await loc.first().uncheck();
+      else if(step.checkAction==='toggle') await loc.first().click();
+      else if(step.checkAction==='conditional'){
+        const tv=(step.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase());
+        if(tv.includes(String(r(step.condCol)).trim().toLowerCase())) await loc.first().check();
+        else await loc.first().uncheck();
+      }
+      break;}
+    case 'clear':{
+      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
+      await loc.first().fill('');
+      break;}
+    case 'wait':if(step.waitType==='random'){const mn=ms(step.waitMin||1),mx=ms(step.waitMax||3);await page.waitForTimeout(Math.floor(Math.random()*(mx-mn+1))+mn);}else if(step.waitType==='element'){
+      // v1.2.6: iframe-aware wait. Note 'wait' steps keep their original 30s timeout
+      // (independent of SELECTOR_TIMEOUT) since users explicitly set them as gates.
+      const loc = await findLocator(page, step.waitSel||'', {timeout: 30000});
+      await loc.first().waitFor({state:'visible', timeout: 30000});
+    }else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
+    case 'assert':{
+      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
+      if(step.expected){
+        const t = await loc.first().textContent();
+        if(!t || !t.includes(step.expected)) throw new Error('Assert failed: expected "'+step.expected+'" got "'+(t||'(empty)')+'"');
+      }
+      break;}
     case 'pestpac-login':{
       // v1.2.5 item 2.11 (Phase 7): delegate to shared helper. The body lives in
       // loginToPestPac() above so the same sequence is used by the three re-auth
