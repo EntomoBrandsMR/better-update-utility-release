@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.2.6';
+const CURRENT_VERSION = '1.2.7';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -946,20 +946,46 @@ async function runStep(page,step,row,creds){
       await page.waitForTimeout(1500);
       break;}
     case 'dialog':{
-      // Register a one-time dialog handler for the next dialog that appears
+      // Register a one-time dialog handler for the next dialog that appears.
+      // v1.2.7-fix: previously this used page.once() with no cleanup. If a row's
+      // trigger click didn't actually fire a dialog — e.g. PestPac skipped the
+      // warning because the employee already had access rights — the listener
+      // stayed attached. Each subsequent row registered another, until a row
+      // that DID fire a dialog made all stacked listeners run, all racing to
+      // .accept() the same dialog. First wins; rest crash with "Cannot accept
+      // dialog which is already handled" → unhandled rejection → process exit.
+      // Fix: stash the current listener on the page object and remove it before
+      // registering a new one. Wrap accept/dismiss in try/catch as belt-and-
+      // suspenders against any other source of double-handling.
       const matchText = step.dialogMatch||'';
       const dialogAction = step.dialogAction||'accept';
-      page.once('dialog', async dialog => {
+      if (page._buuDialogListener) {
+        try { page.off('dialog', page._buuDialogListener); } catch(_){}
+        page._buuDialogListener = null;
+      }
+      const handler = async dialog => {
+        // Single-shot: detach immediately so a second dialog in the same row
+        // doesn't re-enter THIS handler. A separate dialog step would re-register.
+        try { page.off('dialog', handler); } catch(_){}
+        if (page._buuDialogListener === handler) page._buuDialogListener = null;
         const msg = dialog.message();
         const matches = !matchText || msg.toLowerCase().includes(matchText.toLowerCase());
         emit({ type: 'dialog', message: msg, dialogType: dialog.type(), action: matches ? dialogAction : 'ignored' });
-        if (matches) {
-          if (dialogAction === 'dismiss') await dialog.dismiss();
-          else await dialog.accept();
-        } else {
-          await dialog.dismiss();
+        try {
+          if (matches) {
+            if (dialogAction === 'dismiss') await dialog.dismiss();
+            else await dialog.accept();
+          } else {
+            await dialog.dismiss();
+          }
+        } catch (e) {
+          // Already-handled dialog (rare race) — log and move on. Don't let it
+          // bubble out of an async listener as an unhandled rejection.
+          emit({ type: 'log', message: 'Dialog handler swallowed error: ' + (e && e.message || e) });
         }
-      });
+      };
+      page._buuDialogListener = handler;
+      page.on('dialog', handler);
       break;}
     case 'textedit':{
       await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});

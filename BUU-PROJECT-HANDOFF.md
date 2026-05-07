@@ -1,7 +1,39 @@
 # BUU PROJECT HANDOFF
-**For: New Claude account (Entomo Brands work account)**
-**From: Outgoing Claude (personal account, last session 2026-04-30)**
+
+**For:** Future Claude session (this account or a fresh one)
+**Last full rewrite:** 2026-05-04 (after BUU v1.2.5 design walkthrough)
+**Section 0 last updated:** 2026-05-07 (post v1.2.7 ship)
 **Read this entire document carefully before responding to Matthew. Then ask any clarifying questions.**
+
+> **Heads up before you start:** Section 0 below is the freshest summary. Sections 1+ describe BUU's architecture and operating practices and are mostly still accurate, but version-specific status mentions (e.g., "currently shipped: v1.2.5", "v1.2.4 backlog", etc.) drift over time. When the body and Section 0 disagree, Section 0 wins. The DESIGN-INDEX.md is also more current than this doc's body for active work.
+
+---
+
+## 0. WHERE WE ARE RIGHT NOW (FAST PICKUP)
+
+If you read nothing else in this doc, read this section.
+
+### 0.1 What's shipped
+
+- **v1.2.4** shipped 2026-05-01 — Unified runner with start-mode picker (step / step-row / run-all).
+- **v1.2.5** shipped — Resilience pack: configurable retry count, consecutive-error circuit breaker, network-aware retry, timer-based re-auth, retry-failed-rows mode, Excel log enrichment, error attribution columns, retry as the new default for `errHandle`. (Replaces the v1.2.3 default of `stop`.)
+- **v1.2.6** shipped — Iframe-aware selectors (hotfix). Every selector-based step now walks the top frame first, then iframes, and operates on whichever frame contains the match. Click-step debug checkbox shipped as permanent feature.
+- **v1.2.7** shipped 2026-05-07 — Single-issue dialog handler crash fix. The `dialog` step previously leaked `page.once('dialog')` listeners across rows when no dialog actually fired; the next row that DID fire one made all stacked listeners race to `.accept()` the same dialog, which crashed the runner. Fixed by stashing and cleaning up the listener between registrations, plus try/catch around accept/dismiss. See `RELEASE-NOTES-v1.2.7.md` for the full writeup. **Currently installed on Matthew's machine: v1.2.7.**
+
+### 0.2 What's in flight
+
+- **v1.2.8 DESIGN drafted 2026-05-07.** Full doc at `BUU-v1.2.8-DESIGN.md`. Setup-and-teardown flows (three-phase pipeline: setup-once → main-per-row → teardown-once). Estimated 15-20 hours. Originally numbered v1.2.7; renumbered to v1.2.8 when the dialog hotfix took the v1.2.7 slot. Not yet locked, not yet started.
+- **BUUA (v2.0)** — parked. Originally the post-v1.2.5 fork plan called for BUU to enter bug-fix mode and BUUA to take over feature work. That plan is shelved (per `BUU-v1.2.8-DESIGN.md` strategic note); BUU continues to grow features. BUUA work is awaiting WorkWave API authentication unblock — four credential theories tested, all 401, email sent to WorkWave support, no reply yet at last check.
+
+### 0.3 What's NOT in flight (resolved or moved on)
+
+- **Duncan invoice reconciliation** — completed. `RECONCILIATION_RESULTS.xlsx` shipped. Matthew moved on to follow-up Duncan account-number-update jobs as live BUU runs.
+- **The 5/1 6,278-row catastrophic run** — root-caused (PestPac session timeout after ~6 hours of non-re-auth) and motivated several v1.2.5 items.
+- **The Employee# update job's mid-batch crash on 2026-05-07** — root-caused as the dialog listener stacking bug. Fixed in v1.2.7. The crashed run can be resumed via the v1.2.3 resume-on-launch flow (or just re-run from the row it died on).
+
+### 0.4 What to do tonight if you're starting fresh and Matthew is asleep
+
+**Do not implement v1.2.8 unattended. Do not ship to GitHub unattended.** Same rule as before — wait for Matthew. If you have writing/design work that's clearly low-stakes (updating this handoff, refining DESIGN-INDEX.md, expanding open-question lists), you can do that. If a critical bug surfaces and Matthew is unreachable, diagnose and write up the fix as a proposal — don't apply it.
 
 ---
 
@@ -9,20 +41,24 @@
 
 **Matthew** — Training and Implementation Manager at **Entomo Brands** (corporate office). He owns and is the primary operator of the Better Update Utility (BUU) — a desktop automation tool he commissioned to be built. He is technically literate enough to review code, run scripts, manage credentials, install builds, and validate edge cases. He prefers iterative collaborative work over one-shot deliveries.
 
-**How he likes to work:**
+### 1.1 How he likes to work
+
 - He pushes back when he disagrees. Push back too — don't just defer.
 - He asks "could we do X" questions to test the design, not because he's locked in. Steelman his idea before disagreeing, then state your honest read.
 - He makes design decisions progressively — don't try to nail everything down up front.
-- He values seeing diffs before they're applied to his code (use `ask_user_input_v0` for sign-off).
+- He values seeing diffs before they're applied to his code (use `ask_user_input_v0` for sign-off on anything non-trivial).
 - He values brutal honesty when something didn't work. Lying to him by softening "it's broken" into "it might need another look" damages trust faster than admitting failure.
 - He uses casual phrasing — "i" instead of "I," typos common, fragments common. Don't correct or formalize his messages.
-- He works in real time with you on real automation jobs. When he says "im working on getting togeather another round of updates," that's not BUU updates — that's data updates for a job he's working on.
+- He works in real time on real automation jobs. When he says "im working on getting togeather another round of updates," that's data updates for a job he's running, not BUU updates.
+- **He sometimes says "ship it, I trust you" when he's tired.** This is not blanket authorization for unbounded unattended work. The 2026-05-04 session ended with exactly this exchange and the right answer was *no*. See Section 11.5.
 
-**Your operating bias should be:**
+### 1.2 Your operating bias
+
 - Read first, theorize never. If a diagnostic tool gives you ambiguous results, say so. Don't pattern-match.
 - Diff-by-diff with sign-off, not 200-line drops.
-- Validate runtime templates after editing (especially the Playwright runner template — see below).
+- Validate runtime templates after editing (especially the Playwright runner template — see Section 3.1).
 - Multiple choice questions via `ask_user_input_v0` are MUCH easier for him on mobile than typing.
+- Push back when shipping pressure conflicts with shipping-while-correct. Saying "no, let's wait until you're awake" is a valid answer even when he says ship.
 
 ---
 
@@ -37,22 +73,36 @@
 **Key file structure:**
 ```
 src/
-  main.js            ← Electron main process, runner template, IPC handlers, build pipeline
-  preload.js         ← Bridges window.api to ipcRenderer
-  index.html         ← Renderer (UI) — all CSS/JS embedded here
+  main.js                      ← Electron main process, runner template, IPC handlers
+  preload.js                   ← Bridges window.api to ipcRenderer
+  index.html                   ← Renderer (UI) — all CSS/JS embedded here
 assets/
-  icon.ico           ← The official BUU icon (multi-size, validated working)
-  icon-old.ico.bak   ← The previous broken icon, kept for forensics
+  icon.ico                     ← The official BUU icon (multi-size, validated working)
+  icon-old.ico.bak             ← The previous broken icon, kept for forensics
 build/
-  installer.nsh      ← NSIS installer customization
-flows/               ← User-built flow definitions (JSON)
-chromium/            ← Bundled Playwright Chromium (3.7 MB chrome.exe)
-dist/                ← Build output (not in git)
-upcoming/            ← Matthew's working folder for in-flight automation jobs and reconciliation files
-package.json         ← Build config, dependencies, electron-builder settings
-version.json         ← Auto-update trigger file (read by app on launch)
+  installer.nsh                ← NSIS installer customization
+flows/                         ← User-built flow definitions (JSON)
+chromium/                      ← Bundled Playwright Chromium (3.7 MB chrome.exe)
+dist/                          ← Build output (not in git)
+upcoming/                      ← Matthew's working folder for in-flight automation jobs
+scripts/                       ← One-off helpers, ALL prefixed with _ to keep out of build
+  _validate-runner.js          ← Runner-template validator (use after every runner edit)
+  _api-auth-test.ps1           ← BUUA WorkWave API auth probe
+  _api-probe-sweep.ps1         ← BUUA WorkWave API mutation probe sweep
+  creds.ps1                    ← API creds (gitignored, never commit)
+  ...
+API DOCUMENTATION/             ← BUUA reference (gitignored — contains plaintext API key)
+BUU-PROJECT-HANDOFF.md         ← THIS FILE
+BUU-PROJECT-HANDOFF.md.bak     ← Previous version, kept for reference
+DESIGN-INDEX.md                ← Single entry point for active design work
+BUU-v1.2.4-DESIGN.md           ← Shipped 2026-05-01; reference
+BUU-v1.2.5-DESIGN.md           ← Locked 2026-05-04; not yet implemented
+BUU-v1.2.5-DESIGN.md.bak       ← Pre-walkthrough version
+BUUA-DESIGN.md                 ← v2.0 fork; partially stale, awaiting probe data
 README.md
 GITHUB_GUIDE.md
+package.json                   ← Build config, version "1.2.4"
+version.json                   ← Auto-update trigger, 1.2.4
 ```
 
 **Stack:**
@@ -64,13 +114,13 @@ GITHUB_GUIDE.md
 - xlsx aka SheetJS (smaller in-memory operations)
 - electron-builder 24.13.3 (NSIS Windows installer)
 
-**Currently shipped: v1.2.3** (built locally, smoke test pending — see Section 5)
+**Currently shipped to fleet:** v1.2.4
 **Distribution:** GitHub releases at `EntomoBrandsMR/better-update-utility-release` (private repo)
-**Auto-update:** App reads `version.json` from `raw.githubusercontent.com/.../main/version.json` on launch; if the version is newer than installed, it offers to download the .exe from the release URL.
+**Auto-update:** App reads `version.json` from `raw.githubusercontent.com/.../main/version.json` on launch; if newer, offers to download the .exe from the release URL. **Note:** `raw.githubusercontent.com` has a 5-minute Fastly cache. This is a known footgun for tight ship-then-test cycles. Probably moves to a non-cached endpoint in BUUA.
 
 ---
 
-## 3. KEY ARCHITECTURE FACTS YOU NEED TO KNOW
+## 3. KEY ARCHITECTURE FACTS
 
 ### 3.1 The runner template pattern (CRITICAL)
 
@@ -81,11 +131,11 @@ GITHUB_GUIDE.md
 - Anything you edit inside that template literal needs the JS to remain valid AFTER template substitution.
 - Special characters need to be escaped at the right level (e.g., `\\'` in the template renders as `\'` in the runner).
 - **You CANNOT just run `node --check src/main.js` to validate the runner code** — you have to render the template first.
-- I previously wrote a validator script (`scripts/_validate-runner.js`) that does this rendering. **Use it after every runner-template edit.** The pattern: extract `buildRunner` source, eval it to get the function, call it with sample args, write the rendered output to a temp file, run `node --check` on the temp file. If you can't find that helper in the repo, ask Matthew or recreate it.
+- Use `scripts/_validate-runner.js` after EVERY runner-template edit. The pattern: extract `buildRunner` source, eval it to get the function, call it with sample args, write the rendered output to a temp file, run `node --check` on the temp file. If you can't find that helper in the repo, ask Matthew or recreate it (it was last seen at 4285 bytes, dated 5/1).
 
 ### 3.2 Confirmed PestPac selectors (DO NOT GUESS)
 
-These are stable selectors confirmed by hand-testing PestPac's actual DOM:
+Stable selectors confirmed by hand-testing PestPac's actual DOM:
 
 ```
 Login URL:           https://login.pestpac.com/
@@ -101,21 +151,21 @@ PestPac is React-based. **Avoid IDs like `:r0:`, `:r3:`** — they regenerate on
 
 ### 3.3 The paste-HTML auto-selector workflow
 
-In the BUU Build page, every "selector" field has a paste-HTML mode. Users copy raw outerHTML from Chrome DevTools → paste into the field → BUU auto-extracts the best stable selector via priority: `data-testid` → `name` → non-dynamic `id` → `placeholder` → other data attributes. This dramatically reduces friction for non-technical users. Don't break this when refactoring selector logic.
+In the BUU Build page, every "selector" field has a paste-HTML mode. Users copy raw outerHTML from Chrome DevTools → paste into the field → BUU auto-extracts the best stable selector via priority: `data-testid` → `name` → non-dynamic `id` → `placeholder` → other data attributes. Don't break this when refactoring selector logic.
 
-### 3.4 Concurrency model (v1.2.3)
+### 3.4 Concurrency model (current)
 
-`src/main.js` line ~14 has:
+`src/main.js` line ~14:
 ```js
 const MAX_CONCURRENT_RUNS = 1;
 const automationProcesses = new Map();
 ```
 
-The Map is keyed by `runId`. `MAX_CONCURRENT_RUNS = 1` enforces single-runner today, but the structure is multi-runner-ready. **v1.3.0 will set this to 3 and add per-profile queueing.**
+The Map is keyed by `runId`. `MAX_CONCURRENT_RUNS = 1` enforces single-runner. The structure is multi-runner-ready, but **multi-runner moved to BUUA, NOT v1.2.5.** This boundary is deliberate.
 
-### 3.5 The expanded checkpoint format (v1.2.3)
+### 3.5 The expanded checkpoint format (v1.2.3+)
 
-Checkpoint files at `%APPDATA%\better-update-utility\checkpoint-<runId>.json` now carry full context:
+Checkpoint files at `%APPDATA%\better-update-utility\checkpoint-<runId>.json` carry full context:
 ```json
 {
   "schemaVersion": 2,
@@ -136,7 +186,9 @@ Checkpoint files at `%APPDATA%\better-update-utility\checkpoint-<runId>.json` no
 }
 ```
 
-The runner's `saveChk(row)` reads existing checkpoint, mutates only `rowIndex` and `ts`, writes back. This preserves the full context. On launch, BUU scans for v2 checkpoints and shows a Resume modal. **v1 checkpoints (legacy `{rowIndex,ts}` only) are filtered out — they predate this feature.**
+The runner's `saveChk(row)` reads existing checkpoint, mutates only `rowIndex` and `ts`, writes back. Preserves full context. On launch, BUU scans for v2 checkpoints and shows a Resume modal. **v1 checkpoints are filtered out.**
+
+**v1.2.5 expands this** with optional `lastError` and `lastStop` fields — see `BUU-v1.2.5-DESIGN.md` Section 2.7.
 
 ### 3.6 Profile credential storage
 
@@ -144,260 +196,202 @@ The runner's `saveChk(row)` reads existing checkpoint, mutates only `rowIndex` a
 
 ### 3.7 PestPac concurrent session model (LEARNED)
 
-PestPac allows multiple concurrent sessions per username — verified by Matthew. This makes v1.3.0 multi-runner safer than typical CRMs (no session-cookie collision). Matthew plans 3 dedicated PestPac users for queue isolation, NOT for session-conflict avoidance.
+PestPac allows multiple concurrent sessions per username — verified by Matthew. This makes BUUA's multi-runner safer than typical CRMs (no session-cookie collision). Matthew plans 3 dedicated PestPac users for queue isolation in BUUA, not for session-conflict avoidance.
+
+### 3.8 PestPac session lifetime (LEARNED 2026-05-01)
+
+**PestPac enforces an absolute session lifetime around 6 hours**, regardless of activity. Discovered when the 5/1 6,278-row run timed out at the 6-hour mark and the next 18 hours of run-attempts all landed on the login page (no `UserDef1` field detected → every row failed). v1.2.5 item 2.11 introduces re-auth (timer + connectivity-wait + detection-based) to handle this.
+
+### 3.9 Verification mode + start-mode picker (v1.2.4)
+
+v1.2.4 unified "Live Dry Run" and "Run" into a single runner with a start-mode picker:
+- **Step through each step** (default — pause before every action)
+- **Step through each row** (pause after each completed row)
+- **Run all** (no pauses, identical to v1.2.3 Run behavior)
+
+Verification modes show a pause panel with resolved selector + rendered value before each action. Switch to Run-all from any pause to release the brake. Stopping from a pause is graceful (current row abandoned, log flushed, checkpoint cleaned up).
+
+**Removed in v1.2.4:** `start-live-dryrun` IPC, `dryrun-event` channel, `buildDryRunner`, `panel-dryrun`, `nav-dryrun`, ~180 lines of dryrun renderer JS, 6 dryrun preload bridges. Don't try to re-add these.
 
 ---
 
-## 4. WHAT v1.2.3 ACTUALLY CONTAINS (LATEST VERSION)
+## 4. SHIPPED VERSION HISTORY
 
-This was a 7-diff session. All applied. Smoke test pending.
+| Version | Shipped | Highlights |
+|---|---|---|
+| v1.1.9 | earlier | ELECTRON_RUN_AS_NODE fix, baked Chromium path |
+| v1.2.0 | 4/26/2026 | Live dry run, dialog handler, remember last login |
+| v1.2.1 | 4/28/2026 | Login bug fix in live runner; logout once at end |
+| v1.2.2 | 4/28/2026 | Auto-updater follows GitHub CDN redirects |
+| v1.2.3 | 5/1/2026 (early) | Icon fix, run guards, heartbeat, live counters, resume-on-launch, log retries |
+| **v1.2.4** | **5/1/2026 (evening)** | **Unified runner with start-mode picker (step / step-row / run-all). Live Dry Run absorbed.** |
 
-| # | Diff | What it does | Where it lives |
-|---|------|--------------|----------------|
-| 1 | Icon fix | Regenerated `assets/icon.ico` from a clean PNG via sharp + png-to-ico (the old icon was malformed and unreadable by .NET Icon class). electron-builder now embeds it natively. | `assets/icon.ico` (372 KB, 7 sizes) |
-| 2 | Backend run guard | `start-automation` rejects if cap hit; `automationProcesses` Map keyed by runId; `stop-automation` accepts optional `{runId}` to kill specific run | `src/main.js` |
-| 3 | UI run guard | `startRun()` early-exits if `isRunning`; `refreshRunBtn()` after `isRunning=true`; `runStopped()` calls `refreshRunBtn()` | `src/index.html` |
-| 4 | Heartbeat + phases | Runner emits `{type:'heartbeat',phase,rowIndex,...}` every 5 seconds. UI handler updates status during slow phases (logging-in, cleanup) but stays out of the way during active rows | both |
-| 5 | Live elapsed counter | New `rs-elapsed` stat box; `startElapsedTicker`/`stopElapsedTicker` updates every 1 second; defensive `runStartTime > 0` guard | `src/index.html` |
-| 6 | Resume-on-launch | Expanded checkpoint format (v2); `find-orphan-checkpoints` IPC; `load-checkpoint` IPC; `discard-checkpoint` IPC; resume modal in HTML; `showResumePrompt`, `resumeChoice`, `executeResume` functions; init scans for orphans on launch | both + `preload.js` |
-| 7 | Loud failure + log retries | `startRun` alerts loudly if `API.startAutomation` is undefined; runner log file created BEFORE chromium check (always have a paper trail); `flush()` rewritten with retry-on-EBUSY (3 retries × 800ms) and always-write-Summary even with 0 rows; `log-error` and `log-saved` events with UI handlers | both |
+### 4.1 What v1.2.4 actually contains
 
-### 4.1 Critical bug we fixed in this session that you should know about
+Net diff from v1.2.3: **279 insertions, 459 deletions** (commit `a7cf1be`). Sources shrunk: `src/main.js` 1073→980 lines, `src/index.html` 2089→1867 lines, `src/preload.js` 38→33 lines.
 
-**The "phantom run" bug:** In v1.2.0 and v1.2.2, if `getBundledChromiumPath()` returned null OR if `start-automation` failed before reaching the spawn, the runner log file was never created and the user saw "Starting…" forever in the UI with no error. Matthew's 8,500-row run on 4/28 sat in this state for 7 hours. **Fixed in v1.2.3 Diff 7** by creating the runner log immediately on entry to `start-automation`, and adding a loud-fail UI alert when `API.startAutomation` is missing.
+New helper: `scripts/_validate-runner.js` (113 lines, gitignored). Use after every runner-template edit.
 
-### 4.2 The `force-icon.js` saga (DO NOT REVISIT — already solved)
+See `BUU-v1.2.4-DESIGN.md` for the full design rationale.
 
-I spent an embarrassing amount of effort trying to use rcedit to post-process the .exe and force the icon embed. **It was the wrong fight.** The actual problem was that `assets/icon.ico` itself was malformed. Once I regenerated it cleanly using sharp + png-to-ico, electron-builder embedded it natively without any post-processing. There's no `scripts/force-icon.js` in the repo anymore — and there shouldn't be. Don't re-add it.
+### 4.2 Known deferred bugs from v1.2.4 era (still unfixed in v1.2.4)
 
-Side effect of using rcedit: it modifies the .exe AFTER electron-builder writes integrity hashes, causing **Smart App Control to block installation**. Matthew added a Defender exclusion for the project folder to work around this. With `force-icon.js` gone, Smart App Control no longer triggers — but the exclusion is still in place.
-
----
-
-## 5. CURRENT v1.2.3 STATE: NOT YET SHIPPED
-
-**Status as of session end (2026-04-30 ~10:30 AM):**
-- ✅ All 7 diffs applied and validated
-- ✅ Build succeeded: `dist\Better Update Utility Setup 1.2.3.exe` (207.3 MB)
-- ✅ Installed locally
-- ✅ Icon visually confirmed working (BUU logo on title bar, taskbar, Start menu, desktop shortcut, Setup.exe in File Explorer — Matthew confirmed all 5 spots)
-- ❌ Smoke test NOT run (Matthew was getting test data ready)
-- ❌ Not committed to git
-- ❌ Not tagged
-- ❌ Not pushed to GitHub
-- ❌ Not published as a release
-
-**The 5-step smoke test plan you should walk Matthew through when ready:**
-
-1. **Run guard test:** Click Run, confirm dialog. While dialog is open, click Run again. Expected: friendly "An automation is already running" alert, no second dialog.
-2. **Heartbeat test:** Click Run → confirm. Status under "Run progress" should change to "Logging in…" within 5 seconds (proves heartbeat events flow through).
-3. **Live counters test:** Once rows process, watch all 8 stat boxes (Done, Success, Errors, Skipped, Rows/Min, Est. Left, Complete %, Elapsed). Elapsed should tick every second. Done/Success update per row.
-4. **Excel log test:** Once the run finishes (or after Stop), check `%APPDATA%\better-update-utility\logs\` for `BUU-log-2026-MM-DD-*.xlsx`. Summary sheet should exist even if 0 rows processed.
-5. **Resume test:** Mid-run, click Stop. Fully quit BUU. Relaunch. Expected: Resume modal appears. Click Resume — picks up from checkpoint.
-
-**The "loud-fail" check you should also confirm:** When Matthew clicks Run for the first time after launch, if any preload bridging is broken, an alert pops up. If that alert fires, STOP the smoke test and diagnose — that's a deeper bug than the 5 steps test for.
-
-**After smoke passes:**
-```powershell
-cd "C:\Users\bigma\OneDrive\Desktop\Better Update Utility"
-git add .
-git commit -m "v1.2.3 - Icon, run guards, heartbeat, live counters, resume-on-launch, log retries"
-git tag v1.2.3
-git push origin main --tags
-& "C:\Program Files\GitHub CLI\gh.exe" release create v1.2.3 `
-  "dist\Better Update Utility Setup 1.2.3.exe" `
-  --repo EntomoBrandsMR/better-update-utility-release `
-  --title "v1.2.3" `
-  --notes "<paste from below>"
-```
-
-**Suggested release notes for v1.2.3:**
-```
-Bug fixes and reliability improvements:
-- Fixed icon: BUU logo now displays correctly on title bar, taskbar, Start menu, desktop shortcut, and Setup installer
-- Fixed phantom run bug: runner log is now created before any pre-spawn operation, so failed starts always leave a paper trail
-- Loud failure on missing API: if the automation backend isn't reachable, the UI now alerts immediately instead of sitting at "Starting..."
-- Excel run log now always writes a Summary sheet, even on 0-row runs
-- Excel log save now retries on EBUSY (handles OneDrive sync locks)
-- Run guard: prevents double-clicking Run from spawning duplicate runners
-- Heartbeat: status updates every 5 seconds during slow phases (login, cleanup)
-- Elapsed time counter ticks every second during runs
-- Resume-on-launch: if BUU crashes mid-run, on next launch you'll be prompted to resume from the last completed row
-```
+- **Run log table doesn't show historical Excel logs.** "Run log" tab reads from in-memory `logEntries` only, which resets each launch. Fix: scan logs folder on launch, populate "historical runs" view. Not in v1.2.5 scope.
+- **Default `errHandle: stop` is wrong for production.** Already addressed by v1.2.5 item 2.3 (default → retry, `stop` removed entirely).
 
 ---
 
-## 6. v1.2.4 BACKLOG (KNOWN BUGS NOT YET FIXED)
+## 5. THE 5/1 CATASTROPHIC RUN (CONTEXT FOR v1.2.5)
 
-These were discovered during the v1.2.3 session but deferred:
+**What happened:** Matthew ran a 6,278-row Duncan account-number-update job overnight on 5/1. The first ~4,300 rows ran cleanly. At the ~6-hour mark, PestPac's session timed out. For the remaining ~1,978 rows, every navigation landed on the login page; every row failed silently (status `error`); the run continued through the night burning rows.
 
-### 6.1 Run log table doesn't show historical Excel logs
-**Symptom:** "Run log" tab in BUU sidebar shows "No log entries yet. Run the automation to populate this log." even though the logs folder has many historical Excel files.
-**Cause:** The run-log table view reads from in-memory `logEntries` only, which resets each launch. It doesn't scan/load historical files.
-**Fix:** On launch, scan `%APPDATA%\better-update-utility\logs\` for recent BUU-log Excel files and populate a "historical runs" view.
+**Result:**
+- 4,287 rows processed successfully
+- 1,991 rows logged as error after the session timeout
+- Checkpoint never resumed automatically (runner exited with `finally`-deletes-checkpoint per old behavior)
+- Matthew had to manually pull failed rows out of the log and build `Duncan Old Acct# Update - Remaing.xlsx` to re-run them
 
-### 6.2 Default error handling probably wrong for production
-**Symptom:** Default `errHandle` is `'stop'`. One row error kills the entire run.
-**Reasoning:** For a 8,500-row run that runs overnight, "stop on first error" means a transient error at row 47 wastes the whole night.
-**Fix:** Default to `'skip'` (continue on error, log to Errors sheet) for production runs, or change UX to make this choice more visible at run-start.
-
-### 6.3 v1.3.0 design doc not yet written
-See Section 7. Matthew committed to "ship 1.2.3 first, then write handoff" — handoff is THIS DOCUMENT. v1.3.0 design is still to be drafted.
-
----
-
-## 7. v1.3.0 DESIGN: LOCKED DECISIONS (FROM SESSION)
-
-Matthew and I went deep on this. **All these decisions are locked.** Don't relitigate them with him unless he opens the door.
-
-### 7.1 The big picture
-v1.3.0 transforms BUU from "single-runner manual operation" to "automated multi-queue job system with email pickup eventually." The design is the **foundation for fully unattended automation** — Matthew's stated goal is "no manual piece other than verification."
-
-### 7.2 Concurrency
-- **Hard cap: 3 concurrent runners total** (configurable). Not 3 per queue — 3 total.
-- Slot 3 is **always reserved for manual runs**. Queues never use slot 3.
-- Within slots 1-2, queue priority logic determines who runs.
-- 3 dedicated PestPac users planned (for queue isolation, not session-conflict — PestPac allows concurrent sessions per user).
-
-### 7.3 Two queues + manual queue
-- **Priority queue** + **Non-priority queue** + **Manual** (3-queue logical model, currently 2 active).
-- Within each queue: priority sort (urgent → high → medium → low → unmarked), then size-asc within tier (smaller jobs jump ahead of larger same-priority jobs).
-- "Size" = `rows × steps = actions`.
-
-### 7.4 Line-jumping vs. preemption
-- **Default: line-jump.** A high-priority job starts the moment a slot opens. Already-running jobs don't get interrupted.
-- **Urgent tag overrides:** if a job has `urgent: true` AND no slot is available, the lowest-priority running job is **preempted** — its current row finishes safely, checkpoint saves, browser closes, slot frees, urgent runs, paused job resumes from checkpoint.
-- Preemption cost is real (~30-60 sec overhead per preemption). Use sparingly.
-
-### 7.5 Job submission: hybrid flow embedding
-- **Files arrive in `jobs/unstarted/<date>_<flow>_<file>/`** as job folders, not loose files.
-- **Each job folder has** `workbook.xlsx` + `job.json` + `flow.json` (snapshot of flow at submission time).
-- **Metadata in spreadsheet header rows (vertical A:B layout):**
-  ```
-  A1: priority    B1: high
-  A2: flow        B2: invoiceDivision
-  A3: profile     B3: overflow
-  A4: urgent      B4: no
-  A5: flow_def    B5: { full flow JSON if needed }     ← OPTIONAL
-  A6: (blank — separator)
-  A7: <data column headers>
-  ```
-- **Hybrid:** if `flow_def` (B5) is present, use it. Otherwise look up `flow` (B2) in BUU's local flow library. PestPac reports just put `flow:invoiceDivision` and BUU resolves; portable archived files include `flow_def` for self-contained replay.
-- **Pre-flight validation:** all metadata required fields validated at submission, NOT at runtime. Jobs that fail validation move to `jobs/failed/needs-review/<reason>/` with a `failure.json`.
-
-### 7.6 Folder lifecycle (jobs ARE the persistence)
-```
-jobs/unstarted/   ← dropped here by user / email pickup / web form
-jobs/queued/      ← BUU saw it, validated, queued
-jobs/running/     ← runner is processing (checkpoint.json appears here)
-jobs/done/        ← completed (log.xlsx appears here)
-jobs/failed/      ← errored beyond retry
-  ├ missing-flow/
-  ├ missing-priority/
-  ├ flow-not-found/
-  ├ bad-format/
-  └ runtime-error/
-```
-
-No separate `queues.json` — the folders themselves persist queue state across restarts. Crash recovery: any folder in `running/` without an active runner = orphan, prompt to resume.
-
-### 7.7 Resume capability
-- Already shipped in v1.2.3 for single runs.
-- v1.3.0 extends to multi-runner: scan all checkpoint files on launch, prompt for each.
-- Resume from row `checkpoint.rowIndex` with `resumeFromRow: rowIndex` in the spawn args.
-
-### 7.8 Email pickup (deferred to v1.4.0)
-- BUU watches an inbox.
-- Email subject carries metadata: `[BUU] flow=invoiceDivision priority=high urgent=yes`.
-- Attachment is the spreadsheet, downloaded into `jobs/unstarted/`.
-- **NOT implemented in v1.3.0.** Folder watcher in v1.3.0 just watches `unstarted/` — manual drop or any other mechanism that drops files there will work.
-- Transport (IMAP / Outlook rule / Power Automate) — TBD by Matthew.
-
-### 7.9 Failure handling
-- Pre-flight validation rejects malformed jobs to `failed/<reason>/`.
-- Runtime errors send the job to `failed/runtime-error/` after retry exhaustion.
-- Auto-rejection emails sent to **a single 'BUU admin' address** (Matthew or his designate), regardless of original sender.
-- Email content is mechanical: file name, reason, missing fields, "fix and resubmit."
-
-### 7.10 What I would NOT do unprompted in v1.3.0
-- Don't add new submission methods (web form, etc.) — Matthew specifically wants folder-based first, then email later.
-- Don't widen the metadata format. Vertical A:B is locked.
-- Don't change concurrency cap from 3.
-- Don't auto-resolve missing profile on resume — show a profile picker dropdown (already done in v1.2.3).
-- Don't try to embed flow definitions automatically. The hybrid model is correct as-is.
+**v1.2.5 items directly motivated by this:**
+- **2.3** — `errHandle: stop` removed; production runs should never stop on first error.
+- **2.3b** — Consecutive-error circuit breaker. Default 20. Would have stopped the 5/1 run after row 4,307 instead of letting it burn 1,991 rows.
+- **2.7** — Resume preserves checkpoint on any non-clean exit (including breaker trips); failed-row list recovered from log file at resume-time.
+- **2.8 network-aware** — Wait-and-ping loop on confirmed PestPac/internet outages. Ten-minute wait triggers re-auth.
+- **2.10** — Error log enrichment so post-run forensics actually tells you *what step / what selector / what value* failed.
+- **2.11** — Re-auth (timer + connectivity-wait + detection-based). The detection-based trigger would have caught the 6-hour session expiration on the very next navigation.
+- **2.12** — Retry failed rows. Eliminates the manual "pull failed rows out, build new spreadsheet" loop.
 
 ---
 
-## 8. AN ACTIVE DATA-RECONCILIATION JOB IN FLIGHT
+## 6. WHAT v1.2.5 LOOKS LIKE (SUMMARY — full design at `BUU-v1.2.5-DESIGN.md`)
 
-This is **NOT BUU work** — it's a separate data analysis job Matthew is doing for his actual day job (cleaning up an upload mess in PestPac for the Duncan division).
+**Status:** Design fully locked 2026-05-04 after a multi-hour walkthrough. **Implementation has NOT started.**
 
-### 8.1 Context
-Duncan division had ~480k invoices uploaded to PestPac in late 2025 / early 2026. Some unknown subset of those imports got their dates **transposed** (MM/DD swapped to DD/MM). Matthew needs to find which ones to fix.
+**Estimated work:** 15-20 hours, structured into 9 phases (see design doc Section 4).
 
-### 8.2 Files (in `upcoming/`)
-- `Duncan Template_Service_History2025.xlsx` — the upload-source file (~480k rows, **dates are correct**, 32 columns including `PestPacLocationCode`, `PestPacBilltoCode`, `Invoice_ServiceCode`, `InvoiceLineItem_UnitPrice`, `Invoice_Tech1Username`, `Invoice_InvoiceDate`, `Invoice_WorkDate`, etc.)
-- `Duncan Invoice Date Reversal .xlsx` — PestPac export of invoices uploaded on 12/31/25 (~477k rows, **dates may be wrong**, 11 columns including URL with embedded `InvoiceID`, `Location Code`, `Bill-to Code`, `Service Code`, `Invoice Date`, `Work Date`, `Duration`, `Tech`, `Unit Price`)
-- `Duncan Invoice Date Reversal 2.xlsx` — PestPac export of invoices uploaded BEFORE 2/2/26 EXCLUDING 12/31/25 (~2,875 rows, same 11 cols, **dates may also be wrong**)
+### 6.1 The 10 locked items
 
-### 8.3 Reconciliation script (NOT a BUU file)
-Located at `scripts/_reconcile-invoices.js`. **This is a one-off helper, prefix `_` indicates it's not part of the build.** It's been iterated through several versions in this session.
+| Item | Summary |
+|---|---|
+| 2.1 | Remember last spreadsheet upload directory in `buu-config.json` |
+| 2.2 | Default row delays = 0–0 seconds |
+| 2.3 | `errHandle` dropdown reduced to two options: Retry (default) and Skip. `stop` removed. |
+| **2.3b** | Consecutive-error circuit breaker (default 20, configurable, 0=disabled) |
+| 2.4 | Single stop path for both Stop buttons. Disable Run button on Stop click. |
+| 2.5 | Token chips: drag-only on Build page (higher contrast); reference-only on Import page |
+| 2.6 | Validation revamp: non-blocking pre-run prompt, navigate-to-fix, all-at-once highlighting, **delete Validate page** |
+| 2.7 | Resume from any non-clean exit. Checkpoint preserved on breaker/crash/user-keep. Failed-row list from log. |
+| 2.8 | Selector timeout / page load mode / retry count settings + network-aware retry (ping Google + PestPac, wait-and-ping loop on outage) |
+| 2.10 | Error log enrichment: errorCategory taxonomy, Phase / Step #/ Step type / Step label / Field / Attempted value columns |
+| 2.11 | Re-auth: timer + connectivity-wait + detection-based (post-navigation login-page check) |
+| **2.12** | Retry failed rows post-completion. Runner-mode (`retryRowIndexes`), no temp spreadsheet, separate log file, flow-divergence prompt. |
 
-**Current algorithm:**
-1. Load upload file (streaming via exceljs) → build map keyed by `Loc|BillTo|Service|UnitPrice|Tech` (broad key)
-2. Load both PestPac files (treat as one merged dataset) → build map by same broad key
-3. **Resolve pass:** for each broad-key group with both upload and PP entries, bucket by Invoice Date. Same-date buckets pair up and silently disappear (these are "matched, no problem"). Unpaired remainders get flip-paired (MM↔DD swap of date), then closest-date paired. Confirmed pairs go into `Date Mismatches` sheet with method=flip or method=closest. Anything still unpaired goes to `Ambiguous`.
-4. **Loose-match pass:** after resolve, scan remaining `Missing in PestPac` + `Missing in Upload` + `Ambiguous` rows. Group by **just** `Loc|BillTo|Service` (no price/tech/date). Within each loose-key group, score upload×PP candidate pairs by how many of (Price, Tech, InvoiceDate, WorkDate, Duration) match exactly. Greedy pick highest-score pair, repeat. Output paired rows to `Loose Matches - Date Anomaly` sheet, side-by-side, sorted by score desc.
-5. Write multi-sheet output workbook to `upcoming/RECONCILIATION_RESULTS.xlsx`.
+### 6.2 Items NOT in v1.2.5
 
-**Last run results (v3 with loose-pass):**
-- Date Mismatches: 232,032 (paired confirmed)
-- Missing in PestPac: 4,021
-- Missing in Upload: 2,985
-- Ambiguous: 1,348
-- Loose Matches: **0** ← suspicious; may be correct (disjoint pools) or may be a bug
-- Total run time: ~35 seconds for resolution + write fail (file was open in Excel, EBUSY)
+- Multi-runner / queues / unattended operation → **BUUA**
+- API integration → **BUUA** (blocked on WorkWave support)
+- GitHub raw cache fix → **BUUA** (uses non-cached endpoint)
+- Historical run-log scanning in Run Log tab → separate small fix, not v1.2.5
+- Pause-on-disconnect (full pause/resume state) → **BUUA** (v1.2.5 uses wait-and-ping which is the simpler substitute)
 
-**Where we paused:**
-- Output write failed with EBUSY because Matthew had the previous results file open in Excel
-- Loose Matches = 0 needs verification: is it that the residual UPLOAD pool and PP pool truly have disjoint `Loc|BillTo|Service` combinations (which would mean no rescue is possible — supports Matthew's hypothesis "we shouldn't have anything missing from PestPac")? Or is there a bug in the ambiguous-row reconstruction that's preventing matching?
-- Diagnostic re-run was queued but Matthew paused to do this handoff first.
+### 6.3 Cross-item interactions (don't break these silently)
 
-**Next steps for the new Claude on this job:**
-1. Have Matthew close `RECONCILIATION_RESULTS.xlsx` if it's still open in Excel
-2. Re-run the script as-is to see if the loose-match 0 result reproduces
-3. If 0 reproduces, add a one-time diagnostic that prints: count of loose-key groups with both-sides entries, sample 10 such groups with their contents — then decide if the result is real or buggy
-4. If diagnostic shows the result IS real, add a "Diagnostics" sheet to the output with distribution of Missing-in-PestPac by date/service/location, distribution of Missing-in-Upload by source file, etc. (Matthew specifically asked for correlation analysis)
+- 2.3 + 2.8: "Retry" mode uses 2.8's retry count.
+- 2.3b + 2.7: Breaker trip preserves checkpoint with `lastError: { phase: 'circuit-breaker' }`.
+- 2.3b + 2.8: Connectivity-class errors do NOT count toward breaker.
+- 2.4 + 2.7: Both Stop buttons share clean-shutdown + "Keep checkpoint?" prompt.
+- 2.7 + 2.12: Share `extractFailedRowsFromLog(logPath)` helper. Share `retryRowIndexes` parameter shape.
+- 2.8 + 2.11: Connectivity-wait > 10 min triggers re-auth before retry. Re-auth resets the 2-hour timer.
+- 2.10 + 2.8: errorCategory column reflects post-ping classification.
+- 2.10 + 2.3b: Breaker trip = synthetic All-rows entry + "Stopped reason" Summary cell.
+- 2.11 + 2.7: Re-auth failure = fatal exit = checkpoint preserved.
 
-### 8.4 Important context about Matthew's reconciliation hypothesis
-He said: *"i know for a fact anything in the pestpac report file with the date of 5/1/26 should actualy be 1/5/26."*
+### 6.4 Items needing post-ship validation (cannot test pre-ship)
 
-That's MM/DD → DD/MM swap. The script's `flipDate` function handles this. But Matthew said *"obviously confirm that"* — meaning he's not 100% sure the swap pattern is universal. **DO NOT report flip-paired counts as authoritative without sampling some and confirming the pattern visually with him.**
+These need a live PestPac session and/or real network conditions. They're done in the first real run after v1.2.5 ships — they're NOT release blockers.
+
+- 2.4 stop-from-pause regression
+- 2.11 timer-based re-auth (set short interval, observe firing)
+- 2.11 detection-based re-auth (clear cookies via devtools mid-run)
+- 2.8 network-aware retry (disconnect WiFi during run)
+- 2.10 error categorization (induce known errors, verify categories)
+- 2.12 retry-failed (complete a run with failures, click Retry)
+
+Items that pass mid-build validation via `_validate-runner.js` + manual click-through are NOT in this list — they ship with confidence.
 
 ---
 
-## 9. TOOL ENVIRONMENT YOU NEED TO KNOW
+## 7. BUUA (v2.0): WHAT'S NEXT AFTER v1.2.5
 
-### 9.1 Filesystem access
-- You have read/write access to Matthew's machine via filesystem tools (Filesystem and desktop-commander MCP servers)
-- `desktop-commander:read_file` chokes on Excel files >10 MB — for large xlsx, use Node + exceljs
-- For BUU source edits, use `desktop-commander:edit_block` with surrounding context for uniqueness
-- After every `edit_block`, `view` the file again before further edits — your context is stale otherwise
+**Status:** Hybrid backend architecture LOCKED 2026-05-04. Rest of the design doc is partially stale, awaiting probe data.
 
-### 9.2 Build environment
+**Blocked on:** WorkWave API support reply.
+
+**Test scripts in place:** `_api-auth-test.ps1`, `_api-auth-combos.ps1`, `_api-auth-theory3.ps1`, `_api-probe-sweep.ps1`, all in `scripts/` (gitignored).
+
+### 7.1 Headline differences from BUU
+
+- Multi-runner concurrency (single process, many runners — built in from day one)
+- Job queue with folder-based lifecycle (jobs/unstarted, queued, running, done, failed)
+- Headless-by-default, designed to run off-site (separate machine / VM / cloud)
+- Notification system for unattended operation (email first, push next, mobile companion eventually)
+- No verification UI, no Live Dry Run, no Build/Test page — flows imported from BUU
+- Hybrid backend: PestPac API where available (lots faster, more reliable), browser automation where API doesn't cover the action
+- Probably non-cached version-feed endpoint (the GitHub raw 5-min Fastly cache is bad fit for unattended-fleet update channel)
+
+### 7.2 What stays the same
+
+Flow JSON format, profile credential storage pattern (keytar + AES fallback), checkpoint v2 format, Excel log format, runner template approach, PestPac selectors, exceljs streaming.
+
+### 7.3 What to NOT do unprompted
+
+- Don't try more credential guesses for WorkWave API (we exhausted defensible theories — 4 attempts, all 401)
+- Don't rewrite stale BUUA-DESIGN.md sections (2.1, 2.5, 2.9, 2.10) yet — they need probe results
+- Don't push BUU repo with `API DOCUMENTATION/portal-prose/` un-gitignored (already gitignored, but verify)
+- Don't add multi-runner to BUU. It's a BUUA boundary.
+
+See `DESIGN-INDEX.md` for the latest BUUA pickup state.
+
+---
+
+## 8. TOOL ENVIRONMENT
+
+### 8.1 Filesystem access
+
+- Read/write access to Matthew's machine via Filesystem and desktop-commander MCP servers.
+- `desktop-commander:read_file` chokes on Excel files >10 MB — for large xlsx, use Node + exceljs.
+- For BUU source edits, prefer `desktop-commander:edit_block` with surrounding context for uniqueness.
+- After every `edit_block`, `view` the file again before further edits — your context is stale otherwise.
+
+### 8.2 OneDrive lock issue (DISCOVERED 2026-05-04)
+
+**Atomic-rename writes to existing files in the project folder fail with EPERM** because OneDrive holds the existing file during sync. Both `Filesystem:write_file` and `filesystem:write_file` use atomic-rename and will hit this on overwrites. New files write fine; overwrites fail.
+
+**Workaround:**
+1. Make a backup: `Copy-Item original.md original.md.bak -Force`
+2. Delete original: `Remove-Item original.md -Force`
+3. Write new content (now creates a new file, not an overwrite): `Filesystem:write_file ...`
+
+This affects every src file edit, every package.json bump, every version.json update during implementation. Either work around per-file, or have Matthew pause OneDrive sync before implementation phase.
+
+`desktop-commander:edit_block` and `desktop-commander:write_file` may behave differently — they don't use the same atomic-rename pattern. Test before relying on them. The 2026-05-04 session only confirmed the issue with the Filesystem tools.
+
+### 8.3 Build environment
+
 - Node 24.15.0
 - electron-builder 24.13.3 (cache at `%LOCALAPPDATA%\electron-builder\Cache\`)
 - npm scripts: `npm run build` (runs electron-builder), `npm start` (electron .)
-- Build cache and project folder are in Defender exclusion list (added during v1.2.3 session to fix Smart App Control blocks)
-- `cmd.exe /c` wrapper required for npm commands in PowerShell because of execution policy restrictions
+- Build cache and project folder are in Defender exclusion list (added during v1.2.3 to fix Smart App Control blocks).
+- `cmd.exe /c` wrapper required for npm commands in PowerShell because of execution policy restrictions.
 
-### 9.3 GitHub setup
+### 8.4 GitHub setup
+
 - **Repo:** `EntomoBrandsMR/better-update-utility-release` (private)
 - **gh CLI authenticated as:** `EntomoBrandsMR` (`gho_*` token in Windows credential keyring)
 - Path: `C:\Program Files\GitHub CLI\gh.exe`
-- **Verified working** — last release published was v1.2.2 on 2026-04-28
+- **Verified working** through v1.2.4 ship (5/1/2026)
 
-### 9.4 Useful commands
+### 8.5 Useful commands
+
 ```powershell
 # Verify gh auth
 & "C:\Program Files\GitHub CLI\gh.exe" auth status
@@ -406,87 +400,88 @@ That's MM/DD → DD/MM swap. The script's `flipDate` function handles this. But 
 $exe = "C:\Users\bigma\AppData\Local\Programs\Better Update Utility\Better Update Utility.exe"
 (Get-Item $exe).VersionInfo | Select-Object ProductVersion, FileVersion
 
-# Find runner logs
+# Find recent runner logs
 Get-ChildItem "$env:APPDATA\better-update-utility\logs\" | Sort LastWriteTime -Descending | Select -First 5
 
 # Check checkpoint orphans
 Get-ChildItem "$env:APPDATA\better-update-utility\checkpoint-*.json"
+
+# Validate runner template after edit
+node scripts\_validate-runner.js
 ```
 
-### 9.5 Memory tool
-This conversation is using a memory system. I have NOT preserved this session's most recent notes there — Matthew explicitly said the transfer is happening to a work account, so trying to chain memory across accounts is pointless. **The new Claude should treat its memory as empty for this project until told otherwise.** This document is the source of truth.
+### 8.6 Memory tool
+
+The conversation may use a memory system. **The 2026-05-04 session did NOT preserve recent notes there** — the context window was compacted, with full transcript stored at `/mnt/transcripts/`. If you suspect prior context exists, check the transcript first.
+
+This document + `DESIGN-INDEX.md` + `BUU-v1.2.5-DESIGN.md` + `BUUA-DESIGN.md` are the source-of-truth artifacts.
 
 ---
 
-## 10. MISTAKES I MADE IN THIS SESSION (READ THIS, LEARN FROM IT)
+## 9. SHIP COMMAND REFERENCE
 
-I'm including this in full because Matthew specifically asked for candor. The new Claude should not repeat these:
+When v1.2.5 (or any version) is ready to ship, the sequence is:
 
-### 10.1 The icon rabbit hole
-I spent ~2 hours trying to fix the icon by post-processing the .exe with rcedit. **The actual problem was the source `.ico` file was malformed** — every tool that looked at it produced different results. I should have visually inspected the source icon FIRST. Once I regenerated it from scratch using sharp + png-to-ico, the problem evaporated. Lesson: **when diagnostic tools disagree about a file, the file is the problem, not the tools.**
+```powershell
+cd "C:\Users\bigma\OneDrive\Desktop\Better Update Utility"
 
-### 10.2 I lost track of Matthew's bug list
-Matthew's first message in the live debugging part of the session listed THREE bugs: icon, run log/progress not updating, and stop button. I addressed #1 and #3 in the first round but lost track of "log/run progress doesn't work" — the most important of the three — for several turns. I treated it as something Diff 5 (live counters) would fix, but the real bug was deeper: the runner wasn't even completing successfully because of the broken downloader. Lesson: **when a user lists bugs, write them down explicitly and check each one off. Don't pattern-match a fix to the wrong bug.**
+# 1. Bump package.json version
+# 2. Update version.json with new download URL
+# 3. Build
+cmd /c "npm run build"
 
-### 10.3 I almost shipped force-icon.js without testing it
-When I wrote `scripts/force-icon.js`, I ran it on both the unpacked .exe AND the NSIS installer .exe. **NSIS installers have a different binary structure that rcedit corrupts.** The first build I tested produced a 0.39 MB Setup.exe (corrupted from 229 MB). Caught it before shipping but barely. Lesson: **if a tool was designed for one kind of binary, don't assume it works on another. Test on each target separately.**
+# 4. Smoke test the .exe locally — install it, launch, verify it starts cleanly,
+#    verify new UI elements present, verify auto-update detection logic doesn't break
 
-### 10.4 I theorized when I should have measured
-After the icon "succeeded" by my flawed diagnostic tools, I said "icon is now real artwork" with confidence based on byte-size heuristics that were lying to me. The right answer was **install it and look** — which Matthew suggested AND I should have proposed earlier. Lesson: **when downstream verification is cheap (just install and look), do that BEFORE trusting upstream diagnostics.**
+# 5. Commit + tag + push
+git add .
+git commit -m "v1.2.5 - <one-line summary>"
+git tag v1.2.5
+git push origin main --tags
 
-### 10.5 I theorized about the 8,500-row run mystery
-I floated a theory that `API.startAutomation` was undefined at runtime, based on incomplete data. Matthew later told me the run had actually completed correctly — there was no missed data. **My theory was wrong and I led him to question his own work.** Lesson: **when symptoms don't fully add up, say "I don't know" instead of constructing a hypothesis. False explanations are worse than no explanation.**
+# 6. Publish release
+& "C:\Program Files\GitHub CLI\gh.exe" release create v1.2.5 `
+  "dist\Better Update Utility Setup 1.2.5.exe" `
+  --repo EntomoBrandsMR/better-update-utility-release `
+  --title "v1.2.5" `
+  --notes "<release notes>"
+```
 
-### 10.6 The reconciliation script's first version OOM'd silently
-First version used the synchronous `xlsx` library and ran for 27 minutes before failing. I should have known from the file sizes (18 MB compressed each, expanding to ~2 GB in memory) that streaming was required from the start. I added progress output only on the second iteration. Lesson: **always add progress output to long-running scripts upfront. And know your library's memory model before deploying it on a 480k-row file.**
-
-### 10.7 I once added a tool to the build pipeline that conflicted with Smart App Control
-Same `force-icon.js`. By modifying the .exe AFTER electron-builder had set integrity hashes, I created a hash mismatch that triggered Smart App Control to refuse install. Cost: another full rebuild after Matthew added a Defender exclusion. Lesson: **post-build modification of signed binaries is a red flag. Either fix it in the source pipeline or accept the fix you're about to make is fragile.**
-
----
-
-## 11. SUGGESTED FIRST MESSAGE TO MATTHEW
-
-When the new Claude account starts, this is what I'd suggest as the opening:
-
-> Hey Matthew — I have your handoff document loaded. I see we're at this point:
->
-> - **v1.2.3 is built and installed locally** but smoke test wasn't run yet, so it hasn't shipped to GitHub
-> - **An invoice reconciliation job is in flight** — last run produced 232,032 date mismatches with 0 loose matches, write failed because the results file was open in Excel
-> - **v1.3.0 design is locked** — queues, file lifecycle, hybrid flow embedding, etc. — but no code written yet
->
-> Where do you want to start? Options I see:
->
-> 1. **Re-run the reconciliation** (close the open Excel file first, see if 0 loose matches reproduces or if a bug shows up)
-> 2. **Run the v1.2.3 smoke test** and ship it to GitHub
-> 3. **Start writing v1.3.0** code
-> 4. **Something else** — what's on your mind?
+**Auto-update gotcha:** `raw.githubusercontent.com` has a 5-minute Fastly cache on `version.json`. Don't conclude auto-update is broken if the test machine doesn't see the new version immediately — wait 5 minutes and re-check.
 
 ---
 
-## 12. FILES TO VERIFY EXIST AFTER HANDOFF
-
-Once the new Claude account starts, please confirm these files exist on Matthew's machine. If any are missing, ask Matthew immediately — they may have been lost or moved during the transfer.
+## 10. FILES TO VERIFY EXIST
 
 ```
 C:\Users\bigma\OneDrive\Desktop\Better Update Utility\
 ├── BUU-PROJECT-HANDOFF.md            ← THIS FILE
-├── package.json                       ← version should read "1.2.3"
-├── version.json                       ← should reference 1.2.3 with v1.2.3 download URL
-├── src\main.js                        ← should contain 'CURRENT_VERSION = '1.2.3'' on line ~10
-├── src\preload.js                     ← should expose findOrphanCheckpoints, loadCheckpoint, discardCheckpoint
-├── src\index.html                     ← should contain 'resumeOverlay' div, 'showResumePrompt' function, 'rs-elapsed' element
-├── assets\icon.ico                    ← 372 KB, multi-size, the regenerated one
-├── assets\icon-old.ico.bak            ← 361 KB, the broken original (kept for reference)
-├── scripts\_reconcile-invoices.js     ← in-flight reconciliation tool (remove or rename when no longer needed)
-├── upcoming\Duncan Invoice Date Reversal .xlsx
-├── upcoming\Duncan Invoice Date Reversal 2.xlsx
-├── upcoming\Duncan Template_Service_History2025.xlsx
-└── dist\Better Update Utility Setup 1.2.3.exe   ← 207 MB
+├── BUU-PROJECT-HANDOFF.md.bak        ← Previous version
+├── DESIGN-INDEX.md                   ← Single entry point
+├── BUU-v1.2.4-DESIGN.md              ← Shipped reference
+├── BUU-v1.2.5-DESIGN.md              ← Locked, not implemented
+├── BUU-v1.2.5-DESIGN.md.bak          ← Pre-walkthrough version
+├── BUUA-DESIGN.md                    ← v2.0 fork
+├── package.json                      ← version "1.2.4"
+├── version.json                      ← references 1.2.4
+├── src\main.js                       ← contains 'CURRENT_VERSION = '1.2.4'' on line ~10
+├── src\preload.js                    ← exposes findOrphanCheckpoints, loadCheckpoint, discardCheckpoint
+├── src\index.html                    ← Build / Import / Run / Run Log pages, no Validate page yet (deleted in v1.2.5)
+├── assets\icon.ico                   ← 372 KB, multi-size
+├── assets\icon-old.ico.bak           ← 361 KB, broken original (forensic)
+├── scripts\_validate-runner.js       ← runner-template validator (4285 bytes)
+├── scripts\_reconcile-invoices.js    ← Duncan reconciliation, completed
+├── scripts\_verify-date-flip.js      ← Duncan reconciliation diagnostic
+├── scripts\_api-auth-test.ps1        ← BUUA WorkWave API auth probe
+├── scripts\_api-probe-sweep.ps1      ← BUUA mutation probe sweep
+├── scripts\creds.ps1                 ← API creds (gitignored)
+├── upcoming\                         ← Active job folder (Duncan jobs in flight)
+├── API DOCUMENTATION\                ← BUUA reference (gitignored)
+└── dist\Better Update Utility Setup 1.2.4.exe   ← 207 MB
 
 Should NOT exist:
-├── scripts\force-icon.js              ← deleted, do not re-add
-├── scripts\regenerate-icon.js         ← deleted (one-shot, no longer needed)
+├── scripts\force-icon.js             ← deleted, do not re-add
+├── scripts\regenerate-icon.js        ← deleted (one-shot)
 
 Defender exclusions (must be in place):
 ├── C:\Users\bigma\OneDrive\Desktop\Better Update Utility (project folder)
@@ -495,16 +490,99 @@ Defender exclusions (must be in place):
 
 ---
 
-## 13. END OF HANDOFF
+## 11. MISTAKES MADE IN PRIOR SESSIONS (LEARN FROM THESE)
 
-This document is meant to be comprehensive but not exhaustive. If something comes up that's not covered here, ask Matthew directly — he is patient with clarification questions and prefers them to wrong assumptions.
+### 11.1 The icon rabbit hole (v1.2.3 session)
 
-The most important thing you can do as the new Claude is **earn his trust quickly** by:
-- Reading this document carefully before acting
-- Using `ask_user_input_v0` for sign-off on anything non-trivial
-- Pushing back when you disagree (he expects this)
-- Being honest when you don't know something
+Spent ~2 hours trying to fix the icon by post-processing the .exe with rcedit. **The actual problem was the source `.ico` file was malformed** — every tool that looked at it produced different results. Should have visually inspected the source icon FIRST. Once it was regenerated from scratch using sharp + png-to-ico, the problem evaporated.
 
-Good luck.
+**Lesson:** when diagnostic tools disagree about a file, the file is the problem, not the tools.
 
-— Outgoing Claude (2026-04-30)
+### 11.2 Lost track of the bug list (v1.2.3 session)
+
+User listed THREE bugs at the start of a session. Addressed #1 and #3 but lost track of #2 (the most important) for several turns. Pattern-matched a different fix to the wrong bug.
+
+**Lesson:** when a user lists bugs, write them down explicitly and check each one off. Don't pattern-match.
+
+### 11.3 Almost shipped force-icon.js without testing (v1.2.3 session)
+
+Wrote a build-pipeline tool, ran it on both the unpacked .exe AND the NSIS installer .exe. **NSIS installers have a different binary structure that the tool corrupted.** First build produced a 0.39 MB Setup.exe (corrupted from 229 MB). Caught it before shipping but barely.
+
+**Lesson:** if a tool was designed for one kind of binary, don't assume it works on another. Test on each target separately.
+
+### 11.4 Theorized when should have measured (v1.2.3 session)
+
+After the icon "succeeded" by flawed diagnostic tools, claimed "icon is now real artwork" with confidence based on byte-size heuristics that were lying. The right answer was **install it and look** — which Matthew suggested first.
+
+**Lesson:** when downstream verification is cheap (just install and look), do that BEFORE trusting upstream diagnostics.
+
+### 11.5 Theorized about the 5/1 6,278-row run instead of measuring (multiple sessions)
+
+Floated theories about what went wrong without sufficient log evidence. Some were wrong and led Matthew to question his own work.
+
+**Lesson:** when symptoms don't fully add up, say "I don't know" instead of constructing a hypothesis. False explanations are worse than no explanation.
+
+### 11.6 Force-icon.js conflicted with Smart App Control (v1.2.3 session)
+
+By modifying the .exe AFTER electron-builder had set integrity hashes, created a hash mismatch that triggered Smart App Control to refuse install. Cost: another full rebuild after Matthew added a Defender exclusion.
+
+**Lesson:** post-build modification of signed binaries is a red flag. Either fix it in the source pipeline or accept the fix you're about to make is fragile.
+
+### 11.7 Almost shipped v1.2.5 unattended despite good reasons not to (2026-05-04 session)
+
+Matthew said three times during the late-night session "ship it, I trust you" — including in response to direct pushback. Resisted twice, then almost slid into doing it on the third request. Pulled back to "design doc only" after considering: (a) 15-20 hours of complex implementation across deeply interconnected files, (b) post-ship validation needs a live PestPac session that's days away, (c) GitHub release auto-installs to fleet within 5 minutes, (d) OneDrive lock issue would have caused unpredictable failures during edits, (e) precedent of v1.2.3's force-icon.js disaster which was *exactly* a confident "I'll handle it" decision on more-complex-than-expected work.
+
+**Lesson:** "the user said yes" is not blanket authorization. The right response to "ship it, I trust you" on something risky and unbounded is "I hear you, and I'm still saying no — here's why." Trust is for things you've validated; absent validation, push back.
+
+**Lesson 2:** When the next failure mode (OneDrive lock) shows up during the very first attempted action, that's a signal to stop, not to power through. The signal was correct; the design doc rewrite still succeeded via workaround, but extrapolating that workaround across 15-20 hours of unattended work was the wrong move.
+
+### 11.8 Reconciliation script OOM'd silently (Duncan job, multiple sessions)
+
+First version used the synchronous `xlsx` library and ran for 27 minutes before failing on a 480k-row file. Should have known from file sizes that streaming was required from the start.
+
+**Lesson:** always add progress output to long-running scripts upfront. Know your library's memory model before deploying it on large data.
+
+---
+
+## 12. SUGGESTED FIRST MESSAGE (FRESH CLAUDE SESSION)
+
+When you start fresh, this is the opening to use:
+
+> Hey Matthew — I have your handoff and design docs loaded. Where we are:
+>
+> - **v1.2.4 shipped 5/1**, currently installed on your machine
+> - **v1.2.5 design is locked** (10+ items, ~15-20 hours of implementation, see `BUU-v1.2.5-DESIGN.md`) — implementation has NOT started
+> - **BUUA is blocked** on WorkWave API support reply
+> - **No active reconciliation jobs** — Duncan job wrapped up, you've moved on to follow-up update jobs
+>
+> Where do you want to start? Options I see:
+>
+> 1. **Begin v1.2.5 implementation** — Phase 1 (trivial UI items 2.2 + 2.6 button rename, ~30 min) is a good warmup
+> 2. **Review the v1.2.5 design** before starting — anything you want to revisit?
+> 3. **Check WorkWave** — has the rep replied? (If yes, run `_api-auth-test.ps1` with the new creds)
+> 4. **Something else** — what's on your mind?
+
+---
+
+## 13. PRINCIPLES TO HOLD ONTO
+
+The most important things you can do as a fresh Claude on this project are:
+
+- **Earn trust quickly by reading carefully before acting.** This document, then `DESIGN-INDEX.md`, then the relevant design doc.
+- **Use `ask_user_input_v0` for sign-off on anything non-trivial.** Easier for Matthew on mobile than typing.
+- **Push back when you disagree.** He expects this, and "ship it" doesn't override correctness concerns.
+- **Be honest when you don't know.** Speculation is worse than an honest "I don't know — let me check."
+- **Diff-by-diff with sign-off.** Not 200-line drops. Especially for runner-template edits.
+- **Validate runner template via `_validate-runner.js` after every edit.** No exceptions.
+- **Stop and verify when an unexpected failure mode shows up.** Don't power through it; the failure is information.
+
+If something comes up that's not covered here, ask Matthew directly — he is patient with clarification questions and prefers them to wrong assumptions.
+
+---
+
+## 14. END OF HANDOFF
+
+**Last full rewrite:** 2026-05-04 (post-v1.2.5-design-lock).
+**Previous version:** `BUU-PROJECT-HANDOFF.md.bak` (4/30 era, pre-v1.2.4-ship).
+
+— Outgoing Claude (work account)

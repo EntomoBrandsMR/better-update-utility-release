@@ -1,7 +1,43 @@
 # BUU DESIGN INDEX
 
 **Purpose:** Single entry point for active design work. Read this first.
-**Last updated:** 2026-05-01 (after v1.2.3 ship and BUUA direction lock).
+**Last updated:** 2026-05-07 (post v1.2.7 ship; v1.2.8 design doc renumbered from v1.2.7).
+
+---
+
+## SESSION PICKUP NOTE (2026-05-04)
+
+When you / a fresh Claude session resumes, here's where we left off:
+
+**Decision made:** BUUA v2.0 = **Hybrid backend** (API + browser fallback). Locked. See `BUUA-DESIGN.md` Section 0.
+
+**Currently blocked on:** WorkWave API support. We cannot acquire an OAuth access token. Four authentication attempts were tested, all 401'd with empty response bodies:
+  1. Auth scheme `Basic`: ClientId = company key, ClientSecret = developer portal password
+  2. Auth scheme `Basic`: ClientId = `pestpac-api` (bundle name), ClientSecret = password
+  3. Auth scheme `Basic`: ClientId = company key, ClientSecret = API key (`fJsh...`)
+  4. Auth scheme `Bearer` (per literal C# example in docs): ClientId = company key, ClientSecret = password
+
+All four return 401 with empty response body, indicating the OAuth gateway rejects the ClientId/ClientSecret pair before checking username/password. Conclusion: a separate ClientId + ClientSecret pair was provisioned at signup but never delivered to Matthew. **Email sent to WorkWave support requesting the real values.**
+
+**When the rep replies with the real ClientId/ClientSecret:**
+1. Update `scripts/creds.ps1` with the new values
+2. Run `scripts/_api-auth-test.ps1` to confirm both stages pass
+3. Run `scripts/_api-probe-sweep.ps1` to execute the 8 mutation probes against a voided invoice
+4. Send the resulting log file to whoever is helping with the design
+5. Merge the probe results into `BUUA-DESIGN.md` (currently stale on multi-runner / flow-embedding sections — they need rework after probe data lands)
+
+**Test scripts already written and ready:**
+- `scripts/_api-auth-test.ps1` — read-only, two-stage auth check (token + headers)
+- `scripts/_api-auth-combos.ps1` — takes -Theory 1 or 2 parameter (already used both)
+- `scripts/_api-auth-theory3.ps1` — tests Bearer scheme literal-doc interpretation (already run, 401)
+- `scripts/_api-probe-sweep.ps1` — the 8-probe mutation test on a voided invoice
+
+All three live in `scripts/` (gitignored). They source `creds.ps1` (also gitignored, never to be committed).
+
+**Things to NOT do unprompted while waiting:**
+- Don't try more credential guesses (we exhausted defensible theories)
+- Don't rewrite BUUA-DESIGN.md sections 2.1, 2.5, 2.9, 2.10 yet — they're flagged stale but rewriting them needs the probe results
+- Don't push BUU repo with `API DOCUMENTATION/portal-prose/` un-gitignored (already added to .gitignore but verify before any commit)
 
 ---
 
@@ -9,68 +45,74 @@
 
 | Document | Status | Read this when |
 |---|---|---|
-| **BUU-v1.2.4-DESIGN.md** | Locked design, ready to implement | Working on the next BUU release (unify-runner) |
-| **BUUA-DESIGN.md** | Parking lot, not yet a design spec | Discussing the v2.0 fork or anything automation-related |
-| **BUU-PROJECT-HANDOFF.md** | Mostly stale on roadmap, still valid for architecture facts | Need PestPac selectors, runner template details, build commands, file paths |
+| **BUU-v1.2.8-DESIGN.md** | Drafting (renumbered from v1.2.7 on 2026-05-07) | Working on setup-and-teardown flows / three-phase pipeline |
+| **RELEASE-NOTES-v1.2.7.md** | Shipped 2026-05-07 | Reference for the dialog-handler crash fix |
+| **RELEASE-NOTES-v1.2.6.md** | Shipped | Reference for iframe-aware selectors |
+| **BUU-v1.2.5-DESIGN.md** | Shipped | Reference for the resilience pack (retries, breaker, re-auth, etc.) |
+| **BUU-v1.2.4-DESIGN.md** | Shipped 2026-05-01 | Reference for the unify-runner refactor |
+| **BUUA-DESIGN.md** | Hybrid architecture LOCKED 2026-05-04; rest partially stale, awaiting API probe results. Strategic role superseded — see note below. | Discussing the v2.0 fork or anything automation-related. Section 0 is the latest. |
+| **BUU-PROJECT-HANDOFF.md** | Section 0 refreshed 2026-05-07 with current ship status; body still has older version-specific status mentions | Need PestPac selectors, runner template details, build commands, file paths, operating practices |
+| **API DOCUMENTATION/** | PestPac API spec + SDKs + portal prose docs | Anything API-related. swagger.yaml has 347 endpoints. portal-prose contains a plaintext API key — gitignore before commit. |
+
+> **Strategic note (2026-05-07):** The "BUU enters bug-fix mode after v1.2.5; BUUA takes over feature work" plan from earlier is shelved. BUU continues to grow features (v1.2.8 is a feature release). BUUA work remains parked pending WorkWave API authentication unblock. See `BUU-v1.2.8-DESIGN.md` Section 1 strategic note.
 
 ---
 
-## Project status snapshot (2026-05-01)
+## Project status snapshot (2026-05-07, post-v1.2.7-ship)
 
-- **v1.2.3 SHIPPED.** Released to GitHub today. First production run completed successfully (982 rows). All v1.2.3 fixes confirmed working: log file created up front, checkpoint v2 written per-row, heartbeats reach the UI, live counters update, run guard works.
-- **v1.2.4 is the next BUU release.** Locked design in `BUU-v1.2.4-DESIGN.md`. Implementation hasn't started.
-- **After v1.2.4 ships, the repo forks.** BUU goes feature-frozen forever (bug fixes only). Automation-everything moves to a new product (working name: BUUA / v2.0). See `BUUA-DESIGN.md`.
-
----
-
-## v1.2.4 — the next thing to build
-
-**One-line summary:** Unify "Live Dry Run" and "Run" into a single mode-aware runner. Eliminate the two-codepath design that caused today's confusion.
-
-**Three start modes** (selectable via dropdown above Run button):
-1. **Step through each step** *(default)* — pause BEFORE every action, show preview (rendered value, resolved selector). User clicks Next-step.
-2. **Step through rows** — pause after each completed row.
-3. **Run all** — fire and forget (today's behavior).
-
-User can switch from any verification mode to "Run all" mid-run. **All modes write logs and checkpoints** — no work is wasted on verification rows. The run is always real, always resumable.
-
-**Removed in v1.2.4:**
-- `start-live-dryrun` IPC handler
-- `dryrun-event` channel
-- `buildDryRunner` and `buu-dryrun-*.js` temp file pattern
-- The Build/Test page's "Live Dry Run" button (selector probing replaced with one-shot Playwright call)
-
-**Five design questions all resolved.** See Section 5 of `BUU-v1.2.4-DESIGN.md`.
-
-**Implementation order** (Section 4 of `BUU-v1.2.4-DESIGN.md`):
-1. Refactor `buildRunner` for pause states (stdin command reader, mode state machine)
-2. Add `run-control` IPC handler
-3. Add start-mode dropdown to Run page
-4. Add in-run pause controls
-5. Validate v1.2.3 scenarios still work
-6. Replace Build/Test selector probe with inline Playwright
-7. Remove dry-run code
-8. Smoke test
-9. Ship
+- **v1.2.3 SHIPPED 2026-05-01** — Icon, run guards, heartbeat, live counters, resume-on-launch, log retries.
+- **v1.2.4 SHIPPED 2026-05-01** — Unified runner with start-mode picker (step / step-row / run-all).
+- **v1.2.5 SHIPPED** — Resilience pack: configurable retry, circuit breaker, network-aware retry, re-auth, retry-failed-rows, log enrichment, default `errHandle` flipped from `stop` to `retry`.
+- **v1.2.6 SHIPPED** — Iframe-aware selectors. Click-step debug checkbox shipped as permanent feature.
+- **v1.2.7 SHIPPED 2026-05-07** — Dialog handler crash fix. Single-issue hotfix; `page.once('dialog')` listener no longer leaks across rows when no dialog actually fires.
+- **v1.2.8 is the next BUU release.** Drafting in `BUU-v1.2.8-DESIGN.md`. Setup-and-teardown flows (three-phase pipeline). Originally numbered v1.2.7; renumbered to v1.2.8 on 2026-05-07 when the dialog hotfix took the v1.2.7 slot. Estimated 15-20 hours; not yet locked, not yet started.
+- **BUU is no longer feature-frozen post-v1.2.5.** That earlier plan is shelved. BUUA work remains parked pending WorkWave API access.
 
 ---
 
-## BUUA — what comes after v1.2.4
+## v1.2.8 — the next thing to build
 
-**One-line summary:** A new product, forked from BUU v1.2.4, focused on unattended automation at scale.
+**One-line summary:** Setup-and-teardown flows. Three-phase pipeline: setup-once → main-per-row → teardown-once.
 
-**Headline differences from BUU:**
-- Multi-runner concurrency (single process, many runners — built in from day one)
-- Job queue with folder-based lifecycle (jobs/unstarted, queued, running, done, failed)
-- Headless-by-default, designed to run off-site (separate machine / VM / cloud)
-- Notification system for unattended operation (email first, push next, mobile companion eventually)
-- No verification UI, no Live Dry Run, no Build/Test page — flows are imported from BUU
+The motivating use case is the chargeback workflow, which needs to create a batch once at the start, post service orders into it per row, then release the batch once at the end. Today's per-row-only flow model can't express the create-once / release-once envelope. v1.2.8 adds flow composition: a per-row flow can declare a setup flow and a teardown flow; all three phases share one logged-in browser session.
 
-**What stays the same:** flow JSON format, profile credential storage pattern (keytar + AES fallback), checkpoint v2 format, Excel log format, runner template approach, PestPac selectors, exceljs streaming.
+Estimated effort: 15-20 hours. Design doc at `BUU-v1.2.8-DESIGN.md` (still drafting, not yet locked). Originally numbered v1.2.7; renumbered when the dialog hotfix took the v1.2.7 slot on 2026-05-07.
 
-**Strategic constraint:** Multi-runner does NOT belong in v1.2.4. BUU v1.2.4 stays focused on the unify-runner work. Multi-runner is BUUA's first feature, not BUU's last. This boundary is deliberate.
+---
 
-See `BUUA-DESIGN.md` for the parking lot of ideas, open questions, and proposed milestones.
+## v1.2.7 — what shipped
+
+**One-line summary:** Single-issue dialog handler crash fix. The `dialog` step's `page.once('dialog')` listener leaked across rows when no dialog actually fired, causing a deferred crash on the next row that did fire one.
+
+**Net diff:** ~30 lines changed in `src/main.js` (the `case 'dialog':` block in the runner template). Validated via `_validate-runner.js`. See `RELEASE-NOTES-v1.2.7.md`.
+
+---
+
+## v1.2.4 — what shipped
+
+**One-line summary:** Unified runner with start-mode picker. Live Dry Run is gone, absorbed into the regular Run as a 'Start mode' option.
+
+**Three modes:** Step through each step (default), Step through each row, Run all.
+
+**Verification mode pause panel** shows resolved selector + rendered value before each action. User can switch to Run-all from any pause to release the brake. Stopping from a pause is graceful (current row abandoned, log flushed, checkpoint cleaned up).
+
+**Removed:** `start-live-dryrun` IPC handler, `dryrun-event` channel, `buildDryRunner`, `panel-dryrun`, `nav-dryrun`, ~180 lines of dryrun renderer JS, 6 dryrun preload bridges. Build/Test selector probe was already client-side, no replacement needed.
+
+**Net diff:** 279 insertions, 459 deletions (commit `a7cf1be`). Released as v1.2.4 on GitHub 2026-05-01. Source files: `src/main.js` 1073→980 lines, `src/index.html` 2089→1867 lines, `src/preload.js` 38→33 lines, plus `scripts/_validate-runner.js` (new, 113 lines, gitignored under `scripts/`).
+
+See `BUU-v1.2.4-DESIGN.md` for the full design rationale.
+
+---
+
+## BUUA — parked
+
+**Original framing:** A new product forked from BUU v1.2.5, focused on unattended automation at scale (multi-runner concurrency, folder-based job queue, headless, notification system).
+
+**Current state (2026-05-07):** Parked. The strategic plan to fork BUU into a feature-frozen branch and have BUUA take over is shelved. BUU continues to grow features (v1.2.8 is a feature release for setup/teardown). BUUA work is awaiting WorkWave API authentication unblock — see SESSION PICKUP NOTE above. When the API access lands, the BUUA-DESIGN.md sections flagged stale (2.1, 2.5, 2.9, 2.10) get rewritten with probe data.
+
+**What stays accurate:** the parking lot of ideas, the architectural targets (multi-runner, job folder lifecycle, etc.), the rationale. What needs rework after probe data: anything specific about API mutation surfaces, hybrid fallback boundaries, and concrete endpoint contracts.
+
+See `BUUA-DESIGN.md` for the full content; treat Section 0 as latest.
 
 ---
 
@@ -82,10 +124,12 @@ See `BUUA-DESIGN.md` for the parking lot of ideas, open questions, and proposed 
 
 **For a new Claude session:**
 1. Read this index first (you're here)
-2. Read `BUU-v1.2.4-DESIGN.md` if working on v1.2.4
-3. Read `BUUA-DESIGN.md` if discussing or working on BUUA
-4. Read `BUU-PROJECT-HANDOFF.md` for architecture, selectors, build commands, environment details
-5. Ask Matthew clarifying questions before assuming anything
+2. Read `BUU-v1.2.8-DESIGN.md` if working on v1.2.8 (setup/teardown flows)
+3. Read the relevant `RELEASE-NOTES-v1.2.X.md` files if you need to know what each shipped version actually changed
+4. Read `BUU-v1.2.5-DESIGN.md` and `BUU-v1.2.4-DESIGN.md` for design history of shipped features
+5. Read `BUUA-DESIGN.md` if discussing or working on BUUA (parked but not abandoned)
+6. Read `BUU-PROJECT-HANDOFF.md` (Section 0 first) for architecture, selectors, build commands, environment details, operating practices
+7. Ask Matthew clarifying questions before assuming anything
 
 ---
 
@@ -93,8 +137,8 @@ See `BUUA-DESIGN.md` for the parking lot of ideas, open questions, and proposed 
 
 **This index needs updating when:**
 - A new design doc is added → add a row to "What's where"
-- v1.2.4 ships → update status snapshot
+- A version ships → update status snapshot, add a "what shipped" section, move the "next thing to build" forward
 - BUUA-DESIGN.md graduates from parking lot to design spec → update its row
 - Strategic direction changes → update sections 2-4
 
-**Last edited by:** Claude (work account), 2026-05-01.
+**Last edited by:** Claude (work account), 2026-05-07 (post-v1.2.7-ship, v1.2.8 captured).

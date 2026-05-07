@@ -21,3 +21,9 @@ credentials.enc
 scripts/
 upcoming/
 _asar-installed/
+
+# API documentation — portal pages contain plaintext API key
+API DOCUMENTATION/portal-prose/
+
+# Backup files
+*.bak
