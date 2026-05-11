@@ -23,7 +23,8 @@ upcoming/
 _asar-installed/
 
 # API documentation — portal pages contain plaintext API key
-API DOCUMENTATION/portal-prose/
+# API documentation - contains plaintext API key, NEVER commit any of it
+API DOCUMENTATION/
 
 # Backup files
 *.bak

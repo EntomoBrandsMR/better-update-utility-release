@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.2.7';
+const CURRENT_VERSION = '1.2.8';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -143,7 +143,26 @@ ipcMain.handle('install-chromium', async () => {
 
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
-ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes, startMode }) => {
+// v1.2.8: resolve a flow by its `name` field. Scans the flows directory, matches by
+// `name` first then by filename stem. Returns the parsed flow or null if not found
+// (caller decides whether that's an error).
+function resolveOnceFlowByName(name) {
+  if (!name) return null;
+  const dir = getFlowsDir();
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch { return null; }
+  for (const f of entries) {
+    if (!/\.json$/i.test(f)) continue;
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      const candName = data.name || f.replace(/\.json$/i, '');
+      if (candName === name) return data;
+    } catch { /* skip malformed */ }
+  }
+  return null;
+}
+
+ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes, startMode, resumeAction, runMode, setupFlowId, teardownFlowId }) => {
   // startMode: 'step' | 'step-row' | 'run-all'  (added v1.2.4). Defaults to 'run-all' for back-compat.
   startMode = startMode || 'run-all';
   // v1.2.5 item 2.8: tunable speed/resilience settings. Defaults match design doc.
@@ -196,12 +215,35 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   } catch {}
   try {
     fs.writeFileSync(checkpointPath, JSON.stringify({
-      schemaVersion: 2,
+      // v1.2.8: bumped from v2 to v3. Added flowMeta (runMode + setup/teardown refs)
+      // and phaseProgress (per-phase completion tracking). v2 readers will still
+      // load this file (they'll see extra fields and ignore them); v3 readers handle
+      // v2 by defaulting setupCompleted=true, teardownCompleted=false.
+      schemaVersion: 3,
       runId,
       profileId,
       spreadsheetPath,
       spreadsheetName: path.basename(spreadsheetPath),
       flowSnapshot: steps,
+      // v1.2.8: snapshot of the main flow's composition fields so resume knows what
+      // setup/teardown flows were in play. Used by the resume modal to show "this run
+      // had a teardown that didn't complete — run it now?" and similar.
+      flowMeta: {
+        runMode: 'per-row',         // v1.2.8 Phase 4: hardcoded; once-flows aren't run-launched yet
+        setupFlowId: null,          // Phase 5 wires the real values from the flow JSON
+        teardownFlowId: null,
+        setupStepCount: 0,
+        teardownStepCount: 0,
+      },
+      // v1.2.8: phase progress tracker. setupCompleted is set true by the runner when
+      // setup finishes; teardownCompleted is set true when teardown finishes. mainRowIndex
+      // tracks the row loop progress (same as the legacy rowIndex field, duplicated here
+      // for clarity in resume-modal logic).
+      phaseProgress: {
+        setupCompleted: false,
+        mainRowIndex: 0,
+        teardownCompleted: false,
+      },
       headless: !!headless,
       errHandle: errHandle || 'retry',
       rowDelayMin: rowDelayMin || 0,
@@ -245,8 +287,70 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
     return { ok: false, error: 'Chromium not found' };
   }
 
-  // Write runner script with chromium path baked in
-  const script = buildRunner(steps, logPath, checkpointPath, resumeFromRow || 0, headless, errHandle || 'retry', rowDelayMin || 0, rowDelayMax || 0, chromiumExe, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes);
+  // Write runner script with chromium path baked in.
+  // v1.2.8: buildRunner takes a config object. We build it as cfg_for_runner so we can
+  // validate setup/teardown resolution before spawning the runner.
+  const cfg_for_runner = {
+    steps,
+    logPath,
+    checkpointPath,
+    resumeFrom: resumeFromRow || 0,
+    headless,
+    errHandle: errHandle || 'retry',
+    rowDelayMin: rowDelayMin || 0,
+    rowDelayMax: rowDelayMax || 0,
+    chromiumExePath: chromiumExe,
+    startMode,
+    selectorTimeout,
+    pageLoadMode,
+    retryCount,
+    breakerThreshold,
+    reauthInterval,
+    retryRowIndexes,
+    // v1.2.8: resolve setup/teardown flow names to step arrays. If a flow can't be
+    // resolved, reject the run with a clear error rather than silently dropping it
+    // (that would produce a run that creates a batch but never releases it).
+    setupSteps: (function(){
+      if (!setupFlowId) return [];
+      const f = resolveOnceFlowByName(setupFlowId);
+      if (!f) {
+        // Will be caught below — push an empty array here so the runner build doesn't crash,
+        // but we'll throw before spawning.
+        return null;
+      }
+      if (f.runMode !== 'once') {
+        return null;
+      }
+      return f.steps || [];
+    })(),
+    teardownSteps: (function(){
+      if (!teardownFlowId) return [];
+      const f = resolveOnceFlowByName(teardownFlowId);
+      if (!f) return null;
+      if (f.runMode !== 'once') return null;
+      return f.steps || [];
+    })(),
+    runContext: {
+      runId,
+      today: new Date().toISOString().slice(0,10),
+      profileUsername: (prof && prof.username) || ''
+    },
+    // v1.2.8: resumeAction controls phase gating. 'run-teardown-only' tells the runner to
+    // skip setup and the row loop, run teardown only. Other values (or undefined) run all phases.
+    resumeAction: resumeAction || null
+  };
+  // v1.2.8: hard fail if setup/teardown couldn't be resolved (we returned null sentinels above).
+  if (cfg_for_runner.setupSteps === null) {
+    runnerLogStream.write(`[${new Date().toISOString()}] FATAL: setup flow "${setupFlowId}" not found or not a once-flow\n`);
+    runnerLogStream.end();
+    return { ok: false, error: 'Setup flow "' + setupFlowId + '" not found or has wrong runMode. Fix or remove the reference, then try again.' };
+  }
+  if (cfg_for_runner.teardownSteps === null) {
+    runnerLogStream.write(`[${new Date().toISOString()}] FATAL: teardown flow "${teardownFlowId}" not found or not a once-flow\n`);
+    runnerLogStream.end();
+    return { ok: false, error: 'Teardown flow "' + teardownFlowId + '" not found or has wrong runMode. Fix or remove the reference, then try again.' };
+  }
+  const script = buildRunner(cfg_for_runner);
   fs.writeFileSync(runnerPath, script);
 
   const env = { ...process.env };
@@ -361,10 +465,30 @@ ipcMain.handle('find-orphan-checkpoints', () => {
     const checkpointPath = path.join(dir, f);
     try {
       const c = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
-      // Skip v1 (no schemaVersion or no flowSnapshot) — can't resume those
-      if (c.schemaVersion !== 2 || !c.flowSnapshot || !c.spreadsheetPath) continue;
+      // Skip v1 (no schemaVersion or no flowSnapshot) — can't resume those.
+      // v1.2.8: accept both v2 and v3 checkpoints. v2 has no flowMeta/phaseProgress;
+      // we synthesize sensible defaults (assumed per-row flow, no setup/teardown,
+      // phase progress reflecting "rowIndex-based midpoint").
+      if (!c.flowSnapshot || !c.spreadsheetPath) continue;
+      if (c.schemaVersion !== 2 && c.schemaVersion !== 3) continue;
       // Skip if currently running
       if (automationProcesses.has(c.runId)) continue;
+      // v1.2.8: synthesize phaseProgress for v2 checkpoints so the resume modal can
+      // treat all orphans uniformly. A v2 checkpoint with rowIndex>0 means main was
+      // in progress; we mark setupCompleted=true (it was an implicit no-op for v2)
+      // and teardownCompleted=false (v2 has no teardown concept).
+      const phaseProgress = c.phaseProgress || {
+        setupCompleted: true,
+        mainRowIndex: c.rowIndex || 0,
+        teardownCompleted: false,
+      };
+      const flowMeta = c.flowMeta || {
+        runMode: 'per-row',
+        setupFlowId: null,
+        teardownFlowId: null,
+        setupStepCount: 0,
+        teardownStepCount: 0,
+      };
       orphans.push({
         runId: c.runId,
         ts: c.ts,
@@ -380,6 +504,10 @@ ipcMain.handle('find-orphan-checkpoints', () => {
         // v1.2.5 item 2.7: forward the stop-reason annotations so the modal can show them.
         lastError: c.lastError || null,
         lastStop: c.lastStop || null,
+        // v1.2.8: forward phase progress + flowMeta so the resume modal can branch on them.
+        schemaVersion: c.schemaVersion,
+        phaseProgress,
+        flowMeta,
       });
     } catch {}
   }
@@ -401,7 +529,21 @@ ipcMain.handle('discard-checkpoint', (_, checkpointPath) => {
 });
 
 // ── RUNNER SCRIPT BUILDER ─────────────────────────────────────────────────────
-function buildRunner(steps, logPath, checkpointPath, resumeFrom, headless, errHandle, rowDelayMin, rowDelayMax, chromiumExePath, startMode, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes) {
+// v1.2.8: refactored from 16-arg positional signature to a single config object.
+// Destructure to locals so the existing template body (which references the param
+// names directly via ${paramName}) keeps working without touching the 1000+ lines below.
+// New v1.2.8 fields: setupSteps, teardownSteps, runContext. They default to null/empty
+// for back-compat with pre-1.2.8 call sites (none currently expected, but safe).
+function buildRunner(cfg) {
+  const {
+    steps, logPath, checkpointPath, resumeFrom, headless, errHandle,
+    rowDelayMin, rowDelayMax, chromiumExePath, startMode,
+    selectorTimeout, pageLoadMode, retryCount, breakerThreshold,
+    reauthInterval, retryRowIndexes,
+    // v1.2.8 additions:
+    setupSteps = [], teardownSteps = [], runContext = {},
+    resumeAction = null  // 'run-teardown-only' skips setup + row loop
+  } = cfg;
   return `
 'use strict';
 const fs = require('fs');
@@ -554,7 +696,13 @@ function resolvePreview(step, row, creds){
     return v.replace(/{{CRED:companyKey}}/g, creds.companyKey||'')
             .replace(/{{CRED:username}}/g, creds.username||'')
             .replace(/{{CRED:password}}/g, creds.password||'')
-            .replace(/{{([^}]+)}}/g, function(_, col){ return row[col] !== undefined ? String(row[col]) : ''; });
+            // v1.2.8: match runStep — run-context tokens before row tokens.
+            .replace(/{{([^}]+)}}/g, function(_, ref){
+              if (ref === 'TODAY') return RUN_CONTEXT.today || '';
+              if (ref === 'RUNID') return RUN_CONTEXT.runId || '';
+              if (ref === 'PROFILE_USERNAME') return RUN_CONTEXT.profileUsername || '';
+              return row[ref] !== undefined ? String(row[ref]) : '';
+            });
   };
   let value = '';
   if (step.type === 'type' || step.type === 'select') value = r(step.value || '');
@@ -576,13 +724,42 @@ function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
 function saveChk(row){try{
   let prev={};try{prev=JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));}catch{}
   prev.rowIndex=row;prev.ts=new Date().toISOString();
+  // v1.2.8: mirror rowIndex into phaseProgress.mainRowIndex for v3 readers.
+  if(prev.phaseProgress){ prev.phaseProgress.mainRowIndex = row; }
   fs.writeFileSync(CHECKPOINT,JSON.stringify(prev));
 }catch{}}
+// v1.2.8: mark a phase completed (or its progress field) in the checkpoint.
+// Used to record setupCompleted=true after setup runs cleanly, teardownCompleted=true
+// after teardown runs cleanly. Idempotent.
+function markPhaseDone(phase){
+  try{
+    let prev={};try{prev=JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));}catch{}
+    if(!prev.phaseProgress) prev.phaseProgress = {setupCompleted:false, mainRowIndex:0, teardownCompleted:false};
+    if(phase === 'setup') prev.phaseProgress.setupCompleted = true;
+    else if(phase === 'teardown') prev.phaseProgress.teardownCompleted = true;
+    prev.ts = new Date().toISOString();
+    fs.writeFileSync(CHECKPOINT, JSON.stringify(prev));
+  }catch{}
+}
 
 const ALL_STEPS = ${JSON.stringify(steps)};
 const LOGIN_STEPS = ALL_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
 const DATA_STEPS  = ALL_STEPS.filter(s => !s.locked && s.type !== 'pestpac-logout');
 const LOGOUT_STEP = ALL_STEPS.find(s => s.type === 'pestpac-logout') || {type:'pestpac-logout'};
+
+// v1.2.8: setup and teardown once-flows. Their steps come from separate flow JSON files;
+// they have no locked/login portion (they reuse the main flow's session). Empty arrays
+// when the main flow declares no setup/teardown — the main() runner skips those phases.
+const SETUP_STEPS = ${JSON.stringify(setupSteps || [])};
+const TEARDOWN_STEPS = ${JSON.stringify(teardownSteps || [])};
+// v1.2.8: run-context for once-flow token resolution. Per-row tokens (the {{ColName}} form)
+// are resolved against row data; run-context tokens ({{TODAY}}, {{RUNID}}, {{PROFILE_USERNAME}})
+// resolve against this object regardless of phase. Per-row flows can also use these tokens.
+const RUN_CONTEXT = ${JSON.stringify(runContext || {})};
+// v1.2.8: resumeAction gates which phases execute. 'run-teardown-only' is the recovery
+// path from the resume modal — runs ONLY teardown, skipping login/setup/main/logout.
+// Any other value (or null) runs all phases normally.
+const RESUME_ACTION = ${JSON.stringify(resumeAction || null)};
 
 let logEntries=[], flushTimer=null;
 function addLog(e){logEntries.push(e);if(logEntries.length%100===0)flush();else{clearTimeout(flushTimer);flushTimer=setTimeout(flush,3000);}}
@@ -645,12 +822,21 @@ function flush(){
 
       // v1.2.5 item 2.10 sub 3: derive the "Stopped reason" Summary cell from the
       // most recent terminal event in the log. Empty on clean completion.
+      // v1.2.8: also surface setup/teardown failures as stopped reasons.
       let stoppedReason = '';
       // Walk backwards through logEntries looking for a synthetic terminal event.
       for (let i = logEntries.length - 1; i >= 0; i--){
         const e = logEntries[i];
         if (e.status === 'circuit-breaker') {
           stoppedReason = e.stepLabel || ('Circuit breaker tripped (last successful row: ' + (e.error || '?') + ')');
+          break;
+        }
+        if (e.status === 'error' && e.phase === 'setup') {
+          stoppedReason = 'Setup failed: ' + (e.error || 'unknown');
+          break;
+        }
+        if (e.status === 'error' && e.phase === 'teardown') {
+          stoppedReason = 'Teardown failed: ' + (e.error || 'unknown');
           break;
         }
         if (e.status === 'error' && e.phase === 'reauth') {
@@ -680,6 +866,27 @@ function flush(){
       const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
       summaryWs['!cols'] = [{wch:24},{wch:60}];
       XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+
+      // v1.2.8: Phases sheet. Summarizes setup/teardown phase entries (synthetic log
+      // entries written by runOnceFlow). One row per phase, showing status, duration,
+      // and any failure details. Only added when at least one phase entry exists, so
+      // pre-1.2.8 logs / flows-without-composition don't get an empty sheet.
+      const phaseEntries = logEntries.filter(e => e.phase === 'setup' || e.phase === 'teardown');
+      if (phaseEntries.length) {
+        const phaseRows = phaseEntries.map(e => ({
+          Phase: e.phase === 'setup' ? 'Setup' : 'Teardown',
+          Status: e.status === 'success' ? 'Success' : (e.status === 'error' ? 'Failed' : e.status),
+          'Started at': e.timestamp || '',
+          'Duration (ms)': e.durationMs || '',
+          'Step #': e.stepIndex !== '' && e.stepIndex !== undefined ? e.stepIndex : '',
+          'Step type': e.stepType || '',
+          'Step label': e.stepLabel || '',
+          Notes: e.error || ''
+        }));
+        const phasesWs = XLSX.utils.json_to_sheet(phaseRows);
+        phasesWs['!cols'] = [{wch:10},{wch:10},{wch:24},{wch:14},{wch:8},{wch:14},{wch:36},{wch:50}];
+        XLSX.utils.book_append_sheet(wb, phasesWs, 'Phases');
+      }
 
       if(logEntries.length){
         XLSX.utils.book_append_sheet(wb, buildSheet(logEntries), 'All rows');
@@ -864,7 +1071,25 @@ async function debugDumpSelector(page, selector, kind){
 }
 
 async function runStep(page,step,row,creds){
-  const r=v=>{if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');};
+  // v1.2.8: token resolver checks CRED:* literals first, then run-context tokens
+  // (TODAY/RUNID/PROFILE_USERNAME from the baked-in RUN_CONTEXT), then falls through
+  // to row[col]. Once-flows pass row={} and rely entirely on the run-context path;
+  // per-row flows use both paths transparently.
+  const r=v=>{
+    if(!v)return'';
+    return v
+      .replace(/{{CRED:companyKey}}/g, creds.companyKey||'')
+      .replace(/{{CRED:username}}/g, creds.username||'')
+      .replace(/{{CRED:password}}/g, creds.password||'')
+      .replace(/{{([^}]+)}}/g, function(_, ref){
+        // Run-context tokens — small fixed allowlist resolved from RUN_CONTEXT.
+        if (ref === 'TODAY') return RUN_CONTEXT.today || '';
+        if (ref === 'RUNID') return RUN_CONTEXT.runId || '';
+        if (ref === 'PROFILE_USERNAME') return RUN_CONTEXT.profileUsername || '';
+        // Per-row column reference.
+        return row[ref] !== undefined ? String(row[ref]) : '';
+      });
+  };
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
     case 'navigate':{const _navUrl=r(step.url);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step\\'s URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:PAGE_LOAD_MODE,timeout:30000});break;}
@@ -990,7 +1215,21 @@ async function runStep(page,step,row,creds){
     case 'textedit':{
       await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});
       const currentVal = await page.$eval(step.selector, el => el.value || el.textContent || el.innerText || '');
-      const rr = v => {if(!v)return'';return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,(_,col)=>row[col]!==undefined?String(row[col]):'');};
+      const rr = v => {
+        // v1.2.8: same logic as the main resolver above — run-context tokens take
+        // precedence over row lookup so once-flow textedit steps work.
+        if(!v) return '';
+        return v
+          .replace(/{{CRED:companyKey}}/g, creds.companyKey||'')
+          .replace(/{{CRED:username}}/g, creds.username||'')
+          .replace(/{{CRED:password}}/g, creds.password||'')
+          .replace(/{{([^}]+)}}/g, function(_, ref){
+            if (ref === 'TODAY') return RUN_CONTEXT.today || '';
+            if (ref === 'RUNID') return RUN_CONTEXT.runId || '';
+            if (ref === 'PROFILE_USERNAME') return RUN_CONTEXT.profileUsername || '';
+            return row[ref] !== undefined ? String(row[ref]) : '';
+          });
+      };
       const search = rr(step.searchVal||'');
       const replaceStr = rr(step.replaceVal||'');
       const ch = step.charVal||'@';
@@ -1059,6 +1298,65 @@ async function runStep(page,step,row,creds){
       }
       break;}
   }
+}
+
+// v1.2.8: run a once-flow's steps sequentially against the shared page/creds context.
+// Used by main() for the setup phase (before row loop) and teardown phase (after row loop).
+// Phase is 'setup' or 'teardown', used purely for event labeling.
+// Returns {ok: true} on success, {ok: false, error, stepIndex, stepLabel} on failure.
+// Failures are NOT retried — once-flow steps run once and propagate failure to the caller.
+// (retry-count from v1.2.5 only applies to per-row main flow steps; reasoning in design §6.)
+async function runOnceFlow(page, steps, creds, phase){
+  emit({type:'phase-start', phase: phase, stepCount: steps.length});
+  const _phaseStart = Date.now();
+  // synthLog-equivalent for once-flows. Mirrors main()'s synthLog but uses page.url()
+  // directly since this runs outside main()'s closure.
+  function _synthOnceLog(opts){
+    const u = (function(){ try { return page.url() || ''; } catch { return ''; } })();
+    addLog({
+      row: '',
+      timestamp: new Date().toISOString(),
+      url: u,
+      status: opts.status || 'success',
+      error: opts.error || '',
+      failedStep: '',
+      fieldsWritten: '',
+      durationMs: opts.durationMs || 0,
+      phase: opts.phase || phase,
+      errorCategory: opts.errorCategory || '',
+      stepIndex: opts.stepIndex !== undefined ? String(opts.stepIndex) : '',
+      stepType: opts.stepType || '',
+      stepLabel: opts.label || '',
+      selector: '',
+      attemptedValue: ''
+    });
+  }
+  for (let i = 0; i < steps.length; i++) {
+    // v1.2.8 Phase 7: respect user-Stop between once-flow steps. currentMode is set by
+    // the stdin readline handler. We check at step boundaries (safer than mid-step abort)
+    // so the current Playwright action completes before we bail. Returns a distinct
+    // {ok:false, stopped:true} so the caller (main()) can mark this as user-stop rather
+    // than a step failure in the log/checkpoint.
+    if (currentMode === 'stop') {
+      emit({type:'phase-end', phase: phase, status: 'stopped', stepIndex: i, durationMs: Date.now() - _phaseStart});
+      _synthOnceLog({status: 'stopped', label: phase + ' stopped by user before step ' + (i+1), durationMs: Date.now() - _phaseStart, stepIndex: i});
+      return {ok: false, stopped: true, stepIndex: i, stepLabel: (steps[i] && (steps[i]._label||steps[i].type)) || ''};
+    }
+    const step = steps[i];
+    const stepLabel = step._label || step.type;
+    emit({type:'phase-step', phase: phase, stepIndex: i, totalSteps: steps.length, stepType: step.type, stepLabel: stepLabel});
+    try {
+      // row={} — once-flows have no row context. Run-context tokens still resolve via RUN_CONTEXT.
+      await runStep(page, step, {}, creds);
+    } catch (e) {
+      emit({type:'phase-end', phase: phase, status: 'failed', stepIndex: i, stepLabel: stepLabel, error: e.message, durationMs: Date.now() - _phaseStart});
+      _synthOnceLog({status: 'error', label: phase + ' failed at step ' + (i+1) + ': ' + stepLabel, error: e.message, errorCategory: classifyError(e.message), durationMs: Date.now() - _phaseStart, stepIndex: i, stepType: step.type});
+      return {ok: false, error: e.message, stepIndex: i, stepLabel: stepLabel};
+    }
+  }
+  emit({type:'phase-end', phase: phase, status: 'success', durationMs: Date.now() - _phaseStart});
+  _synthOnceLog({status: 'success', label: phase + ' complete (' + steps.length + ' steps)', durationMs: Date.now() - _phaseStart});
+  return {ok: true};
 }
 
 async function main(){
@@ -1134,6 +1432,62 @@ async function main(){
   // v1.2.5 item 2.10 sub 2: synthetic 'init' entry for successful initial login.
   synthLog({phase:'init',status:'success',label:'Initial login complete',durationMs:Date.now()-_loginStartedAt});
 
+  // v1.2.8: Phase 1 of the three-phase pipeline — setup once-flow.
+  // Runs after login, before the per-row loop. Failure is fatal (no rows attempted, no
+  // teardown attempted). Skipped when no setup steps were declared.
+  // Track whether setup succeeded so the finally block knows whether teardown should run.
+  let _setupCompleted = false;
+  // v1.2.8: run-teardown-only resume action skips setup AND the row loop entirely.
+  // We bypass both phases and let the finally block run teardown only.
+  // _setupCompleted is set true unconditionally so the teardown gate passes.
+  const _teardownOnlyMode = (RESUME_ACTION === 'run-teardown-only');
+  if (_teardownOnlyMode) {
+    emit({type:'log', message: 'Resume mode: run-teardown-only. Skipping setup and row loop.'});
+    _setupCompleted = true;
+  } else if (SETUP_STEPS && SETUP_STEPS.length > 0) {
+    _hbState.phase = 'setup';
+    const _setupResult = await runOnceFlow(page, SETUP_STEPS, creds, 'setup');
+    if (!_setupResult.ok) {
+      // v1.2.8 Phase 7: distinguish user-stop (clean exit) from failure (annotated as fatal).
+      if (_setupResult.stopped) {
+        emit({type:'log', message: 'Setup stopped by user. Skipping row loop and teardown.'});
+        try{
+          if(fs.existsSync(CHECKPOINT)){
+            const cp = JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));
+            cp.lastStop = {phase: 'setup', stepIndex: _setupResult.stepIndex, ts: new Date().toISOString()};
+            cp.phaseProgress = {setupCompleted: false, mainRowIndex: 0, teardownCompleted: false};
+            fs.writeFileSync(CHECKPOINT, JSON.stringify(cp));
+          }
+        }catch{}
+        flush();
+        await browser.close();
+        clearInterval(_heartbeat);
+        process.exit(0);  // clean exit — user requested
+      }
+      // Genuine setup failure — fatal.
+      emit({type:'fatal', error: 'Setup failed at step ' + (_setupResult.stepIndex + 1) + ': ' + _setupResult.error});
+      flush();
+      await browser.close();
+      clearInterval(_heartbeat);
+      // v1.2.5 item 2.7: annotate checkpoint so the resume modal can show the setup failure.
+      try{
+        if(fs.existsSync(CHECKPOINT)){
+          const cp = JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));
+          cp.lastError = {phase: 'setup', message: _setupResult.error, stepIndex: _setupResult.stepIndex, stepLabel: _setupResult.stepLabel, ts: new Date().toISOString()};
+          // v1.2.8: track which phase progress is at, so resume can offer the right recovery.
+          cp.phaseProgress = {setupCompleted: false, mainRowIndex: 0, teardownCompleted: false};
+          fs.writeFileSync(CHECKPOINT, JSON.stringify(cp));
+        }
+      }catch{}
+      process.exit(1);
+    }
+    _setupCompleted = true;
+    markPhaseDone('setup');  // v1.2.8 Phase 4: persist setup completion so resume knows
+  } else {
+    // No setup phase declared — trivially "completed" so teardown gates still work.
+    _setupCompleted = true;
+  }
+
   // v1.2.5 item 2.11 (Phase 7): re-auth state and helpers.
   // Three triggers fire maybeReauth(reason):
   //   1. Timer: at row boundaries when Date.now() >= nextReauthAt (REAUTH_INTERVAL_MS=0 disables)
@@ -1177,6 +1531,14 @@ async function main(){
     // Emit initial mode so UI can position itself before the first row.
     emit({type:'mode',mode:currentMode});
     let _stopRequested=false;
+    // v1.2.8: in teardown-only mode, skip the row loop entirely by pre-setting _stopRequested.
+    // The for-await will check this on the very first iteration and bail without doing work.
+    // We avoid an early-return here because we still want to fall through to the finally
+    // block (which runs teardown when _setupCompleted is true).
+    if (_teardownOnlyMode) {
+      _stopRequested = true;
+      emit({type:'log', message: 'Skipping row loop in teardown-only mode.'});
+    }
     for await(const row of streamRows(SPREADSHEET)){
       if(_stopRequested) break;
       ri++;
@@ -1420,6 +1782,45 @@ async function main(){
     if(!_preserveCheckpoint){
       try{fs.unlinkSync(CHECKPOINT);}catch{}
     }
+    // v1.2.8: Phase 3 of the three-phase pipeline — teardown once-flow.
+    // Runs on completed / breaker / user-stop, NOT on setup-fail (we exited above) and
+    // NOT on fatal mid-loop (caught by main().catch). Gated on _setupCompleted to skip
+    // teardown when setup never ran successfully.
+    let _teardownCompleted = false;
+    if (_setupCompleted && TEARDOWN_STEPS && TEARDOWN_STEPS.length > 0) {
+      _hbState.phase = 'teardown';
+      try {
+        const _teardownResult = await runOnceFlow(page, TEARDOWN_STEPS, creds, 'teardown');
+        if (_teardownResult.ok) {
+          _teardownCompleted = true;
+          markPhaseDone('teardown');  // v1.2.8 Phase 4: persist teardown completion
+        } else {
+          // v1.2.8 Phase 7: distinguish user-stop from genuine failure. Either way teardown
+          // didn't finish — but the resume modal labels them differently and the user's
+          // recovery affordance is the same: "Run teardown only" via the resume modal.
+          try {
+            if (fs.existsSync(CHECKPOINT)) {
+              const cp = JSON.parse(fs.readFileSync(CHECKPOINT, 'utf8'));
+              if (_teardownResult.stopped) {
+                cp.lastStop = cp.lastStop || {phase: 'teardown', stepIndex: _teardownResult.stepIndex, ts: new Date().toISOString()};
+              } else {
+                cp.lastError = cp.lastError || {phase: 'teardown', message: _teardownResult.error, stepIndex: _teardownResult.stepIndex, stepLabel: _teardownResult.stepLabel, ts: new Date().toISOString()};
+              }
+              cp.phaseProgress = {setupCompleted: true, mainRowIndex: ri, teardownCompleted: false};
+              fs.writeFileSync(CHECKPOINT, JSON.stringify(cp));
+            }
+          } catch {}
+        }
+      } catch (e) {
+        // Defensive — runOnceFlow shouldn't throw (it catches internally), but if it does
+        // we don't want to crash the cleanup path.
+        emit({type:'log', message: 'Teardown phase threw unexpectedly: ' + e.message});
+      }
+      flush();
+    } else {
+      // No teardown declared, OR setup never ran. Mark "completed" for resume logic.
+      _teardownCompleted = true;
+    }
     try{await runStep(page,LOGOUT_STEP,{},creds);}catch{}
     await browser.close();
     clearInterval(_heartbeat);
@@ -1582,6 +1983,95 @@ ipcMain.handle('load-flow', async () => {
   });
   if (r.canceled) return null;
   return fs.readFileSync(r.filePaths[0], 'utf8');
+});
+
+// v1.2.8: scan the flows directory for once-flows. Returns [{name, filePath, runMode}].
+// Used by the renderer to populate setup/teardown dropdowns.
+// Tolerant of malformed JSON: bad files are skipped (logged once per call), not surfaced
+// as errors — the renderer dropdown should always work even if a stray file is corrupt.
+ipcMain.handle('list-once-flows', async () => {
+  const dir = getFlowsDir();
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.json'));
+  } catch (e) {
+    return { ok: false, error: 'Cannot read flows directory: ' + e.message, flows: [] };
+  }
+  const results = [];
+  const errors = [];
+  for (const filename of entries) {
+    const fp = path.join(dir, filename);
+    try {
+      const raw = fs.readFileSync(fp, 'utf8');
+      const data = JSON.parse(raw);
+      // Pre-v1.1 flows have no runMode; they're implicitly 'per-row' and excluded here.
+      if (data.runMode === 'once') {
+        results.push({
+          name: data.name || filename.replace(/\.json$/i, ''),
+          filename,
+          filePath: fp,
+          runMode: 'once'
+        });
+      }
+    } catch (e) {
+      errors.push({ filename, error: e.message });
+    }
+  }
+  if (errors.length) {
+    console.warn('[list-once-flows] skipped malformed files:', errors);
+  }
+  return { ok: true, flows: results, skipped: errors.length };
+});
+
+// v1.2.8: given a flow JSON (or its parsed form), check that referenced setup/teardown
+// flows exist on disk and have runMode === 'once'. Returns [{field, ref, status, msg}].
+// status is 'ok' | 'missing' | 'wrong-mode' | 'not-applicable'.
+// Used by renderer's pre-run validation to catch dangling references.
+ipcMain.handle('validate-flow-references', async (_, { flow }) => {
+  const issues = [];
+  // Once-flows shouldn't have either field set; renderer already flags that as an error
+  // before we get here, but be safe.
+  if (flow && flow.runMode === 'once') {
+    return { ok: true, issues: [] };
+  }
+  const checkOne = (field, ref) => {
+    if (!ref) {
+      issues.push({ field, ref: null, status: 'not-applicable', msg: '' });
+      return;
+    }
+    const dir = getFlowsDir();
+    let found = null;
+    let foundFile = null;
+    try {
+      for (const filename of fs.readdirSync(dir)) {
+        if (!filename.toLowerCase().endsWith('.json')) continue;
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(dir, filename), 'utf8'));
+          const candName = data.name || filename.replace(/\.json$/i, '');
+          if (candName === ref) {
+            found = data;
+            foundFile = filename;
+            break;
+          }
+        } catch { /* skip malformed */ }
+      }
+    } catch (e) {
+      issues.push({ field, ref, status: 'missing', msg: 'Cannot read flows directory: ' + e.message });
+      return;
+    }
+    if (!found) {
+      issues.push({ field, ref, status: 'missing', msg: 'Flow "' + ref + '" not found in flows directory.' });
+      return;
+    }
+    if (found.runMode !== 'once') {
+      issues.push({ field, ref, status: 'wrong-mode', msg: 'Flow "' + ref + '" exists but is not a once-flow (runMode = ' + (found.runMode || 'per-row') + ').' });
+      return;
+    }
+    issues.push({ field, ref, status: 'ok', msg: '', filename: foundFile });
+  };
+  checkOne('setupFlowId', flow ? flow.setupFlowId : null);
+  checkOne('teardownFlowId', flow ? flow.teardownFlowId : null);
+  return { ok: true, issues };
 });
 ipcMain.handle('open-flows-folder', () => shell.openPath(getFlowsDir()));
 ipcMain.handle('open-log-folder', () => shell.openPath(getLogsDir()));

@@ -2,10 +2,10 @@
 
 **Status:** Drafting 2026-05-07. Implementation NOT started. This doc must be reviewed and locked before any code is written.
 **Author:** Claude (work account), per Matthew.
-**History:** Originally drafted as v1.2.7. Renumbered to v1.2.8 on 2026-05-07 when an unrelated dialog-handler crash fix shipped as v1.2.8.
+**History:** Originally drafted as v1.2.7. Renumbered to v1.2.8 on 2026-05-07 when an unrelated dialog-handler crash fix shipped as v1.2.7.
 **Priority:** v1.2.8 introduces a single substantial new capability — flow composition. The change is small in user-visible footprint but architecturally meaningful: BUU's run model goes from a single per-row loop to a three-phase pipeline (setup once → main per-row → teardown once). Estimated effort: 15–20 hours.
 
-**Strategic note:** As of 2026-05-07, the BUU/BUUA fork plan from `DESIGN-INDEX.md` is shelved. BUU continues to grow features. BUUA work is parked pending WorkWave API access. The "BUU enters bug-fix mode after v1.2.5" line in the index is no longer current and should be updated when this doc lands.
+**Strategic note:** As of 2026-05-07, the BUU/BUUA fork plan from `DESIGN-INDEX.md` is **not** cancelled — BUUA is paused while Matthew focuses on BUU. The "BUU enters bug-fix mode after v1.2.5" line in the design index is no longer accurate; BUU continues to grow features (v1.2.6 iframe selectors, v1.2.7 dialog handler crash fix, v1.2.8 setup/teardown flows) while BUUA's queue/multi-runner/API work waits. When BUUA work resumes, flow composition built here in v1.2.8 is the natural foundation for BUUA's per-job flow specification.
 
 ---
 
@@ -555,7 +555,7 @@ Items grouped by safety / dependency. Each phase ends at a "could-ship-here" bou
 29. Test on 2-3 real chargeback orders
 
 **Phase 9 — Ship (~1 hr):**
-30. Bump version to 1.2.7
+30. Bump version to 1.2.8
 31. Build, smoke test, commit, tag, push, publish release
 
 **Total realistic estimate: 18-22 hours.** Higher end of the 15-20 range from earlier; the chargeback flow build (Phase 8) is genuinely an hour and I hadn't accounted for it before.
@@ -584,7 +584,7 @@ Cannot be done pre-ship. Validation plan:
 4. **Breaker trip:** Set breaker to 3, intentionally break main steps. Run. Verify: main breaks at row 3, teardown still runs.
 5. **Teardown failure:** Intentionally break the teardown selector. Run a 5-row job. Verify: main completes, teardown fails with clear error, log captures it, resume modal on relaunch offers "Run teardown now."
 6. **Once-flow validation:** Try to save a once-flow with a `{{ColumnName}}` token. Verify error blocks save with copy from §2.5.
-7. **Migration:** Open an existing pre-1.2.7 flow. Verify it loads with `runMode: 'per-row'` defaulted in. Save it. Verify the saved JSON now has `version: '1.1'` and the new fields.
+7. **Migration:** Open an existing pre-1.2.8 flow. Verify it loads with `runMode: 'per-row'` defaulted in. Save it. Verify the saved JSON now has `version: '1.1'` and the new fields.
 8. **Verification mode across phases:** Run in Step mode. Verify pause-panel labels phase context correctly for setup/main/teardown steps.
 
 ---

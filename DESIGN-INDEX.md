@@ -54,7 +54,7 @@ All three live in `scripts/` (gitignored). They source `creds.ps1` (also gitigno
 | **BUU-PROJECT-HANDOFF.md** | Section 0 refreshed 2026-05-07 with current ship status; body still has older version-specific status mentions | Need PestPac selectors, runner template details, build commands, file paths, operating practices |
 | **API DOCUMENTATION/** | PestPac API spec + SDKs + portal prose docs | Anything API-related. swagger.yaml has 347 endpoints. portal-prose contains a plaintext API key — gitignore before commit. |
 
-> **Strategic note (2026-05-07):** The "BUU enters bug-fix mode after v1.2.5; BUUA takes over feature work" plan from earlier is shelved. BUU continues to grow features (v1.2.8 is a feature release). BUUA work remains parked pending WorkWave API authentication unblock. See `BUU-v1.2.8-DESIGN.md` Section 1 strategic note.
+> **Strategic note (2026-05-07):** The "BUU enters bug-fix mode after v1.2.5; BUUA takes over feature work" plan from earlier is paused, not cancelled. BUU continues to grow features (v1.2.8 is a feature release) while BUUA work waits on WorkWave API authentication. When the API access lands, BUUA work resumes; flow composition built in v1.2.8 will be the natural foundation for BUUA's per-job flow specification. See `BUU-v1.2.8-DESIGN.md` Section 1 strategic note.
 
 ---
 
@@ -66,7 +66,7 @@ All three live in `scripts/` (gitignored). They source `creds.ps1` (also gitigno
 - **v1.2.6 SHIPPED** — Iframe-aware selectors. Click-step debug checkbox shipped as permanent feature.
 - **v1.2.7 SHIPPED 2026-05-07** — Dialog handler crash fix. Single-issue hotfix; `page.once('dialog')` listener no longer leaks across rows when no dialog actually fires.
 - **v1.2.8 is the next BUU release.** Drafting in `BUU-v1.2.8-DESIGN.md`. Setup-and-teardown flows (three-phase pipeline). Originally numbered v1.2.7; renumbered to v1.2.8 on 2026-05-07 when the dialog hotfix took the v1.2.7 slot. Estimated 15-20 hours; not yet locked, not yet started.
-- **BUU is no longer feature-frozen post-v1.2.5.** That earlier plan is shelved. BUUA work remains parked pending WorkWave API access.
+- **BUU is no longer feature-frozen post-v1.2.5.** That earlier plan is paused. BUUA work waits on WorkWave API access.
 
 ---
 
@@ -108,7 +108,7 @@ See `BUU-v1.2.4-DESIGN.md` for the full design rationale.
 
 **Original framing:** A new product forked from BUU v1.2.5, focused on unattended automation at scale (multi-runner concurrency, folder-based job queue, headless, notification system).
 
-**Current state (2026-05-07):** Parked. The strategic plan to fork BUU into a feature-frozen branch and have BUUA take over is shelved. BUU continues to grow features (v1.2.8 is a feature release for setup/teardown). BUUA work is awaiting WorkWave API authentication unblock — see SESSION PICKUP NOTE above. When the API access lands, the BUUA-DESIGN.md sections flagged stale (2.1, 2.5, 2.9, 2.10) get rewritten with probe data.
+**Current state (2026-05-07):** Parked. The strategic plan to fork BUU into a feature-frozen branch and have BUUA take over is paused — BUUA work resumes when WorkWave API access lands. BUU continues to grow features in the meantime (v1.2.8 is a feature release for setup/teardown). BUUA work is awaiting WorkWave API authentication unblock — see SESSION PICKUP NOTE above. When the API access lands, the BUUA-DESIGN.md sections flagged stale (2.1, 2.5, 2.9, 2.10) get rewritten with probe data.
 
 **What stays accurate:** the parking lot of ideas, the architectural targets (multi-runner, job folder lifecycle, etc.), the rationale. What needs rework after probe data: anything specific about API mutation surfaces, hybrid fallback boundaries, and concrete endpoint contracts.
 

@@ -1,8 +1,56 @@
 # BUUA DESIGN — BUU Automated (v2.0)
 
-**Status:** Early planning. To begin AFTER BUU v1.2.4 ships and is validated.
+**Status:** Early planning. To begin AFTER BUU v1.2.5 ships and is validated.
 **Working name:** BUUA / BUU Automated / v2.0 — final branding TBD.
-**Author:** Outgoing Claude (work account, 2026-05-01), based on Matthew's verbal direction.
+**Author:** Outgoing Claude (work account, 2026-05-01), updated 2026-05-04 with hybrid architecture decision and PestPac API audit.
+
+---
+
+## 0. ARCHITECTURE DECISION (LOCKED 2026-05-04)
+
+**v2.0 = Hybrid backend.** API where it works, browser fallback for gaps. Flow steps will carry a backend discriminator (`api-call` vs `browser-*`) and a single flow can mix both.
+
+### 0.1 Why hybrid (not API-only, not browser-only)
+
+Matthew confirmed (2026-05-04) that the BUUA workload requires the ability to edit any field PestPac itself allows to be edited — including bulk corrections to posted invoices' editable fields (work date, invoice date within period, service code, route, source, technicians, instructions, terms, materials, user-defined fields, etc.).
+
+The public PestPac API has a **deliberate gap** between "what PestPac UI allows" and "what the API exposes." Specifically:
+- `/Invoices` is GET-only — no `InvoiceInputModel` exists in the spec
+- ServiceOrders has PATCH and PUT-on-line-items, but the docs are silent on whether those work for *posted* (already-invoiced) orders
+- Some fields on the InvoiceModel (notably `invoiceDate`) appear nowhere in any input model
+
+WorkWave offers paid bulk-import services that perform invoice edits programmatically. This confirms the *capability* exists internally, just not via the customer-facing API. Asking WorkWave to expose more was deemed unlikely to change the answer (Matthew's call, 2026-05-04).
+
+Given a hard "any field" requirement and a closed API surface, **API-only cannot meet the requirement.** Pure browser ships faster but loses the speed wins. Hybrid keeps full coverage and wins on the high-volume cases. Hybrid wins.
+
+### 0.2 PestPac API summary (audit 2026-05-04)
+
+- **Base URL (data):** `https://api.workwave.com/pestpac/v1/`
+- **Token endpoint:** `https://is.workwave.com/oauth2/token?scope=openid`
+- **Auth:** OAuth2 Resource Owner Password Credentials grant. Client credentials → Basic auth on token request → access_token (30-min expiry) + refresh_token. Bearer token on subsequent calls.
+- **Required headers on every API call:** `apikey`, `tenant-id`, `authorization: Bearer <token>`, `content-type: application/json`
+- **Surface:** 347 paths, 426 operations, 36 resource groups, 266 model definitions (Stripe-sized API).
+- **Webhooks supported** for Bill-To, Branch, Card On File, Condition, Contacts, Credit Memo, Employee, Invoice, Lead, Location, Notes, Payment, Service Order, Service Setup. Actions vary; Invoice supports Create/Update/Void.
+- **PATCH support (JSON Patch "replace" subset):** Locations, Bill-Tos, Service Orders.
+- **Editable fields-on-posted-orders coverage (per UI-allowed list, audit 2026-05-04):** 14 of 15 user-stated fields are at least exposed in the API surface. The lone gap is `invoiceDate` (lives only on read-only InvoiceModel). Whether the exposed fields actually accept PATCH/PUT against a *posted* order is **untested as of this writing** — pending the 8-probe systematic sweep test.
+
+Full spec lives at `API DOCUMENTATION/PestPac-nodejs/PestPac-nodejs-server/api/swagger.yaml` (503 KB) and per-endpoint markdown at `API DOCUMENTATION/PestPac-csharp/PestPac-csharp/docs/`. Portal prose docs at `API DOCUMENTATION/portal-prose/` (NOTE: contains plaintext API key — gitignore before commit; consider rotation).
+
+### 0.3 Implications for the rest of this doc
+
+Several sections below are now stale and need rework once the API probe results land. Specifically:
+- §2.1 (Multi-runner) — runners need to be backend-agnostic executors, not Playwright-specific
+- §2.5 (Hybrid flow embedding) — the flow JSON needs a `backend` discriminator per step
+- §2.9 (What stays from BUU) — flow definition format is still the substrate, but step types expand
+- §2.10 (What's removed) — most of this still applies, but "runner template approach" needs clarification (template literal stays for browser steps; API steps are a different code path)
+- New section needed: profile credential storage now needs both PestPac browser creds AND WorkWave API creds (clientId, clientSecret, WWID, password, plus apiKey + tenant-id headers)
+- New section needed: token lifecycle management (acquire on demand, cache in memory, refresh on 401)
+
+**Do not rewrite those sections yet.** Wait for API probe results — they may further refine the design.
+
+### 0.4 Open question still pending
+
+**Does PUT on a line item (or PATCH on a Service Order) propagate to the corresponding posted invoice, or are posted orders effectively locked at the API layer?** This is the question the 8-probe systematic sweep is designed to answer. Test session captured separately; results to be merged into this doc once available.
 
 ---
 

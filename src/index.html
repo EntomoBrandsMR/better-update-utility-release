@@ -675,6 +675,7 @@ textarea { resize: vertical; min-height: 60px; }
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn pri" id="resumeBtnResume" style="flex:1;min-width:120px" onclick="resumeChoice('resume')">▶ Resume</button>
       <button class="btn pri" id="resumeBtnSkipResume" style="display:none;flex:1;min-width:120px;background:var(--amber);color:#1a1a1a" onclick="resumeChoice('skip-and-resume')">⤳ Skip & resume</button>
+      <button class="btn pri" id="resumeBtnTeardownOnly" style="display:none;flex:1;min-width:120px;background:#5fb56f;color:#1a1a1a" onclick="resumeChoice('run-teardown-only')">⚙ Run teardown</button>
       <button class="btn" id="resumeBtnDiscard" style="flex:1;min-width:120px" onclick="resumeChoice('discard')">🗑 Discard</button>
       <button class="btn" id="resumeBtnDismiss" style="flex:1;min-width:120px" onclick="resumeChoice('dismiss')">Dismiss</button>
     </div>
@@ -813,6 +814,43 @@ textarea { resize: vertical; min-height: 60px; }
   <div class="page-header">
     <div class="page-title">Build steps</div>
     <div class="page-sub">Define what the automation does on each page</div>
+  </div>
+
+  <!-- v1.2.8: Flow type & composition. Defines whether this is a per-row flow (loops
+       over spreadsheet rows) or a once-flow (single-shot), and optionally attaches a
+       setup flow (runs once at start) and a teardown flow (runs once at end). -->
+  <div class="card" id="flowMetaCard">
+    <div class="card-hd">
+      <div class="card-title">Flow type</div>
+      <div class="card-sub" style="font-size:11px;color:var(--t3)">Per-row flows loop over a spreadsheet; once-flows run a single set of steps. Setup/teardown attach helper once-flows that run before/after this flow.</div>
+    </div>
+    <div class="row" style="display:flex;gap:24px;align-items:center;margin-bottom:14px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="radio" name="runMode" value="per-row" id="runModePerRow" onchange="setRunMode('per-row')"/>
+        <span>Per-row flow</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="radio" name="runMode" value="once" id="runModeOnce" onchange="setRunMode('once')"/>
+        <span>Once-flow (no spreadsheet)</span>
+      </label>
+    </div>
+    <div id="composeFields" class="row" style="display:flex;gap:12px;flex-wrap:wrap">
+      <div class="fg" style="flex:1;min-width:200px">
+        <label>Setup flow (runs once at start)</label>
+        <select id="setupFlowSelect" onchange="setSetupFlow(this.value)">
+          <option value="">— None —</option>
+        </select>
+      </div>
+      <div class="fg" style="flex:1;min-width:200px">
+        <label>Teardown flow (runs once at end)</label>
+        <select id="teardownFlowSelect" onchange="setTeardownFlow(this.value)">
+          <option value="">— None —</option>
+        </select>
+      </div>
+    </div>
+    <div id="onceFlowNotice" style="display:none;font-size:11px;color:var(--t2);background:rgba(95,181,111,0.08);border-left:3px solid #5fb56f;padding:8px 12px;border-radius:4px;margin-top:10px">
+      Once-flows run a single set of steps with no spreadsheet binding. Column tokens like <code>{{Service Code}}</code> are not allowed. You can use run-context tokens: <code>{{TODAY}}</code>, <code>{{RUNID}}</code>, <code>{{PROFILE_USERNAME}}</code>. Setup/teardown attachments are disabled for once-flows.
+    </div>
   </div>
 
   <div class="card">
@@ -976,6 +1014,15 @@ textarea { resize: vertical; min-height: 60px; }
         <button class="btn sm" onclick="go('log')">View log table</button>
       </div>
     </div>
+    <!-- v1.2.8: phase indicator. Only shown when the flow has setup or teardown attached.
+         Pip states: pending (gray), running (blue+pulse), done (green), failed (red), skipped (gray). -->
+    <div class="phase-indicator" id="phaseIndicator" style="display:none;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:var(--t2)">
+      <span class="phase-pip" id="phasePipSetup" data-phase="setup" style="display:none;padding:3px 10px;border-radius:10px;background:var(--bg2);border:1px solid var(--brd)">Setup</span>
+      <span class="phase-arrow" id="phaseArrow1" style="display:none;color:var(--t3)">→</span>
+      <span class="phase-pip" id="phasePipMain" data-phase="main" style="padding:3px 10px;border-radius:10px;background:var(--bg2);border:1px solid var(--brd)">Main</span>
+      <span class="phase-arrow" id="phaseArrow2" style="display:none;color:var(--t3)">→</span>
+      <span class="phase-pip" id="phasePipTeardown" data-phase="teardown" style="display:none;padding:3px 10px;border-radius:10px;background:var(--bg2);border:1px solid var(--brd)">Teardown</span>
+    </div>
     <div class="run-prog-wrap"><div class="run-prog-bar" id="runProgBar" style="width:0"></div></div>
     <div class="run-stats">
       <div class="run-stat"><div class="run-stat-val" id="rs-done">0</div><div class="run-stat-lbl">Done</div></div>
@@ -1097,6 +1144,10 @@ textarea { resize: vertical; min-height: 60px; }
 const API = window.api || {};
 let cols = [], ssRows = [], ssHeaders = [], ssName = '', ssPath = '', ssRowCount = 0;
 let steps = [], nid = 1;
+// v1.2.8: flow-level metadata. runMode determines whether this flow runs per-row or once.
+// setupFlowId/teardownFlowId reference other saved flows by their `name` field.
+// flowName is the human-readable name; defaults to filename stem on load if not set in JSON.
+let runMode = 'per-row', setupFlowId = null, teardownFlowId = null, flowName = '';
 let profiles = [], activeProfileId = null, editingProfileId = null;
 let pendingInsertId = null, pendingInsertField = null, pasteFoundSel = '';
 let updInfo = null, headless = false;
@@ -1147,6 +1198,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (API.onAutomationEvent) API.onAutomationEvent(handleRunEvent);
     await loadProfiles();
     seedExampleSteps();
+    // v1.2.8: initialize flow-meta UI. Default to per-row, populate dropdowns.
+    setRunMode('per-row');
+    refreshOnceFlowDropdowns();
     if (API.checkChromium) {
       const result = await API.checkChromium();
       if (!result.installed) document.getElementById('setupOverlay').classList.add('show');
@@ -1624,12 +1678,27 @@ function toggleVisibility() { headless=!headless; const btn=document.getElementB
 function runValidation() {
   const items=[],all=allSteps();
   let errs=0,warns=0;
-  if(!activeProfileId){items.push({t:'err',msg:'No login profile selected. Go to Login Profiles.'});errs++;}
-  else{const p=profiles.find(x=>x.id===activeProfileId);items.push({t:'ok',msg:'Profile "' + (p&&p.name?p.name:activeProfileId) + '" active.'});}
-  if(!ssPath){items.push({t:'warn',msg:'No spreadsheet loaded.'});warns++;}
-  else{items.push({t:'ok',msg:'Spreadsheet: ' + (ssRowCount>0?ssRowCount.toLocaleString()+' rows':ssName) + ', ' + ssHeaders.length + ' columns.'});if(!cols.some(c=>c.toLowerCase()==='url')){items.push({t:'err',msg:'No "URL" column found.'});errs++;}}
-  if(!steps.length){items.push({t:'warn',msg:'No custom steps defined.'});warns++;}
-  if(!steps.some(s=>s.type==='navigate')){items.push({t:'warn',msg:'No Navigate step — add one with {{URL}}.'});warns++;}
+  // v1.2.8: run-context token allowlist for once-flows. These are resolved by the runner
+  // at run time from a runContext object, not from spreadsheet rows.
+  const RUN_CONTEXT_TOKENS = ['TODAY','RUNID','PROFILE_USERNAME'];
+  // v1.2.8: top-level flow checks branch on runMode.
+  if(runMode === 'once'){
+    // Once-flows have no spreadsheet, no profile-relevance-to-URL check, and cannot
+    // declare their own setup/teardown.
+    if(!activeProfileId){items.push({t:'err',msg:'No login profile selected. Go to Login Profiles.'});errs++;}
+    else{const p=profiles.find(x=>x.id===activeProfileId);items.push({t:'ok',msg:'Profile "' + (p&&p.name?p.name:activeProfileId) + '" active.'});}
+    if(!steps.length){items.push({t:'warn',msg:'No steps defined.'});warns++;}
+    if(setupFlowId){items.push({t:'err',msg:'Once-flows cannot have a setup flow.'});errs++;}
+    if(teardownFlowId){items.push({t:'err',msg:'Once-flows cannot have a teardown flow.'});errs++;}
+  } else {
+    // Per-row flow (the original code path, preserved).
+    if(!activeProfileId){items.push({t:'err',msg:'No login profile selected. Go to Login Profiles.'});errs++;}
+    else{const p=profiles.find(x=>x.id===activeProfileId);items.push({t:'ok',msg:'Profile "' + (p&&p.name?p.name:activeProfileId) + '" active.'});}
+    if(!ssPath){items.push({t:'warn',msg:'No spreadsheet loaded.'});warns++;}
+    else{items.push({t:'ok',msg:'Spreadsheet: ' + (ssRowCount>0?ssRowCount.toLocaleString()+' rows':ssName) + ', ' + ssHeaders.length + ' columns.'});if(!cols.some(c=>c.toLowerCase()==='url')){items.push({t:'err',msg:'No "URL" column found.'});errs++;}}
+    if(!steps.length){items.push({t:'warn',msg:'No custom steps defined.'});warns++;}
+    if(!steps.some(s=>s.type==='navigate')){items.push({t:'warn',msg:'No Navigate step — add one with {{URL}}.'});warns++;}
+  }
   all.filter(s=>!s.locked).forEach(s=>{
     const i=all.indexOf(s);const n=i+1;const issues=[];
     if(s.type==='navigate'&&!s.url){issues.push({t:'err',msg:'No URL.'});errs++;}
@@ -1648,7 +1717,25 @@ function runValidation() {
       if(m==='remove-after'&&!s.charVal){issues.push({t:'warn',msg:'No character defined to split on.'});warns++;}
       if(m==='remove-before'&&!s.charVal){issues.push({t:'warn',msg:'No character defined to split on.'});warns++;}
     }
-    [s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{[...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{const ref=m[1];if(!ref.startsWith('CRED:')){const colMatch=cols.find(c=>c.toLowerCase()===ref.toLowerCase());if(!colMatch){issues.push({t:'err',msg:'{{' + ref + '}} not in spreadsheet.'});errs++;}}});});
+    // v1.2.8: token validation branches on runMode.
+    // Per-row flows: column names valid, CRED:* always valid, run-context tokens valid.
+    // Once-flows: column names INVALID (no spreadsheet bound), CRED:* always valid, run-context tokens valid.
+    [s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{
+      [...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{
+        const ref = m[1];
+        if(ref.startsWith('CRED:')) return;  // credential refs always allowed
+        if(RUN_CONTEXT_TOKENS.includes(ref)) return;  // run-context tokens always allowed
+        if(runMode === 'once'){
+          // Once-flows cannot reference spreadsheet columns.
+          issues.push({t:'err',msg:'{{' + ref + '}} is a spreadsheet column reference, which is not allowed in once-flows. Use a static value or a run-context token (TODAY, RUNID, PROFILE_USERNAME).'});
+          errs++;
+        } else {
+          // Per-row flow: must match a column name from the spreadsheet.
+          const colMatch = cols.find(c => c.toLowerCase() === ref.toLowerCase());
+          if(!colMatch){ issues.push({t:'err',msg:'{{' + ref + '}} not in spreadsheet.'}); errs++; }
+        }
+      });
+    });
     const worst=issues.length?(issues.some(x=>x.t==='err')?'err':issues.some(x=>x.t==='warn')?'warn':'ok'):'ok';
     const smEntry=SM[s.type]||{label:s.type,badge:'bd-nav',desc:()=>s._label||s.type};items.push({isStep:true,stepId:s.id,stepNum:n,type:s.type,label:smEntry.label,desc:smEntry.desc(s),issues,worst});
   });
@@ -1772,6 +1859,9 @@ async function startRun(){
   updateRunStats(0,0,0,0);
   startElapsedTicker();
   document.getElementById('liveLog').innerHTML='';
+  // v1.2.8: show phase indicator if flow has setup or teardown attached.
+  showPhaseIndicator(!!setupFlowId, !!teardownFlowId);
+  if(setupFlowId || teardownFlowId) updatePhaseIndicator('main','pending');
   document.getElementById('runStatusMsg').textContent='Starting…';
   document.getElementById('runStatusMsg').style.color='var(--blue)';
   document.getElementById('runBtn').style.display='none';
@@ -1808,7 +1898,11 @@ async function startRun(){
       retryCount: parseInt(document.getElementById('retryCount').value||2),
       breakerThreshold: parseInt(document.getElementById('breakerThreshold').value||20),
       reauthInterval: parseInt(document.getElementById('reauthInterval').value||120),
-      startMode: startMode
+      startMode: startMode,
+      // v1.2.8: forward flow-meta so main.js can resolve setup/teardown step arrays.
+      runMode: runMode,
+      setupFlowId: setupFlowId || null,
+      teardownFlowId: teardownFlowId || null
     });
     if(!result.ok){alert('Failed to start: ' + (result.error||'Unknown error'));runStopped();return;}
     currentLogPath=result.logPath;
@@ -1982,12 +2076,37 @@ async function showResumePrompt(orphan){
 
     // v1.2.5 item 2.7: contextual stop-reason banner + Skip-and-resume button.
     // Three cases: lastError (breaker / fatal), lastStop (user stop), or neither (legacy/crash).
+    // v1.2.8: extended to also cover setup-fail, teardown-fail, and "teardown-pending" cases.
     const reasonBox=document.getElementById('resumeReason');
     const reasonTitle=document.getElementById('resumeReasonTitle');
     const reasonBody=document.getElementById('resumeReasonBody');
     const skipBtn=document.getElementById('resumeBtnSkipResume');
     skipBtn.style.display='none';  // default hidden, only breaker case shows it
-    if(orphan.lastError && orphan.lastError.phase==='circuit-breaker'){
+    // v1.2.8: "Run teardown only" button. Hidden by default; shown for the teardown-only case.
+    let teardownOnlyBtn=document.getElementById('resumeBtnTeardownOnly');
+    if(teardownOnlyBtn) teardownOnlyBtn.style.display='none';
+    // v1.2.8: classify the orphan's phase state. phaseProgress is always present
+    // (find-orphan-checkpoints synthesizes defaults for v2 checkpoints).
+    const pp = orphan.phaseProgress || {setupCompleted:true, mainRowIndex:0, teardownCompleted:false};
+    const fm = orphan.flowMeta || {setupFlowId:null, teardownFlowId:null, setupStepCount:0, teardownStepCount:0};
+    const setupFailed = orphan.lastError && orphan.lastError.phase === 'setup';
+    const teardownFailed = orphan.lastError && orphan.lastError.phase === 'teardown';
+    const mainCompletedTeardownPending = pp.setupCompleted && !pp.teardownCompleted && !setupFailed && !teardownFailed && (fm.teardownStepCount > 0 || fm.teardownFlowId);
+    if(setupFailed){
+      reasonBox.style.display='';
+      reasonTitle.textContent='Setup phase failed';
+      reasonBody.textContent='The previous run failed during setup at step '+((orphan.lastError.stepIndex||0)+1)+' ('+(orphan.lastError.stepLabel||'?')+'): '+(orphan.lastError.message||'unknown')+'. Resume will re-run setup from its first step. Make sure your setup flow is safe to run more than once.';
+    }else if(teardownFailed){
+      reasonBox.style.display='';
+      reasonTitle.textContent='Teardown phase failed';
+      reasonBody.textContent='The main run completed, but teardown failed at step '+((orphan.lastError.stepIndex||0)+1)+' ('+(orphan.lastError.stepLabel||'?')+'): '+(orphan.lastError.message||'unknown')+'. Click "Run teardown" to retry teardown only.';
+      if(teardownOnlyBtn) teardownOnlyBtn.style.display='';
+    }else if(mainCompletedTeardownPending){
+      reasonBox.style.display='';
+      reasonTitle.textContent='Teardown did not run';
+      reasonBody.textContent='The main run finished but teardown never executed. Click "Run teardown" to release the batch / finalize, or Discard to skip cleanup.';
+      if(teardownOnlyBtn) teardownOnlyBtn.style.display='';
+    }else if(orphan.lastError && orphan.lastError.phase==='circuit-breaker'){
       reasonBox.style.display='';
       reasonTitle.textContent='Circuit breaker tripped';
       reasonBody.textContent='The previous run hit '+orphan.lastError.consecutiveErrors+' consecutive errors and stopped to prevent further wasted time. Last successful row: '+(orphan.lastError.lastSuccessfulRow||'?')+'. You can resume forward (the failed rows will be re-attempted) or skip forward past them.';
@@ -2000,6 +2119,17 @@ async function showResumePrompt(orphan){
       reasonBox.style.display='';
       reasonTitle.textContent='Run was stopped';
       reasonBody.textContent='You stopped the previous run at row '+orphan.lastStop.rowIndex+'. Resume will pick up where it left off, or Discard to abandon it.';
+    }else if(orphan.lastStop && orphan.lastStop.phase==='setup'){
+      // v1.2.8 Phase 7: user-stop during setup. No row work happened; teardown should not run.
+      reasonBox.style.display='';
+      reasonTitle.textContent='Setup was stopped';
+      reasonBody.textContent='You stopped the previous run during setup at step '+((orphan.lastStop.stepIndex||0)+1)+'. No rows were processed and no teardown ran. Resume to retry from the start, or Discard.';
+    }else if(orphan.lastStop && orphan.lastStop.phase==='teardown'){
+      // v1.2.8 Phase 7: user-stop during teardown. Main work succeeded; teardown is partial.
+      reasonBox.style.display='';
+      reasonTitle.textContent='Teardown was stopped';
+      reasonBody.textContent='You stopped the previous run during teardown at step '+((orphan.lastStop.stepIndex||0)+1)+'. The main run completed but cleanup is unfinished — click "Run teardown" to finish it.';
+      if(teardownOnlyBtn) teardownOnlyBtn.style.display='';
     }else{
       reasonBox.style.display='none';
     }
@@ -2043,7 +2173,7 @@ async function resumeChoice(action){
   else if(action==='dismiss'){
     _resumeResolver('dismiss');
   }
-  else if(action==='resume' || action==='skip-and-resume'){
+  else if(action==='resume' || action==='skip-and-resume' || action==='run-teardown-only'){
     let profileToUse=orphan.profileId;
     if(!orphan.profileExists){
       const sel=document.getElementById('resumeProfileSelect');
@@ -2056,12 +2186,18 @@ async function resumeChoice(action){
     // as 'resume'. Both spawn from rowIndex+1, ignoring the cluster of previously-failed
     // rows. The visible distinction (marking those rows as "skipped (breaker)" in the new
     // log) lands with item 2.10 (error log enrichment), which owns the log-writer.
-    await executeResume(orphan,profileToUse);
+    // v1.2.8: 'run-teardown-only' is a recovery path that runs ONLY the teardown phase,
+    // skipping setup and the row loop. The runner accepts a resumeAction parameter to gate this.
+    await executeResume(orphan, profileToUse, action);
   }
   _currentOrphan=null;_resumeResolver=null;
 }
 
-async function executeResume(orphan,profileId){
+async function executeResume(orphan, profileId, resumeAction){
+  // v1.2.8: resumeAction may be 'resume', 'skip-and-resume', or 'run-teardown-only'.
+  // The first two run setup+main+teardown as a normal resumed run; 'run-teardown-only'
+  // skips setup and the row loop, runs teardown only.
+  resumeAction = resumeAction || 'resume';
   if(!API.loadCheckpoint){alert('Resume not supported in this build.');return;}
   const checkpoint=await API.loadCheckpoint(orphan.checkpointPath);
   if(!checkpoint){alert('Could not load checkpoint — file may have been deleted.');return;}
@@ -2112,6 +2248,9 @@ async function executeResume(orphan,profileId){
     retryCount:(checkpoint.retryCount!=null?checkpoint.retryCount:2),
     breakerThreshold:(checkpoint.breakerThreshold!=null?checkpoint.breakerThreshold:20),
     reauthInterval:(checkpoint.reauthInterval!=null?checkpoint.reauthInterval:120),
+    // v1.2.8: forward the resumeAction so the runner can gate which phases to execute.
+    // For 'run-teardown-only', start-automation will run only the teardown once-flow.
+    resumeAction: resumeAction,
   });
   if(!result.ok){alert('Failed to resume: '+(result.error||'Unknown error'));runStopped();return;}
   currentLogPath=result.logPath;
@@ -2122,7 +2261,41 @@ async function executeResume(orphan,profileId){
 function handleRunEvent(evt){
   if(evt.type==='start'){runTotal=evt.totalRows||0;updateRunStats(0,0,0,0);addLiveLog('Starting — '+runTotal.toLocaleString()+' rows','info');}
   else if(evt.type==='log'){addLiveLog(evt.message,'info');}
-  else if(evt.type==='mode'){currentRunMode=evt.mode||'run-all';addLiveLog('Mode: '+currentRunMode,'info');}
+  else if(evt.type==='mode'){
+    currentRunMode=evt.mode||'run-all';
+    addLiveLog('Mode: '+currentRunMode,'info');
+    // v1.2.8: 'mode' fires right at the start of the row-loop phase. If a phase indicator
+    // is showing, mark Main as running here.
+    if(document.getElementById('phaseIndicator').style.display !== 'none'){
+      updatePhaseIndicator('main','running');
+    }
+  }
+  // v1.2.8: phase events from the three-phase pipeline. Each phase emits a phase-start,
+  // zero or more phase-step (one per step), then phase-end with status.
+  else if(evt.type==='phase-start'){
+    const phaseLabel = evt.phase === 'setup' ? 'Setup' : (evt.phase === 'teardown' ? 'Teardown' : evt.phase);
+    addLiveLog(phaseLabel + ' phase starting (' + (evt.stepCount||0) + ' steps)','info');
+    updatePhaseIndicator(evt.phase, 'running');
+    document.getElementById('runStatusMsg').textContent = phaseLabel + ' phase…';
+    document.getElementById('runStatusMsg').style.color = 'var(--blue)';
+  }
+  else if(evt.type==='phase-step'){
+    // Per-step granularity — useful during long setup/teardown flows. The phase-step event
+    // is informational; we log it but don't update major UI counters (those are per-row).
+    const phaseLabel = evt.phase === 'setup' ? 'Setup' : (evt.phase === 'teardown' ? 'Teardown' : evt.phase);
+    addLiveLog('  ' + phaseLabel + ' step ' + (evt.stepIndex+1) + '/' + evt.totalSteps + ': ' + (evt.stepLabel||evt.stepType),'info');
+  }
+  else if(evt.type==='phase-end'){
+    const phaseLabel = evt.phase === 'setup' ? 'Setup' : (evt.phase === 'teardown' ? 'Teardown' : evt.phase);
+    const durSec = evt.durationMs ? (Math.round(evt.durationMs/100)/10) + 's' : '';
+    if(evt.status === 'success'){
+      addLiveLog('✓ ' + phaseLabel + ' phase complete ' + (durSec ? '('+durSec+')' : ''),'ok');
+      updatePhaseIndicator(evt.phase, 'done');
+    } else {
+      addLiveLog('✗ ' + phaseLabel + ' phase failed at step ' + ((evt.stepIndex||0)+1) + ': ' + (evt.error||'unknown'),'err');
+      updatePhaseIndicator(evt.phase, 'failed');
+    }
+  }
   else if(evt.type==='pause-step'){
     currentRunMode='step';
     showPause('step', evt);
@@ -2198,7 +2371,14 @@ function handleRunEvent(evt){
     }
   }
   else if(evt.type==='fatal'){addLiveLog('FATAL: '+evt.error,'err');document.getElementById('runStatusMsg').textContent='Fatal error — stopped';document.getElementById('runStatusMsg').style.color='var(--red)';hidePause();runStopped();}
-  else if(evt.type==='complete'){const processed=evt.ok+evt.errs+evt.skipped;const msg='Complete — '+processed+' rows ('+evt.ok+' ok, '+evt.errs+' errors, '+evt.skipped+' skipped)';addLiveLog(msg,'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color='var(--green)';document.getElementById('runProgBar').style.width='100%';document.getElementById('rs-pct').textContent='100%';hidePause();runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log: '+evt.logPath,'info');}
+  else if(evt.type==='complete'){
+    // v1.2.8: mark Main phase complete in the indicator (teardown phase will fire its own
+    // phase-end event after this on flows that have teardown). For flows without teardown,
+    // this is the final state for the Main pip.
+    if(document.getElementById('phaseIndicator').style.display !== 'none'){
+      updatePhaseIndicator('main','done');
+    }
+    const processed=evt.ok+evt.errs+evt.skipped;const msg='Complete — '+processed+' rows ('+evt.ok+' ok, '+evt.errs+' errors, '+evt.skipped+' skipped)';addLiveLog(msg,'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color='var(--green)';document.getElementById('runProgBar').style.width='100%';document.getElementById('rs-pct').textContent='100%';hidePause();runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log: '+evt.logPath,'info');}
     // v1.2.5 item 2.12: surface a Retry-failed-rows button if any rows failed.
     if(_failedRowIndexesThisRun.length > 0 && _lastRunSnapshot){
       const btn=document.getElementById('retryFailedBtn');
@@ -2304,12 +2484,226 @@ async function saveProfile(){const name=document.getElementById('pName').value.t
 async function deleteProfile(){if(!editingProfileId)return;if(!confirm('Delete this profile?'))return;if(API.deleteProfile)await API.deleteProfile(editingProfileId);else profiles=profiles.filter(p=>p.id!==editingProfileId);if(activeProfileId===editingProfileId)activeProfileId=null;await loadProfiles();document.getElementById('profileForm').style.display='none';}
 function cancelProfile(){document.getElementById('profileForm').style.display='none';}
 
-async function saveFlow(){const json=JSON.stringify({version:'1.0',steps,config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value,selectorTimeout:document.getElementById('selectorTimeout').value,pageLoadMode:document.getElementById('pageLoadMode').value,retryCount:document.getElementById('retryCount').value,breakerThreshold:document.getElementById('breakerThreshold').value,reauthInterval:document.getElementById('reauthInterval').value,flowNotes:document.getElementById('flowNotes').value,headless}},null,2);if(API.saveFlow){
-    const flowName=document.getElementById('flowNotes').value.trim().replace(/[^a-z0-9_\-]/gi,'_').slice(0,40)||'buu-flow';
-    const p=await API.saveFlow({json,name:flowName});
-    if(p)alert('Flow saved to '+p);
-  }else{const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(json);a.download='buu-flow.json';a.click();}}
-async function loadFlow(){let json;if(API.loadFlow){json=await API.loadFlow();if(!json)return;}else{json=await new Promise(res=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=e=>{const f=e.target.files[0];if(!f){res(null);return;}const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsText(f);};inp.click();});if(!json)return;}const data=JSON.parse(json);steps=data.steps||[];nid=steps.reduce((mx,s)=>Math.max(mx,typeof s.id==='number'?s.id+1:1),1);const c=data.config||{};if(c.rowDelayMin)document.getElementById('rowDelayMin').value=c.rowDelayMin;if(c.rowDelayMax)document.getElementById('rowDelayMax').value=c.rowDelayMax;if(c.errHandle)document.getElementById('errHandle').value=(c.errHandle==='stop'?'retry':c.errHandle);if(c.selectorTimeout)document.getElementById('selectorTimeout').value=c.selectorTimeout;if(c.pageLoadMode)document.getElementById('pageLoadMode').value=(c.pageLoadMode==='networkidle'?'domcontentloaded':c.pageLoadMode);if(c.retryCount!=null)document.getElementById('retryCount').value=c.retryCount;if(c.breakerThreshold!=null)document.getElementById('breakerThreshold').value=c.breakerThreshold;if(c.reauthInterval!=null)document.getElementById('reauthInterval').value=c.reauthInterval;if(c.flowNotes)document.getElementById('flowNotes').value=c.flowNotes;if(c.headless!==undefined){headless=c.headless;document.getElementById('visToggle').classList.toggle('on',!headless);document.getElementById('visLabel').textContent=headless?'Hidden — runs in background':'Visible — watch it work';}renderSteps();}
+// v1.2.8: flow-meta UI handlers. Keep renderer state and DOM in sync.
+// setRunMode changes the active mode; toggles which UI elements are visible
+// (composition fields, once-flow notice, spreadsheet-dependent inputs).
+function setRunMode(mode){
+  runMode = (mode === 'once') ? 'once' : 'per-row';
+  // Sync the radios in case this was called from code (e.g. loadFlow).
+  const r1 = document.getElementById('runModePerRow');
+  const r2 = document.getElementById('runModeOnce');
+  if(r1) r1.checked = (runMode === 'per-row');
+  if(r2) r2.checked = (runMode === 'once');
+  // Toggle composition fields: once-flows can't have setup/teardown.
+  const compose = document.getElementById('composeFields');
+  const notice = document.getElementById('onceFlowNotice');
+  if(runMode === 'once'){
+    if(compose) compose.style.display = 'none';
+    if(notice) notice.style.display = '';
+    setupFlowId = null;
+    teardownFlowId = null;
+  } else {
+    if(compose) compose.style.display = '';
+    if(notice) notice.style.display = 'none';
+  }
+  // Re-run validation since rules differ by mode.
+  if(typeof runValidation === 'function'){
+    try { runValidation(); } catch {}
+  }
+}
+function setSetupFlow(name){
+  setupFlowId = name || null;
+}
+function setTeardownFlow(name){
+  teardownFlowId = name || null;
+}
+// v1.2.8: Run Progress phase indicator helpers. The indicator is hidden by default and
+// shown when a run starts with a setup or teardown attached. Pips state-transition as
+// phase-start/phase-end events arrive.
+function showPhaseIndicator(hasSetup, hasTeardown){
+  const ind = document.getElementById('phaseIndicator');
+  if(!ind) return;
+  if(!hasSetup && !hasTeardown){ ind.style.display = 'none'; return; }
+  ind.style.display = 'flex';
+  document.getElementById('phasePipSetup').style.display = hasSetup ? '' : 'none';
+  document.getElementById('phaseArrow1').style.display = hasSetup ? '' : 'none';
+  document.getElementById('phasePipTeardown').style.display = hasTeardown ? '' : 'none';
+  document.getElementById('phaseArrow2').style.display = hasTeardown ? '' : 'none';
+  // Reset all pips to pending state.
+  ['Setup','Main','Teardown'].forEach(p => {
+    const pip = document.getElementById('phasePip'+p);
+    if(pip){
+      pip.style.background = 'var(--bg2)';
+      pip.style.borderColor = 'var(--brd)';
+      pip.style.color = '';
+      pip.style.fontWeight = '';
+    }
+  });
+}
+function updatePhaseIndicator(phase, state){
+  // phase: 'setup' | 'main' | 'teardown'.   state: 'running' | 'done' | 'failed' | 'skipped'.
+  const pipId = 'phasePip' + phase.charAt(0).toUpperCase() + phase.slice(1);
+  const pip = document.getElementById(pipId);
+  if(!pip) return;
+  if(state === 'running'){
+    pip.style.background = 'rgba(95,160,220,0.18)';
+    pip.style.borderColor = 'var(--blue)';
+    pip.style.color = 'var(--blue)';
+    pip.style.fontWeight = '700';
+  } else if(state === 'done'){
+    pip.style.background = 'rgba(95,181,111,0.18)';
+    pip.style.borderColor = '#5fb56f';
+    pip.style.color = '#5fb56f';
+    pip.style.fontWeight = '700';
+  } else if(state === 'failed'){
+    pip.style.background = 'rgba(220,80,80,0.18)';
+    pip.style.borderColor = 'var(--red)';
+    pip.style.color = 'var(--red)';
+    pip.style.fontWeight = '700';
+  } else if(state === 'skipped'){
+    pip.style.background = 'var(--bg2)';
+    pip.style.borderColor = 'var(--brd)';
+    pip.style.color = 'var(--t3)';
+    pip.style.fontWeight = '';
+    pip.style.opacity = '0.6';
+  }
+}
+// v1.2.8: populate the setup/teardown dropdowns from saved once-flows.
+// Called on app init and after any flow save (so newly-saved once-flows appear).
+async function refreshOnceFlowDropdowns(){
+  if(!API.listOnceFlows) return;
+  let result;
+  try { result = await API.listOnceFlows(); } catch { return; }
+  if(!result || !result.ok) return;
+  const flows = result.flows || [];
+  ['setupFlowSelect','teardownFlowSelect'].forEach(id => {
+    const sel = document.getElementById(id);
+    if(!sel) return;
+    // Preserve current selection so re-populating doesn't blow away the user's pick.
+    const current = sel.value;
+    sel.innerHTML = '<option value="">— None —</option>';
+    flows.forEach(f => {
+      const opt = document.createElement('option');
+      opt.value = f.name;
+      opt.textContent = f.name;
+      sel.appendChild(opt);
+    });
+    // Restore selection if the named flow still exists.
+    if(current && flows.some(f => f.name === current)){
+      sel.value = current;
+    } else if(current){
+      // The previously-selected once-flow is gone. Add a placeholder option so the user sees it.
+      const opt = document.createElement('option');
+      opt.value = current;
+      opt.textContent = '[missing: ' + current + ']';
+      opt.style.color = 'var(--red)';
+      sel.appendChild(opt);
+      sel.value = current;
+    }
+  });
+}
+
+async function saveFlow(){
+  // v1.2.8: bumped to '1.1' to mark presence of runMode + setup/teardown fields.
+  // v1.1 readers: must default runMode='per-row' and setup/teardown=null for missing fields.
+  const flow = {
+    version: '1.1',
+    name: flowName || (document.getElementById('flowNotes').value.trim().replace(/[^a-z0-9_\-]/gi,'_').slice(0,40) || 'buu-flow'),
+    runMode: runMode,
+    setupFlowId: setupFlowId,
+    teardownFlowId: teardownFlowId,
+    steps,
+    config: {
+      rowDelayMin: document.getElementById('rowDelayMin').value,
+      rowDelayMax: document.getElementById('rowDelayMax').value,
+      errHandle: document.getElementById('errHandle').value,
+      selectorTimeout: document.getElementById('selectorTimeout').value,
+      pageLoadMode: document.getElementById('pageLoadMode').value,
+      retryCount: document.getElementById('retryCount').value,
+      breakerThreshold: document.getElementById('breakerThreshold').value,
+      reauthInterval: document.getElementById('reauthInterval').value,
+      flowNotes: document.getElementById('flowNotes').value,
+      headless
+    }
+  };
+  const json = JSON.stringify(flow, null, 2);
+  if(API.saveFlow){
+    const saveName = flow.name;
+    const p = await API.saveFlow({ json, name: saveName });
+    if(p) {
+      alert('Flow saved to ' + p);
+      // v1.2.8: if we just saved a once-flow, it should appear in setup/teardown
+      // dropdowns immediately so users can chain it without restarting.
+      if(runMode === 'once') refreshOnceFlowDropdowns();
+    }
+  } else {
+    const a = document.createElement('a');
+    a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(json);
+    a.download = (flow.name || 'buu-flow') + '.json';
+    a.click();
+  }
+}
+async function loadFlow(){
+  let json;
+  if(API.loadFlow){
+    json = await API.loadFlow();
+    if(!json) return;
+  } else {
+    json = await new Promise(res=>{
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = '.json';
+      inp.onchange = e => {
+        const f = e.target.files[0];
+        if(!f){ res(null); return; }
+        const r = new FileReader();
+        r.onload = ev => res(ev.target.result);
+        r.readAsText(f);
+      };
+      inp.click();
+    });
+    if(!json) return;
+  }
+  const data = JSON.parse(json);
+  // v1.2.8: read new flow-level fields with safe defaults so pre-1.1 flows still load.
+  // Missing runMode -> 'per-row' (matches v1.0 behavior). Missing setup/teardown -> null.
+  // Missing name -> derived from flowNotes (same source the save uses for filename).
+  runMode = (data.runMode === 'once' ? 'once' : 'per-row');
+  setupFlowId = data.setupFlowId || null;
+  teardownFlowId = data.teardownFlowId || null;
+  flowName = data.name || '';
+  steps = data.steps || [];
+  nid = steps.reduce((mx,s) => Math.max(mx, typeof s.id === 'number' ? s.id + 1 : 1), 1);
+  const c = data.config || {};
+  if(c.rowDelayMin) document.getElementById('rowDelayMin').value = c.rowDelayMin;
+  if(c.rowDelayMax) document.getElementById('rowDelayMax').value = c.rowDelayMax;
+  if(c.errHandle) document.getElementById('errHandle').value = (c.errHandle === 'stop' ? 'retry' : c.errHandle);
+  if(c.selectorTimeout) document.getElementById('selectorTimeout').value = c.selectorTimeout;
+  if(c.pageLoadMode) document.getElementById('pageLoadMode').value = (c.pageLoadMode === 'networkidle' ? 'domcontentloaded' : c.pageLoadMode);
+  if(c.retryCount != null) document.getElementById('retryCount').value = c.retryCount;
+  if(c.breakerThreshold != null) document.getElementById('breakerThreshold').value = c.breakerThreshold;
+  if(c.reauthInterval != null) document.getElementById('reauthInterval').value = c.reauthInterval;
+  if(c.flowNotes) document.getElementById('flowNotes').value = c.flowNotes;
+  if(c.headless !== undefined){
+    headless = c.headless;
+    document.getElementById('visToggle').classList.toggle('on', !headless);
+    document.getElementById('visLabel').textContent = headless ? 'Hidden — runs in background' : 'Visible — watch it work';
+  }
+  // v1.2.8: sync flow-meta UI controls. setRunMode toggles visibility + radios.
+  // Refresh once-flow dropdowns to pick up any flows saved since last refresh, then
+  // restore the loaded selections.
+  await refreshOnceFlowDropdowns();
+  const setupSel = document.getElementById('setupFlowSelect');
+  const teardownSel = document.getElementById('teardownFlowSelect');
+  if(setupSel) setupSel.value = setupFlowId || '';
+  if(teardownSel) teardownSel.value = teardownFlowId || '';
+  // If the dropdown didn't have the loaded name as an option (flow renamed/deleted),
+  // refreshOnceFlowDropdowns() will surface that as "[missing: NAME]" on the next refresh.
+  // For now setupSel.value may have silently fallen back to ''; re-call refresh with the
+  // selection intact so the missing-marker logic runs.
+  await refreshOnceFlowDropdowns();
+  setRunMode(runMode);  // triggers visibility toggles + validation re-run
+  renderSteps();
+}
 
 function openFlowsFolder(){if(API.openFlowsFolder)API.openFlowsFolder();}
 async function checkUpdates(){if(API.checkForUpdates)await API.checkForUpdates();else alert('Update checks only work in the desktop app.');}

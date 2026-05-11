@@ -35,6 +35,28 @@ If you read nothing else in this doc, read this section.
 
 **Do not implement v1.2.8 unattended. Do not ship to GitHub unattended.** Same rule as before — wait for Matthew. If you have writing/design work that's clearly low-stakes (updating this handoff, refining DESIGN-INDEX.md, expanding open-question lists), you can do that. If a critical bug surfaces and Matthew is unreachable, diagnose and write up the fix as a proposal — don't apply it.
 
+### 0.5 Solo-user mode — git/release caution is calibrated wrong by default
+
+**Matthew is currently the only user of BUU.** No one else has it installed. No one else's workflow gets disrupted by a half-baked release.
+
+Past handoffs (and the outgoing-Claude voice in Sections 1–13 below) used the rhetorical posture of a careful release engineer shipping to a userbase: smoke test before release, smoke test before push, version.json must be last, etc. **That posture is wrong for current conditions.** Don't drag your feet on:
+
+- Committing working changes to git
+- Tagging
+- Pushing to GitHub
+- Publishing releases
+- Pushing `version.json`
+
+If a build is broken, the worst case is Matthew himself sees a 404 or auto-updates into a regression — he tells you, you fix it, you ship again. Iteration is cheap. **Reluctance to update git is now the bigger cost.**
+
+Things that still need care, even solo:
+- Don't commit secrets (`API DOCUMENTATION/portal-prose/` has plaintext API keys; the `.gitignore` excludes it)
+- Don't commit unrelated work under a misleading commit message — separate concerns get separate commits
+- Don't blow away tags or rewrite published history
+- Pay attention to `git status` before committing so you don't accidentally include something stale
+
+When more people start using BUU, Matthew will tell you and the rhetoric in Sections 1–13 becomes correct again. Until then, ship.
+
 ---
 
 ## 1. WHO YOU ARE TALKING TO

@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('api', {
   openSpreadsheet:     ()      => ipcRenderer.invoke('open-spreadsheet'),
   saveFlow:            (d)     => ipcRenderer.invoke('save-flow', d),
   loadFlow:            ()      => ipcRenderer.invoke('load-flow'),
+  // v1.2.8: list saved once-flows for setup/teardown dropdowns, and validate that a
+  // flow's setup/teardown references resolve to existing once-flows.
+  listOnceFlows:       ()      => ipcRenderer.invoke('list-once-flows'),
+  validateFlowRefs:    (d)     => ipcRenderer.invoke('validate-flow-references', d),
   openFlowsFolder:     ()      => ipcRenderer.invoke('open-flows-folder'),
   openLogsFolder:      ()      => ipcRenderer.invoke('open-log-folder'),
   openFile:            (p)     => ipcRenderer.invoke('open-file', p),
