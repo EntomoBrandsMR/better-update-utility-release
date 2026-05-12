@@ -1,5 +1,5 @@
 {
-  "version": "1.2.8",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.2.8/Better.Update.Utility.Setup.1.2.8.exe",
-  "notes": "v1.2.8 - Setup and teardown flow composition. Flows can now have a setup phase (runs once at start) and teardown phase (runs once at end). The motivating use case was the chargeback workflow: create a PestPac batch once, post all orders into it, release the batch once. Three-phase pipeline (login -> setup -> main per-row loop -> teardown -> logout) shares one browser session. New 'Once-flow' mode for steps that don't loop over a spreadsheet. New run-context tokens {{TODAY}}, {{RUNID}}, {{PROFILE_USERNAME}}. Resume modal has new 'Run teardown only' recovery path for when main work succeeded but cleanup didn't run. New Phases sheet in the Excel log. Checkpoint schema v3 (v2 still loadable). All existing flows continue working unchanged - they auto-upgrade to v1.1 format on first save."
+  "version": "1.2.9",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v1.2.9/Better.Update.Utility.Setup.1.2.9.exe",
+  "notes": "v1.2.9 hotfix for v1.2.8. The once-flow dropdown (used to pick Setup and Teardown attachments) was showing every saved flow as buu-flow instead of its actual filename. Caused by a fallback in saveFlow that stamped name=buu-flow on every save. Fixed by using filename as the source of truth. After installing v1.2.9 your existing once-flows will show by filename in the dropdown - no need to recreate them."
 }
