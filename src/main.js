@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.2.8';
+const CURRENT_VERSION = '1.2.9';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -155,7 +155,10 @@ function resolveOnceFlowByName(name) {
     if (!/\.json$/i.test(f)) continue;
     try {
       const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-      const candName = data.name || f.replace(/\.json$/i, '');
+      // v1.2.8.1 hotfix: match by filename stem only. Older flows have data.name === 'buu-flow'
+      // for every file; matching on that would collide. The dropdown now uses filename for
+      // its option value, so we look up the same way.
+      const candName = f.replace(/\.json$/i, '');
       if (candName === name) return data;
     } catch { /* skip malformed */ }
   }
@@ -1971,6 +1974,24 @@ ipcMain.handle('save-flow', async (_, { json, name }) => {
     filters: [{ name: 'BUU Flow', extensions: ['json'] }]
   });
   if (r.canceled) return null;
+  // v1.2.8.1 hotfix: the filename is the source of truth for a flow's display name.
+  // Earlier behavior set `name` from a fallback chain that defaulted to 'buu-flow' when
+  // both the in-memory flowName and the flowNotes UI field were empty — which is every
+  // time the user creates a fresh flow, because there's no UI to enter a name. The
+  // resulting JSON had `name: "buu-flow"` regardless of what filename the user picked
+  // in the Save dialog, so the dropdown showed every once-flow as "buu-flow".
+  //
+  // Fix: derive `name` from the chosen filename's stem and rewrite the JSON before
+  // writing. This is one-way: the renderer-supplied name in JSON is discarded.
+  try {
+    const parsed = JSON.parse(json);
+    parsed.name = path.basename(r.filePath, '.json');
+    json = JSON.stringify(parsed, null, 2);
+  } catch (e) {
+    // If JSON is unparseable we have bigger problems, but don't lose the save —
+    // write whatever the renderer sent and let load surface the error later.
+    console.warn('[save-flow] could not rewrite name field:', e.message);
+  }
   fs.writeFileSync(r.filePath, json);
   return r.filePath;
 });
@@ -2006,8 +2027,12 @@ ipcMain.handle('list-once-flows', async () => {
       const data = JSON.parse(raw);
       // Pre-v1.1 flows have no runMode; they're implicitly 'per-row' and excluded here.
       if (data.runMode === 'once') {
+        // v1.2.8.1 hotfix: prefer filename over data.name. Older saves stamped `name` as
+        // the literal string 'buu-flow' for every flow (no UI to enter a name; fallback
+        // chain bottomed out at the literal). Filename is the user's intentional choice
+        // from the Save dialog and is always meaningful.
         results.push({
-          name: data.name || filename.replace(/\.json$/i, ''),
+          name: filename.replace(/\.json$/i, ''),
           filename,
           filePath: fp,
           runMode: 'once'
@@ -2047,7 +2072,8 @@ ipcMain.handle('validate-flow-references', async (_, { flow }) => {
         if (!filename.toLowerCase().endsWith('.json')) continue;
         try {
           const data = JSON.parse(fs.readFileSync(path.join(dir, filename), 'utf8'));
-          const candName = data.name || filename.replace(/\.json$/i, '');
+          // v1.2.8.1 hotfix: match by filename stem only (same reason as resolveOnceFlowByName).
+          const candName = filename.replace(/\.json$/i, '');
           if (candName === ref) {
             found = data;
             foundFile = filename;
