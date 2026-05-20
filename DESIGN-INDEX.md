@@ -1,7 +1,21 @@
 # BUU DESIGN INDEX
 
 **Purpose:** Single entry point for active design work. Read this first.
-**Last updated:** 2026-05-11 (post v1.2.8 ship; v1.2.9 backlog added).
+**Last updated:** 2026-05-20 (v1.3.0 implementation complete; standing-context block added).
+
+---
+
+## STANDING CONTEXT (always true — do not re-ask)
+
+- **Matthew is the only user of BUU right now.** He is the sole operator. There is no other
+  install in the field. This means: shipping a release does not risk breaking other people's
+  work, and Claude should NOT keep proposing "hold the release / don't publish yet so others
+  aren't affected" — there are no others. When Matthew says ship, ship the whole way (bump,
+  commit, tag, push, AND publish the GitHub release). He tests on his own machine after the
+  fact and is comfortable with auto-update offering him the new version.
+- **Workflow:** Matthew works diff-by-diff with sign-off on non-trivial changes, tests after
+  push rather than during the session, and prefers brutal honesty over softened status reports.
+- This block is intentionally redundant across design docs so any fresh session sees it.
 
 ---
 
@@ -67,7 +81,7 @@ All three live in `scripts/` (gitignored). They source `creds.ps1` (also gitigno
 - **v1.2.7 SHIPPED 2026-05-07** — Dialog handler crash fix. Single-issue hotfix; `page.once('dialog')` listener no longer leaks across rows when no dialog actually fires.
 - **v1.2.8 SHIPPED 2026-05-11** — Setup-and-teardown flow composition. Three-phase pipeline (login → setup once → main per-row → teardown once → logout). New flow JSON v1.1 format (`runMode`, `setupFlowId`, `teardownFlowId`). Checkpoint v3 with phase progress. Resume modal handles 5 new phase-aware scenarios including "Run teardown only" recovery. New Phases sheet in Excel log. ~1057 lines added across `src/main.js`, `src/index.html`, `src/preload.js`. Phase 8 (build chargeback flows) is in flight by Matthew in the new UI.
 - **v1.2.9 SHIPPED 2026-05-11** — Hotfix for the "every once-flow shows as buu-flow in the dropdown" bug introduced in v1.2.8. v1.2.8's saveFlow logic stamped the JSON's `name` field as the literal string `'buu-flow'` whenever both the in-memory `flowName` (no UI to set it) and the `flowNotes` field were empty — which was every time the user created a fresh flow. All three server-side lookup paths (`list-once-flows`, `resolveOnceFlowByName`, `validate-flow-references`) now key on the filename stem instead of `data.name`. Save handler also rewrites `data.name` to match the filename on write, so existing files self-heal next save.
-- **v1.3.0 is the next BUU release.** Theme: small UX fixes + one selector improvement. Seven items in the backlog (the original v1.2.9 plan, pushed back one number when the name-collision hotfix took the v1.2.9 slot): (1) row-by-text selector mode, (2) text-selection inside step blocks, (3) can't run a second flow after stop without app restart, (4) move open-logs onto the Run button, (5) handle-dialog shouldn't require Next click in step-mode, (6) make UI slightly larger, (7) verify logs are written during step-mode (likely no-op). Estimated 6-10 hours total. Not yet designed; no doc started. Full detail in the v1.3.0 section below.
+- **v1.3.0 is the next BUU release.** Theme: polish, bug fixes, and a few candidate big features. Fourteen items in the backlog: (1) row-by-text selector mode, (2) text-selection inside step blocks, (3) can't run a second flow after stop without app restart, (3a) verification step window closes between steps instead of staying open, (4) move open-logs onto the Run button, (5) handle-dialog shouldn't require Next click in step-mode, (6) make UI slightly larger, (7) verify logs are written during step-mode (likely no-op), (8) validate `{{token}}` brace pairs at save time, (9) step-through-everything mode for setup/teardown debugging, (10) updates unpin BUU from Windows taskbar, (11) pause button does not pause, (12) per-step on-fail flows (8-12 hour v1.2.8-magnitude feature; strong rec to defer to v1.4.0), (13) file-upload step type (4-5 hours if files local, 20-30 if cloud; release uncommitted, depends on Matthew's emergent 20k-doc situation). Estimated 10-16 hours for items 1-11; full backlog scope depends on items 12 and 13 placement. Not yet designed; no doc started. Full detail in the v1.3.0 section below.
 - **BUU is no longer feature-frozen post-v1.2.5.** That earlier plan is paused. BUUA work waits on WorkWave API access.
 
 ---
@@ -102,7 +116,18 @@ Some run state isn't being fully reset between runs. After clicking Stop, `isRun
 
 Reproduce: Run a flow → Stop it before completion → Try to Run again. Expected: clean start. Actual: blocked until app restart.
 
-Look at `runStopped()`, `isRunning` flag, the `automationProcesses` Map cleanup in main.js, and any setInterval handles. Probably one of these isn't being cleared.
+Also reproduced in v1.2.9: bug still present, was not addressed by the dropdown-name hotfix.
+
+Look at `runStopped()`, `isRunning` flag, the `automationProcesses` Map cleanup in main.js, and any setInterval handles. Probably one of these isn't being cleared. The user has confirmed this is reproducible on v1.2.9 (2026-05-11).
+
+**3a. Verification step window closes between steps. It should stay open.**
+
+In step-mode verification, the pause panel that shows resolved selector + rendered value before an action fires is dismissing itself between steps instead of staying visible as the user advances through them. Expected: panel stays mounted, content updates per step, user clicks Next to advance. Actual: panel disappears between steps and presumably remounts (possibly with a flicker, possibly missing the data).
+
+This is a renderer-side issue, almost certainly in `handleRunEvent`'s pause/step-event handlers. The pause overlay's show/hide cycling is probably keying off the wrong event (perhaps treating step-end as "close panel" instead of "wait for next step-start").
+
+Reported on v1.2.9 (2026-05-11).
+
 
 **4. Move open-logs button logic onto the Run automation button.**
 
@@ -128,11 +153,131 @@ Matthew thinks they SHOULD be — and design intent says they should — but he 
 
 To verify: run a flow in step-by-step mode, advance through one full row of a small spreadsheet, check `%APPDATA%\better-update-utility\logs\` for the BUU-log file. Confirm the row appears in the All-rows sheet. If yes, no code change needed — just close the loop. If no, the verification-pause is somehow short-circuiting the per-row flush.
 
+**8. Validate `{{token}}` brace pairs at save time.**
+
+Today's token resolver uses `/{{([^}]+)}}/g`. A typo like `{{Neg Subtotal}}}` (one extra close-brace) silently produces garbage at row 1 of a 500-row run: the regex consumes `{{Neg Subtotal}}` cleanly and leaves a stray `}` after the substituted value, so a row gets `-75}` written into the price field, PestPac can't parse it, focus stays where it shouldn't, and the next step types into the wrong field. Cascade failure from a single typo.
+
+Add a save-time validator that scans every selector / value / URL field for malformed token patterns:
+- Stray single `{` or `}` not part of a `{{...}}` pair
+- Mismatched brace counts overall
+- `{{...{...}}` (nested braces — almost certainly a typo)
+- Empty `{{}}`
+
+Surface them as warnings in the existing validation banner above Save. Don't block save outright — the user might intentionally use literal braces somewhere — but warn loudly enough that the typo gets caught before the run.
+
+Optionally: also catch column references that don't match any spreadsheet column header. That's harder because it requires reading the active spreadsheet, but it's the bigger value-add — most token failures aren't malformed braces, they're typos in column names.
+
+Reported on v1.2.9 (2026-05-11) after Matthew hit it with `{{Neg Subtotal}}}` (triple close-brace) in his chargeback flow.
+
+**9. Step-through-everything mode for setup/teardown.**
+
+Today's step-by-step pause behavior applies only to main per-row steps. Setup and teardown once-flows run straight through without pausing — so when Matthew is building or debugging a setup flow, he can't verify selectors the same way he does for main steps. The runner's `runOnceFlow` (added in v1.2.8 Phase 3) doesn't check `currentMode === 'step'` or `'step-row'`; it just iterates steps. Whereas main's `runStep` consults the mode and inserts a pause-and-wait-for-next between steps.
+
+Add a new third start-mode: **Step through everything**. Behavior:
+- **Run all** (existing) — no pausing anywhere
+- **Step through each step** (existing) — main steps pause, setup/teardown run straight
+- **Step through each row** (existing) — pause once per row, main only
+- **Step through everything** (new) — pauses on every step in every phase (setup, main, teardown)
+
+Use case: first few times you build or debug a setup/teardown attachment. After the pair is verified, drop back to "Step through each step" for normal main-flow verification.
+
+Implementation: add a constant `STEP_THROUGH_PHASES` in the runner template baked from a new param. In `runOnceFlow`, check that constant alongside `currentMode` and insert the same pause/wait-for-next logic main uses today. UI gets a fourth radio in the start-mode picker.
+
+Estimated 1 hour. Self-contained — no schema changes, no preload changes, just runner template + UI.
+
+Reported on v1.2.9 (2026-05-11) during chargeback setup-flow build.
+
+**10. Updates unpin BUU from the Windows taskbar/Start menu.**
+
+Every time Matthew installs a new BUU version, the taskbar pin disappears and he has to re-pin from scratch. Windows tracks pins by the .exe's full path. NSIS installers (which electron-builder uses) place the .exe under a path that may change between versions or include a version-stamped folder — so the post-upgrade .exe is treated as a different app than the pre-upgrade one, and the existing pin becomes a dead link that Windows quietly drops.
+
+Likely fixes (need testing, not all may be necessary):
+- Set `"perMachine": true` in electron-builder's `nsis` config so the install path is stable across versions and not under a user-profile folder that includes version components
+- Add an NSIS pre-install hook that captures pin state before uninstall, then restores it post-install (heavyweight)
+- Use `"oneClick": false` with `"allowToChangeInstallationDirectory": false` and a fixed install directory like `Program Files\Better Update Utility\` (no version subfolder)
+
+The cheap experiment first: set `perMachine: true` (or confirm it's already true) and verify the install path doesn't include a version component. If `dist\win-unpacked` lands at the same target dir every release, the pin should survive. If not, NSIS hooks are next.
+
+Also worth checking: is there a `shortcutName` or `installerIcon` config that's drifting between versions? Anything that changes the Application User Model ID (AppUserModelID) Windows uses to identify the pinned app will invalidate the pin.
+
+Reported on v1.2.9 (2026-05-11). Matthew has tolerated this through v1.2.3 through v1.2.9 — every install loses the pin. Worth fixing because the user feedback friction compounds (he's now installed ~10 versions in two weeks).
+
+**11. Pause button does not pause.**
+
+The Pause button in the run controls doesn't actually pause the runner. Clicking it either does nothing visible or doesn't halt the row-loop progression. Expected: clicking Pause stops the runner at the next safe boundary (between rows or between steps in step-mode) and shows a Resume button. Actual: row processing continues regardless.
+
+This is renderer-to-runner signal plumbing. Check:
+- `pauseBtn` click handler in index.html (does it actually call any API?)
+- Is there a `run-control` IPC with `cmd: 'pause'`?
+- If so, is the runner's stdin readline handler routing 'pause' to a `currentMode = 'paused'` branch the row loop respects?
+- Or has the pause path never been fully wired (vestigial UI from an earlier design intent)?
+
+Reported on v1.2.9 (2026-05-11) during chargeback flow build.
+
+**12. Per-step on-fail flows. [SCOPE WARNING: full v1.2.8-size feature; consider splitting to v1.4.0]**
+
+Each step in a per-row flow can optionally declare a once-flow to run if the step fails (after retry exhaustion). The on-fail flow runs the cleanup recipe, then row-level error handling continues normally. Motivating use case: chargeback flows that fail partway through service-order creation leave orphan service orders in PestPac. Per-step on-fail would delete the partial order before moving on.
+
+**Why this is bigger than v1.2.8's setup/teardown:**
+
+- Flow JSON schema: every step gets an optional `onFailFlowId` field
+- Runner control flow: today the runner just logs errors and moves on (or stops). On-fail intercepts the failure path, runs the cleanup flow, then resumes normal error routing. Subtle interactions with the existing retry loop and circuit breaker
+- Validation: on-fail must be once-flow, can't reference further composition (still one level deep)
+- UI: every step block gets a new dropdown — not a single card at the top
+- Phase indicator: no longer linear; needs "in recovery for row N" visualization
+- Excel log: on-fail invocations need their own entries
+- Idempotency: same problems as setup, magnified across many invocations
+- Stop semantics: stop-during-on-fail is a new case
+- Resume modal: "row 47 on-fail itself failed" is a new recovery scenario
+
+Estimated 8-12 hours of focused work — same magnitude as v1.2.8's setup/teardown feature.
+
+**Cheaper alternative considered and rejected by Matthew (2026-05-11):** Per-row on-fail flow (one flow-level attachment that fires when any row fails main steps). About half the complexity, covers chargebacks. Matthew explicitly requested per-step instead.
+
+**Strategic note for next session:** If v1.3.0 starts to drag because of this item, consider splitting: ship items 1-11 as v1.3.0, defer item 12 to v1.4.0 with its own design doc. Don't let the big feature delay all the small wins.
+
+**13. File-upload step type. [SCOPE: unknown, depends on file source]**
+
+New step type that uploads a file from a path on disk via Playwright's `setInputFiles(selector, path)`. Path comes from a spreadsheet column (e.g. `DocPath`) or static value. Resolves run-context tokens. Failure handling: file-not-found at row start logs a clear error and skips the row, doesn't crash the run.
+
+Implementation footprint if files are locally accessible:
+- New step type entry in the step-type picker
+- One new case in the runner's step dispatch (calls `setInputFiles`)
+- Path-exists validation in the per-row preflight
+- ~4-5 hours, isolated, low risk
+
+Implementation footprint if files live in SharePoint/Drive/cloud:
+- All of the above, plus
+- Cloud SDK integration (Microsoft Graph for SharePoint, Google Drive API)
+- Auth surface (OAuth flows, token storage, refresh)
+- Per-file download-to-temp-folder before upload, cleanup after
+- Probably 20-30 hours total, comparable to v1.2.8
+
+**Origin:** Matthew has an emergent need to upload ~20,000 documents to PestPac. The documents currently live in some combination of his local computer, OneDrive, SharePoint, and possibly Google Drive — he's not sure yet because it's a fresh problem.
+
+**Open questions to resolve before scoping:**
+- Where do the 20k files actually live at run time? Local-accessible or cloud-only?
+- Is there a clear PestPac upload flow Matthew has already validated manually? (Probably yes given he said "there is a clear step process to follow")
+- Does the upload screen use a standard `<input type="file">` or some custom widget that `setInputFiles` won't handle?
+- What spreadsheet shape — one row per file? Multiple files per customer row?
+- How long is the wall-clock budget? 20k files at 10s each = 55 hours, multi-overnight; can the v1.2.5 resume infrastructure handle multi-day interrupted runs (it should; worth confirming on real data)
+
+**Release timing:** Not committed. Three candidates discussed: bundle with v1.3.0 (+4-5 hours), standalone v1.3.1 (clean separation, ships when chargeback work is done), or v1.4.0 with per-step on-fail flows. Decision deferred until file-source question is answered.
+
+---
+
 ### Scope estimate
 
-Items 1, 3, 5 are real fixes requiring code. Items 2, 4, 6 are UX changes. Item 7 may be no-op. Total estimated effort: 6-10 hours depending on what item 3 actually turns out to be (run-state cleanup bugs can hide).
+Fourteen items in backlog; not all in v1.3.0. Items 1, 3, 3a, 5, 8, 9, 10, 11, 12, 13 are real fixes/features requiring code; 2, 4, 6 are UX changes; 7 may be no-op. Item 12 (per-step on-fail flows) is 8-12 hours, magnitude of v1.2.8. Item 13 (file-upload step) is 4-5 hours if files are local, 20-30 hours if cloud-source — uncommitted to a release until Matthew has more info on the document storage situation. Without items 12 and 13, the rest is 10-16 hours.
 
-**Not yet designed.** When picking this up, write a short `BUU-v1.2.9-DESIGN.md` first to lock the approach for each item before coding. Items 3 and 7 may need investigation passes before they get a design.
+**Strong recommendation:** Split into focused releases:
+- **v1.3.0** = items 1-11 (polish + bug fixes), 10-16 hours
+- **v1.3.1** or v1.4.0 = item 13 (file-upload) once scope is known
+- **v1.4.0** = item 12 (per-step on-fail flows), full design pass
+
+User has not yet agreed to split; logged here for the next session to revisit.
+
+**Not yet designed.** When picking this up, write a short `BUU-v1.3.0-DESIGN.md` first to lock the approach for each item before coding. Items 3, 3a, 7 may need investigation passes before they get a design.
 
 ---
 

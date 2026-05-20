@@ -386,3 +386,56 @@ The new Import-page header reads "Detected columns — drag from any step's chip
 ## Things I noticed but didn't change (potential future cleanups)
 
 - `src/main.js` line 16 comment says "v1.3.0 will lift this cap" referring to `MAX_CONCURRENT_RUNS`. Multi-runner moved to BUUA. Update this comment when in the area for item 2.3b (Phase 3).
+
+---
+
+## v1.3.0 — Item 10: `perMachine: true` taskbar-pin experiment (EXPERIMENTAL — TEST BEFORE SHIP)
+
+**What changed:** `package.json` → `build.nsis.perMachine` flipped `false` → `true`. Nothing else.
+
+**Why:** Attempt to make the taskbar pin survive auto-updates. Per-user installs land in
+`%LOCALAPPDATA%\Programs\Better Update Utility` and the install path can shuffle across
+updates, breaking a pinned shortcut's target. A per-machine install lands in a stable
+`C:\Program Files\Better Update Utility` path, which *may* let the pin survive.
+
+**This is the one v1.3.0 change that can regress installation itself. It is NOT validated
+by `_validate-runner.js` or any static check — it requires a real build + install + update
+cycle on Matthew's machine. Do not assume it works until the test below passes.**
+
+### Known interactions / risks
+1. **UAC elevation.** Per-machine installs require admin rights — every install and every
+   auto-update will now prompt UAC. Confirm that's acceptable for the deployment model.
+2. **Defender exclusion path mismatch.** The existing exclusion is on the per-user path
+   (`%LOCALAPPDATA%\Programs\...`). Per-machine installs to `C:\Program Files\...`, which is
+   NOT covered by that exclusion. If Smart App Control / Defender trips on install, add a new
+   exclusion for the Program Files path. (It probably won't, since `force-icon.js` is gone and
+   there's no post-build .exe modification anymore — but watch for it.)
+3. **Auto-update path assumptions.** The updater in main.js opens the downloaded installer and
+   quits. Confirm the new installer correctly upgrades-in-place at the Program Files location
+   rather than creating a second install.
+4. **First upgrade is special.** Going from a per-user v1.2.9 install to a per-machine v1.3.0
+   install may leave the OLD per-user copy behind (different install scope = different uninstall
+   registry key). The user may need to manually uninstall the old per-user copy once.
+
+### Test procedure (run on the actual machine, in order)
+1. Build v1.3.0. Confirm `dist\Better Update Utility Setup 1.3.0.exe` is full-size (~200 MB),
+   NOT a corrupted small file.
+2. Fresh install: run the installer. Confirm UAC prompts, installs to `C:\Program Files\...`,
+   launches, icon shows correctly in all 5 spots (title bar, taskbar, Start menu, desktop, Setup.exe).
+3. Pin the running app to the taskbar.
+4. Bump a throwaway test version higher (or use the real next version) and trigger an auto-update.
+5. **The actual test:** after the update completes and the app relaunches, is the taskbar pin
+   STILL there and does it STILL launch the app? That's the pass/fail.
+6. Confirm the old per-user v1.2.9 install (if any) didn't get orphaned — check
+   `%LOCALAPPDATA%\Programs` for a stale copy and Add/Remove Programs for a duplicate entry.
+
+### If it fails
+- If the pin still breaks on update → `perMachine` alone isn't enough; the design index notes
+  the fallback (an NSIS pre-install hook that captures pin state before uninstall and restores
+  it post-install). That's a bigger lift — defer to a follow-up.
+- If installation itself breaks (Defender block, UAC issues, orphaned installs) → revert to
+  `perMachine: false` for the 1.3.0 ship and treat the pin as an isolated experiment. Reverting
+  is a one-line change back.
+
+**Bottom line for shipping:** if step 5 passes and steps 2/6 are clean, keep it. If anything in
+2/6 is messy, flip back to `false` before publishing — the other 10 items don't depend on this.

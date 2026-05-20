@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.2.9';
+const CURRENT_VERSION = '1.3.0';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -166,6 +166,9 @@ function resolveOnceFlowByName(name) {
 }
 
 ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes, startMode, resumeAction, runMode, setupFlowId, teardownFlowId }) => {
+  // v1.3.0 Item 3: log every start attempt with state context. Pairs with renderer-side
+  // [run] log lines so cross-process traces can be reconstructed after a stuck-state report.
+  console.log('[main] start-automation: runId=' + runId + ', profileId=' + profileId + ', resumeFromRow=' + (resumeFromRow||0) + ', currentMapSize=' + automationProcesses.size);
   // startMode: 'step' | 'step-row' | 'run-all'  (added v1.2.4). Defaults to 'run-all' for back-compat.
   startMode = startMode || 'run-all';
   // v1.2.5 item 2.8: tunable speed/resilience settings. Defaults match design doc.
@@ -183,6 +186,9 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   if (automationProcesses.size >= MAX_CONCURRENT_RUNS) {
     const running = Array.from(automationProcesses.values())[0];
     const startedTime = running ? new Date(running.startedAt).toLocaleTimeString() : 'unknown';
+    // v1.3.0 Item 3: log the rejection with the existing runId so we can tell if the stuck state
+    // is "map didn't clear after a previous run" or "user clicked Run twice fast."
+    console.warn('[main] start-automation REJECTED: cap reached, size=' + automationProcesses.size + ', existing runId=' + (running && running.runId));
     return { ok: false, error: `Another automation is already running (started ${startedTime}). Stop it first or wait for it to finish.` };
   }
   const steps = JSON.parse(stepsJson);
@@ -398,10 +404,14 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
     });
   });
   proc.on('close', code => {
+    // v1.3.0 Item 3: log the close event with the pre-cleanup map state so we can tell
+    // if the cleanup ran exactly once. Pairs with the renderer's [run] handleRunEvent log.
+    console.log('[main] runner closed: runId=' + runId + ', code=' + code + ', wasInMap=' + automationProcesses.has(runId));
     runnerLogStream.write(`[${new Date().toISOString()}] Runner exited with code: ${code}\n`);
     runnerLogStream.end();
     mainWindow?.webContents.send('automation-event', { type: 'done', code, logPath, runId });
     automationProcesses.delete(runId);
+    console.log('[main] runner cleanup complete: runId=' + runId + ', new mapSize=' + automationProcesses.size);
     try { fs.unlinkSync(runnerPath); } catch {}
     try { fs.unlinkSync(credPath); } catch {}
   });
@@ -411,10 +421,15 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
 
 ipcMain.handle('stop-automation', (_, payload) => {
   const targetRunId = payload && payload.runId;
+  // v1.3.0 Item 3: log entry and outcome. Helps diagnose force-kill cases that bypass the
+  // clean stdin-stop path — the kill leaves no runner-side trace, only these console lines.
+  console.log('[main] stop-automation: targetRunId=' + targetRunId + ', currentMapSize=' + automationProcesses.size);
   if (targetRunId) {
     const entry = automationProcesses.get(targetRunId);
+    console.log('[main] stop-automation: entry found=' + !!entry + ' — force-killing process');
     if (entry && entry.process) { try { entry.process.kill(); } catch {} }
     automationProcesses.delete(targetRunId);
+    console.log('[main] stop-automation: deleted from map, new size=' + automationProcesses.size);
     return { ok: true, stopped: entry ? 1 : 0 };
   }
   // No runId given -> stop all (preserves v1.2.2 behavior)
@@ -423,6 +438,7 @@ ipcMain.handle('stop-automation', (_, payload) => {
     if (entry.process) { try { entry.process.kill(); stopped++; } catch {} }
   }
   automationProcesses.clear();
+  console.log('[main] stop-automation: stop-all path, killed=' + stopped + ', map cleared');
   return { ok: true, stopped };
 });
 
@@ -431,6 +447,10 @@ ipcMain.handle('stop-automation', (_, payload) => {
 // If runId is omitted, applies to the (currently single) running runner.
 ipcMain.handle('run-control', (_, payload) => {
   const { runId, cmd } = payload || {};
+  // v1.3.0 Item 3: log the inbound cmd and resolution outcome. The 'stop' cmd is the most
+  // important one to trace — if the renderer thinks it sent stop but the runner never sees it,
+  // the entry-found=false line tells us why (already removed from the map, etc).
+  console.log('[main] run-control: cmd=' + cmd + ', runId=' + runId + ', currentMapSize=' + automationProcesses.size);
   if (!cmd) return { ok: false, error: 'Missing cmd' };
   let entry = null;
   if (runId) {
@@ -438,11 +458,13 @@ ipcMain.handle('run-control', (_, payload) => {
   } else {
     entry = Array.from(automationProcesses.values())[0] || null;
   }
+  console.log('[main] run-control: entry found=' + !!entry + ', has process=' + !!(entry && entry.process));
   if (!entry || !entry.process) return { ok: false, error: 'No running automation' };
   try {
     entry.process.stdin.write(JSON.stringify({ cmd }) + '\n');
     return { ok: true };
   } catch (e) {
+    console.warn('[main] run-control: stdin.write threw: ' + e.message);
     return { ok: false, error: e.message };
   }
 });
@@ -713,10 +735,18 @@ function resolvePreview(step, row, creds){
   else if (step.type === 'textedit') value = '(textedit: ' + (step.editMode || 'find-replace') + ')';
   else if (step.type === 'checkbox') value = '(' + (step.checkAction || 'check') + ')';
   else if (step.type === 'wait') value = '(' + (step.waitType || 'fixed') + ')';
+  // v1.3.0 Item 1: when find-by-text is on, show the resolved match + container so the
+  // step-mode pause panel tells the user which look-alike will be acted on.
+  var selectorOut = step.selector || '';
+  if (step.findByText) {
+    var matchResolved = r(step.matchText || '');
+    selectorOut = 'in [' + (step.containerSel || '?') + '] where text ' + (step.matchMode || 'contains') + ' "' + matchResolved + '"'
+                + (step.selector ? ' → ' + step.selector : ' (the matched item)');
+  }
   return {
     type: step.type,
     label: step._label || step.type,
-    selector: step.selector || '',
+    selector: selectorOut,
     value: value,
   };
 }
@@ -996,6 +1026,90 @@ async function findLocator(page, selector, opts){
   throw new Error('Selector "' + selector + '" not found in any frame after ' + timeoutMs + 'ms. Frames searched: [' + frameInfo + ']');
 }
 
+// v1.3.0 Item 1: text-match comparator for find-by-text scope. Compares a container's
+// visible text against the user's match text using the chosen mode. All non-regex modes
+// trim both sides first (PestPac cells are padded with whitespace/labels). Returns boolean.
+function matchesText(haystack, needle, mode){
+  var h = (haystack == null ? '' : String(haystack));
+  var n = (needle == null ? '' : String(needle));
+  switch(mode || 'contains'){
+    case 'exact':       return h.trim() === n.trim();
+    case 'starts':      return h.trim().indexOf(n.trim()) === 0;
+    case 'ends':        { var ht = h.trim(), nt = n.trim(); return nt.length <= ht.length && ht.lastIndexOf(nt) === (ht.length - nt.length); }
+    case 'contains-ci': return h.trim().toLowerCase().indexOf(n.trim().toLowerCase()) !== -1;
+    case 'exact-ci':    return h.trim().toLowerCase() === n.trim().toLowerCase();
+    case 'regex':
+      try { return new RegExp(n).test(h); }
+      catch(e){ throw new Error('Find-by-text regex invalid: ' + n + ' — ' + e.message); }
+    case 'contains':
+    default:            return h.trim().indexOf(n.trim()) !== -1;
+  }
+}
+
+// v1.3.0 Item 1: find the single container (out of many look-alikes) whose visible text
+// matches matchText per mode, then return a locator scoped to targetSel INSIDE it. If
+// targetSel is empty, returns the matched container locator itself. Iframe-aware (reuses
+// the same top-frame-then-iframes walk as findLocator). Throws a clear error if zero or
+// more than one container matches — BUU never guesses which look-alike is the right one.
+async function findInContainer(page, containerSel, matchText, targetSel, mode, opts){
+  opts = opts || {};
+  var timeoutMs = opts.timeout || 30000;
+  var pollMs = 250;
+  var startedAt = Date.now();
+  var lastSeenCount = 0;
+  while (Date.now() - startedAt < timeoutMs) {
+    // Collect every frame to search: top frame first, then all iframes.
+    var frames = [page.mainFrame()];
+    for (var fi = 0; fi < page.frames().length; fi++) {
+      if (page.frames()[fi] !== page.mainFrame()) frames.push(page.frames()[fi]);
+    }
+    var matched = [];   // {frame, index} for each container whose text matches
+    for (var k = 0; k < frames.length; k++) {
+      var f = frames[k];
+      var containers;
+      try { containers = f.locator(containerSel); } catch(e){ continue; }
+      var count;
+      try { count = await containers.count(); } catch(e){ continue; }
+      for (var ci = 0; ci < count; ci++) {
+        var txt = '';
+        try { txt = await containers.nth(ci).innerText({timeout: 2000}); }
+        catch(e){
+          // innerText can fail on hidden nodes; fall back to textContent.
+          try { txt = await containers.nth(ci).textContent({timeout: 2000}) || ''; } catch(e2){ txt = ''; }
+        }
+        if (matchesText(txt, matchText, mode)) {
+          matched.push({ frame: f, index: ci });
+        }
+      }
+      lastSeenCount += count;
+    }
+    if (matched.length === 1) {
+      var m = matched[0];
+      var containerLoc = m.frame.locator(containerSel).nth(m.index);
+      if (!targetSel) return containerLoc;
+      return containerLoc.locator(targetSel);
+    }
+    if (matched.length > 1) {
+      throw new Error('Find-by-text matched ' + matched.length + ' containers for "' + matchText + '" (mode: ' + (mode||'contains') + '). Expected exactly 1. Make the match text more specific or narrow the container selector — BUU will not guess which one.');
+    }
+    // Zero matches yet — wait and rescan (the grid may still be loading).
+    await new Promise(function(r){ setTimeout(r, pollMs); });
+  }
+  throw new Error('Find-by-text found no container matching "' + matchText + '" (mode: ' + (mode||'contains') + ') in selector "' + containerSel + '" after ' + timeoutMs + 'ms. Containers seen during scan: ' + lastSeenCount + '. Check the match text/column value and the container selector.');
+}
+
+// v1.3.0 Item 1: resolve the locator a selector-using step should act on. Centralizes the
+// findByText branch so each step case stays a one-liner. When step.findByText is on, resolves
+// the match text through the same token resolver the step uses, then scopes via findInContainer.
+// Otherwise behaves exactly like the legacy findLocator(page, step.selector) call.
+async function resolveStepLocator(page, step, resolveFn){
+  if (step.findByText) {
+    var matchResolved = resolveFn(step.matchText || '');
+    return await findInContainer(page, step.containerSel || '', matchResolved, step.selector || '', step.matchMode || 'contains', {timeout: SELECTOR_TIMEOUT});
+  }
+  return await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+}
+
 // v1.2.6: diagnostic dump for any selector. Called by step types when the user
 // has flipped the debug checkbox on (originally only on click steps in v1.2.5-debug1;
 // now extended to all selector-using steps). Shape of output is the same shape
@@ -1105,7 +1219,8 @@ async function runStep(page,step,row,creds){
         await debugDumpSelector(page, step.selector, 'click');
       }
       // v1.2.6: findLocator handles iframe traversal automatically.
-      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      // v1.3.0 Item 1: resolveStepLocator adds find-by-text scoping when enabled.
+      const loc = await resolveStepLocator(page, step, r);
       await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
       await loc.first().click();
       if(step.waitFor){
@@ -1114,7 +1229,7 @@ async function runStep(page,step,row,creds){
       }
       break;}
     case 'type':{
-      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      const loc = await resolveStepLocator(page, step, r);
       await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
       if(step.clearFirst!=='no') await loc.first().fill('');
       const _val = r(step.value);
@@ -1123,12 +1238,12 @@ async function runStep(page,step,row,creds){
       else await loc.first().fill(_val);
       break;}
     case 'select':{
-      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      const loc = await resolveStepLocator(page, step, r);
       await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
       await loc.first().selectOption({label: r(step.value)});
       break;}
     case 'checkbox':{
-      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      const loc = await resolveStepLocator(page, step, r);
       await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
       if(step.checkAction==='check') await loc.first().check();
       else if(step.checkAction==='uncheck') await loc.first().uncheck();
@@ -1140,7 +1255,7 @@ async function runStep(page,step,row,creds){
       }
       break;}
     case 'clear':{
-      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      const loc = await resolveStepLocator(page, step, r);
       await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
       await loc.first().fill('');
       break;}
@@ -1151,7 +1266,7 @@ async function runStep(page,step,row,creds){
       await loc.first().waitFor({state:'visible', timeout: 30000});
     }else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
     case 'assert':{
-      const loc = await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+      const loc = await resolveStepLocator(page, step, r);
       await loc.first().waitFor({state:'visible', timeout: SELECTOR_TIMEOUT});
       if(step.expected){
         const t = await loc.first().textContent();
@@ -1347,6 +1462,24 @@ async function runOnceFlow(page, steps, creds, phase){
     }
     const step = steps[i];
     const stepLabel = step._label || step.type;
+    // v1.3.0 Item 9: setup/teardown participate in step mode. When the user picked
+    // "Step through each step", pause before each once-flow step too — not just main-row
+    // steps. Same pause-and-wait mechanism main()'s attempt() uses. Dialog steps skip the
+    // pause (Item 5 rationale: they register an invisible listener, nothing to verify).
+    // The pause-step event carries phase ('setup'/'teardown') so the renderer labels the
+    // panel "Setup · step X of Y" instead of "Row N · step X".
+    if (currentMode === 'step' && step.type !== 'dialog') {
+      const _preview = resolvePreview(step, {}, creds);
+      emit({type:'pause-step', phase: phase, stepIndex: i, totalSteps: steps.length, step: _preview, row: {}, mode: currentMode});
+      const cmd = await waitForCommand();
+      if (currentMode === 'stop') {
+        emit({type:'phase-end', phase: phase, status: 'stopped', stepIndex: i, durationMs: Date.now() - _phaseStart});
+        _synthOnceLog({status: 'stopped', label: phase + ' stopped by user at step ' + (i+1), durationMs: Date.now() - _phaseStart, stepIndex: i});
+        return {ok: false, stopped: true, stepIndex: i, stepLabel: stepLabel};
+      }
+      // 'next-step' / 'run-all' / 'auto' all fall through to execute the step.
+      // 'next-row' has no meaning in a once-flow (no rows) — treat as next-step.
+    }
     emit({type:'phase-step', phase: phase, stepIndex: i, totalSteps: steps.length, stepType: step.type, stepLabel: stepLabel});
     try {
       // row={} — once-flows have no row context. Run-context tokens still resolve via RUN_CONTEXT.
@@ -1594,7 +1727,12 @@ async function main(){
             selector:s.selector||'',
             attemptedValue:_preview.value||''
           };
-          if(currentMode==='step'){
+          if(currentMode==='step' && s.type !== 'dialog'){
+            // v1.3.0 Item 5: skip the pause for dialog steps. A dialog step just registers a
+            // one-shot page.on('dialog') listener — nothing visible happens until the NEXT step
+            // (usually a click) fires the dialog. Pausing here would make the user hit Next on
+            // an invisible no-op, then immediately hit Next again on the real action. Annoying
+            // and confusing. The dialog handler still runs whenever the dialog actually fires.
             emit({type:'pause-step',rowIndex:ri,totalRows,stepIndex:si,totalSteps:DATA_STEPS.length,step:_preview,row,mode:currentMode});
             const cmd=await waitForCommand();
             if(currentMode==='stop') throw new Error('__STOP__');

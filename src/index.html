@@ -50,7 +50,7 @@ html, body {
   height: 100%; overflow: hidden;
   background: var(--bg); color: var(--tx);
   font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 13px; line-height: 1.5;
+  font-size: 18px; line-height: 1.5;
 }
 
 /* ── SCROLLBAR ── */
@@ -210,7 +210,7 @@ input[type=text], input[type=number], input[type=url], input[type=password], sel
   width: 100%; padding: 7px 10px;
   border: 1px solid var(--bdr2); border-radius: var(--r);
   background: var(--surf2); color: var(--tx);
-  font-size: 12px; font-family: inherit; line-height: 1.4;
+  font-size: 17px; font-family: inherit; line-height: 1.4;
   transition: border-color .15s;
 }
 input:focus, select:focus, textarea:focus {
@@ -219,7 +219,7 @@ input:focus, select:focus, textarea:focus {
 }
 select option { background: var(--surf2); }
 textarea { resize: vertical; min-height: 60px; }
-.hint { font-size: 10px; color: var(--t3); margin-top: 3px; line-height: 1.5; }
+.hint { font-size: 15px; color: var(--t3); margin-top: 3px; line-height: 1.5; }
 .tok {
   font-family: 'Consolas', monospace; font-size: 10px;
   background: var(--surf3); border: 1px solid var(--bdr2);
@@ -253,7 +253,7 @@ textarea { resize: vertical; min-height: 60px; }
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
 
 /* ── BADGES ── */
-.badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+.badge { display: inline-block; font-size: 15px; font-weight: 700; padding: 4px 11px; border-radius: 20px; white-space: nowrap; }
 .bd-nav { background: var(--tlt); color: var(--teal); border: 1px solid #0a3030; }
 .bd-clk { background: var(--glt); color: var(--green); border: 1px solid #0a2818; }
 .bd-typ { background: var(--blt); color: var(--blue); border: 1px solid #0a2040; }
@@ -270,7 +270,7 @@ textarea { resize: vertical; min-height: 60px; }
 .paste-btn {
   flex-shrink: 0; padding: 7px 10px; border-radius: var(--r);
   border: 1px solid var(--pmd); background: var(--plt);
-  cursor: pointer; font-size: 11px; font-weight: 600;
+  cursor: pointer; font-size: 15px; font-weight: 600;
   color: var(--purple); font-family: inherit; transition: all .12s; white-space: nowrap;
 }
 .paste-btn:hover { background: #251545; border-color: var(--purple); }
@@ -330,14 +330,14 @@ textarea { resize: vertical; min-height: 60px; }
 .step-card.locked .step-hd { cursor: default; }
 .step-card.locked .step-hd:hover { background: transparent; }
 .step-n {
-  width: 22px; height: 22px; border-radius: 50%;
+  width: 28px; height: 28px; border-radius: 50%;
   background: var(--surf3); display: flex; align-items: center;
-  justify-content: center; font-size: 10px; font-weight: 700;
+  justify-content: center; font-size: 14px; font-weight: 700;
   color: var(--t2); flex-shrink: 0;
 }
 .step-card.open .step-n { background: var(--blt); color: var(--blue); }
 .step-card.locked .step-n { background: var(--plt); color: var(--purple); }
-.step-desc { font-size: 12px; color: var(--t2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-desc { font-size: 17px; color: var(--t2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step-acts { display: flex; gap: 2px; margin-left: auto; flex-shrink: 0; }
 .ibtn {
   width: 27px; height: 27px; border-radius: var(--r);
@@ -699,18 +699,17 @@ textarea { resize: vertical; min-height: 60px; }
   <button class="tbtn" onclick="loadFlow()">Load flow</button>
   <button class="tbtn" onclick="saveFlow()">Save flow</button>
   <button class="tbtn" onclick="openFlowsFolder()" title="Open flows folder">📁 Flows</button>
-  <button class="tbtn grn" id="runBtn" onclick="startRun()" disabled>
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="3,2 14,8 3,14"/></svg>
-    Run automation
+  <button class="tbtn grn" id="runBtn" onclick="runBtnClick()" disabled>
+    <svg id="runBtnIcon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="3,2 14,8 3,14"/></svg>
+    <span id="runBtnLbl">Run automation</span>
   </button>
   <button class="tbtn red" id="stopBtn" onclick="stopRun()" style="display:none">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
     Stop
   </button>
-  <button class="tbtn amb" id="pauseBtn" onclick="togglePause()" style="display:none">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3v10M11 3v10"/></svg>
-    Pause
-  </button>
+  <!-- v1.3.0 Item 11: Pause button removed. It was wired to API.pauseRun / API.resumeRun
+       which were never exposed, and the runner has no 'pause' command. The button did nothing.
+       Stop already provides graceful safe-boundary halt. A real Pause may return in a later release. -->
 </div>
 
 <div class="shell">
@@ -1151,7 +1150,8 @@ let runMode = 'per-row', setupFlowId = null, teardownFlowId = null, flowName = '
 let profiles = [], activeProfileId = null, editingProfileId = null;
 let pendingInsertId = null, pendingInsertField = null, pasteFoundSel = '';
 let updInfo = null, headless = false;
-let isRunning = false, isPaused = false;
+let isRunning = false;
+// v1.3.0 Item 11: isPaused removed. Pause button was vestigial — never wired through to a runner command.
 let currentLogPath = null, runStartTime = null, runRowsDone = 0, runTotal = 0;
 let currentRunId = null;
 let currentRunMode = 'run-all'; // tracks runner's current mode for UI; updated by 'mode' / 'pause-*' events
@@ -1407,7 +1407,13 @@ function renderSteps() {
     if (i > 0) { const d = document.createElement('div'); d.className = 'conn'; list.appendChild(d); }
     const m = SM[s.type]; const card = document.createElement('div');
     card.className = 'step-card' + (s.open ? ' open' : '') + (s.locked ? ' locked' : '');
-    if(!s.locked){card.draggable=true;card.dataset.stepId=String(s.id);}
+    if(!s.locked){
+      // v1.3.0 Item 2: drag is scoped to the .drag-handle element (set draggable=true on it
+      // in the action-row markup below), NOT the whole card. This lets users select/copy text
+      // from inside step fields without the drag handler stealing the mousedown. The card itself
+      // is still the drop target (dragover/drop listeners attached to it in initDragDrop()).
+      card.dataset.stepId=String(s.id);
+    }
     card.innerHTML =
       '<div class="step-hd" onclick="' + (s.locked ? '' : 'toggleStep(' + s.id + ')') + '">' +
         '<div class="step-n">' + (i+1) + '</div>' +
@@ -1416,9 +1422,9 @@ function renderSteps() {
         '<span class="step-desc">' + m.desc(s) + '</span>' +
         '<span class="validation-flag-badge"></span>' +
         (s.locked
-          ? '<span style="font-size:10px;color:var(--purple);margin-left:auto;padding-right:4px;opacity:.7">PestPac login — locked</span>'
+          ? '<span style="font-size:15px;color:var(--purple);margin-left:auto;padding-right:4px;opacity:.7">PestPac login — locked</span>'
           : '<div class="step-acts">' +
-              '<span class="drag-handle" title="Drag to reorder"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:13px;height:13px"><path d="M4 5h8M4 8h8M4 11h8"/></svg></span>' +
+              '<span class="drag-handle" draggable="true" title="Drag to reorder"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:13px;height:13px"><path d="M4 5h8M4 8h8M4 11h8"/></svg></span>' +
               '<button class="ibtn del" onclick="delStep(event,' + s.id + ')" title="Delete"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M6 4V2h4v2M5 4l.5 9h5L11 4"/></svg></button>' +
             '</div>') +
       '</div>' +
@@ -1440,16 +1446,25 @@ function initDragDrop() {
   const list = document.getElementById('stepList');
   let dragSrcId = null;
 
-  list.querySelectorAll('.step-card[draggable]').forEach(card => {
-    card.addEventListener('dragstart', e => {
+  // v1.3.0 Item 2: drag sources are the .drag-handle spans (not the whole card). This
+  // means mousedown anywhere else in the card body initiates text selection instead of
+  // drag, letting users copy selector values out. The card still serves as the drop target.
+  list.querySelectorAll('.drag-handle[draggable="true"]').forEach(handle => {
+    const card = handle.closest('.step-card');
+    if (!card) return;
+    handle.addEventListener('dragstart', e => {
       dragSrcId = parseInt(card.dataset.stepId);
       card.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
     });
-    card.addEventListener('dragend', () => {
+    handle.addEventListener('dragend', () => {
       card.classList.remove('dragging');
       list.querySelectorAll('.drop-indicator').forEach(el => el.remove());
     });
+  });
+
+  // Drop targets stay on the card so the indicator-line above/below behavior works.
+  list.querySelectorAll('.step-card[data-step-id]').forEach(card => {
     card.addEventListener('dragover', e => {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
@@ -1568,6 +1583,53 @@ function valField(sid, field, value, placeholder, label) {
     '<div class="hint">Use <span class="tok">{{Column}}</span> or <span class="cred-tok">{{CRED:field}}</span> tokens</div>' +
     '</div>';
 }
+// v1.3.0 Item 1: "Find by text" scope block. Shared by all selector-using step types
+// (click, type, select, checkbox, clear, assert). When enabled, the step targets one of
+// several look-alike elements on the page by finding the container whose visible text
+// matches a value (e.g. a service-order number from {{ServiceOrderID}}), then acts on the
+// existing selector scoped INSIDE that matched container.
+//
+// Step JSON fields added (all absent/false = legacy single-element behavior):
+//   findByText  (bool)   — toggles the mode
+//   containerSel(string) — CSS for the repeating thing there are many of (tr, .batch-row…)
+//   matchText   (string) — token-or-literal text identifying the right one
+//   matchMode   (string) — see MATCH_MODES below; default 'contains'
+//
+// The step's existing `selector` field is reinterpreted as "target inside the matched
+// container" when findByText is on. We don't rename the stored field — the runner checks
+// findByText and scopes accordingly.
+const MATCH_MODES = [
+  ['contains',      'Contains (trimmed)'],
+  ['exact',         'Exact match (trimmed)'],
+  ['starts',        'Starts with'],
+  ['ends',          'Ends with'],
+  ['contains-ci',   'Contains (ignore case)'],
+  ['exact-ci',      'Exact match (ignore case)'],
+  ['regex',         'Regex pattern'],
+];
+function findByTextBlock(s){
+  const on = !!s.findByText;
+  const mode = s.matchMode || 'contains';
+  const toggle =
+    '<div class="row"><div class="fg"><label style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;color:var(--blue)">' +
+      '<input type="checkbox" ' + (on?'checked':'') + ' onchange="u(' + s.id + ',\'findByText\',this.checked);renderSteps()" style="width:16px;height:16px;cursor:pointer"/>' +
+      '🔎 Find by text (pick one of several look-alike items)</label>' +
+      '<div class="hint">When there are many similar elements (open service orders, batches, rows), turn this on to target the specific one whose text matches a value from your data. The CSS selector above then targets an element <strong>inside</strong> the matched item.</div>' +
+    '</div></div>';
+  if(!on) return toggle;
+  const container = '<div class="row">' +
+    selField(s.id,'containerSel',s.containerSel||'','tr, .service-order-row, [data-testid="batch-card"]','Container selector — the repeating item') +
+    '</div>';
+  const matchRow = '<div class="row">' +
+    valField(s.id,'matchText',s.matchText||'','{{ServiceOrderID}} or a literal value','Match text — identifies the right one') +
+    '<div class="fg"><label>Match mode</label>' +
+      '<select onchange="u(' + s.id + ',\'matchMode\',this.value)">' +
+      MATCH_MODES.map(([v,l]) => '<option ' + (mode===v?'selected':'') + ' value="' + v + '">' + l + '</option>').join('') +
+      '</select>' +
+      '<div class="hint">How the container\'s visible text is compared to your match text. If zero or more than one container matches, the row fails (BUU never guesses which one).</div>' +
+    '</div></div>';
+  return toggle + container + matchRow;
+}
 function tokenBar(sid, field) {
   // v1.2.5 item 2.5 (Build-side): chips are drag-only. The `field` arg is no longer
   // consulted - chips can drop onto any text input in this step's body. Kept on
@@ -1589,15 +1651,15 @@ function tokenBar(sid, field) {
 function bodyHTML(s) {
   if(s.type==='navigate') return tokenBar(s.id,'url') + '<div class="row">' + valField(s.id,'url',s.url||'','{{URL}} or https://…','URL') + '<div class="fg"><label>Wait after navigate</label><select onchange="u(' + s.id + ',\'waitAfter\',this.value)"><option ' + (!s.waitAfter||s.waitAfter==='load'?'selected':'') + ' value="load">Wait for page load</option><option ' + (s.waitAfter==='networkidle'?'selected':'') + ' value="networkidle">Wait for network idle</option><option ' + (s.waitAfter==='none'?'selected':'') + ' value="none">No wait</option></select></div></div>';
 
-  if(s.type==='click') return '<div class="row">' + selField(s.id,'selector',s.selector||'','button[type="submit"]','CSS selector') + '<div class="fg"><label>Wait for element after click (optional)</label><div class="sel-wrap"><input type="text" id="fi-' + s.id + '-waitFor" value="' + esc(s.waitFor) + '" placeholder=".success-toast" oninput="u(' + s.id + ',\'waitFor\',this.value)" onfocus="pendingInsertId=' + s.id + ';pendingInsertField=\'waitFor\'"/><button class="paste-btn" onclick="openPasteModal(' + s.id + ',\'waitFor\')">Paste HTML</button></div></div></div><div class="row"><div class="fg"><label style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;color:var(--amber)"><input type="checkbox" ' + (s.debugClick?'checked':'') + ' onchange="u(' + s.id + ',\'debugClick\',this.checked)" style="width:16px;height:16px;cursor:pointer"/>🐛 Debug this click step</label><div class="hint">When checked, the runner dumps Playwright\'s view of the selector before attempting it (top-frame match count, visibility, bounding box, all iframes scanned). Output goes to the runner.log. Useful when a click stalls or fails for unclear reasons. Turn off after debugging — adds a small per-step overhead.</div></div></div>';
+  if(s.type==='click') return '<div class="row">' + selField(s.id,'selector',s.selector||'','button[type="submit"]','CSS selector') + '<div class="fg"><label>Wait for element after click (optional)</label><div class="sel-wrap"><input type="text" id="fi-' + s.id + '-waitFor" value="' + esc(s.waitFor) + '" placeholder=".success-toast" oninput="u(' + s.id + ',\'waitFor\',this.value)" onfocus="pendingInsertId=' + s.id + ';pendingInsertField=\'waitFor\'"/><button class="paste-btn" onclick="openPasteModal(' + s.id + ',\'waitFor\')">Paste HTML</button></div></div></div>' + findByTextBlock(s) + '<div class="row"><div class="fg"><label style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;color:var(--amber)"><input type="checkbox" ' + (s.debugClick?'checked':'') + ' onchange="u(' + s.id + ',\'debugClick\',this.checked)" style="width:16px;height:16px;cursor:pointer"/>🐛 Debug this click step</label><div class="hint">When checked, the runner dumps Playwright\'s view of the selector before attempting it (top-frame match count, visibility, bounding box, all iframes scanned). Output goes to the runner.log. Useful when a click stalls or fails for unclear reasons. Turn off after debugging — adds a small per-step overhead.</div></div></div>';
 
-  if(s.type==='type') return tokenBar(s.id,'value') + '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="firstName"]','CSS selector') + valField(s.id,'value',s.value||'','{{First name}}','Value to type') + '</div><div class="row"><div class="fg"><label>Clear field first?</label><select onchange="u(' + s.id + ',\'clearFirst\',this.value)"><option ' + (s.clearFirst!=='no'?'selected':'') + ' value="yes">Yes — clear before typing</option><option ' + (s.clearFirst==='no'?'selected':'') + ' value="no">No — append</option></select></div><div class="fg"><label>Typing delay (ms/char)</label><input type="number" value="' + (s.typeDelay||0) + '" min="0" max="300" oninput="u(' + s.id + ',\'typeDelay\',this.value)"/><div class="hint">0 = instant. 50–100ms simulates human typing.</div></div></div>';
+  if(s.type==='type') return tokenBar(s.id,'value') + '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="firstName"]','CSS selector') + valField(s.id,'value',s.value||'','{{First name}}','Value to type') + '</div><div class="row"><div class="fg"><label>Clear field first?</label><select onchange="u(' + s.id + ',\'clearFirst\',this.value)"><option ' + (s.clearFirst!=='no'?'selected':'') + ' value="yes">Yes — clear before typing</option><option ' + (s.clearFirst==='no'?'selected':'') + ' value="no">No — append</option></select></div><div class="fg"><label>Typing delay (ms/char)</label><input type="number" value="' + (s.typeDelay||0) + '" min="0" max="300" oninput="u(' + s.id + ',\'typeDelay\',this.value)"/><div class="hint">0 = instant. 50–100ms simulates human typing.</div></div></div>' + findByTextBlock(s);
 
-  if(s.type==='select') return tokenBar(s.id,'value') + '<div class="row">' + selField(s.id,'selector',s.selector||'','select[name="status"]','CSS selector') + valField(s.id,'value',s.value||'','{{Status}} or Active','Option to select') + '</div>';
+  if(s.type==='select') return tokenBar(s.id,'value') + '<div class="row">' + selField(s.id,'selector',s.selector||'','select[name="status"]','CSS selector') + valField(s.id,'value',s.value||'','{{Status}} or Active','Option to select') + '</div>' + findByTextBlock(s);
 
-  if(s.type==='checkbox') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="optIn"]','CSS selector') + '<div class="fg"><label>Action</label><select onchange="u(' + s.id + ',\'checkAction\',this.value);renderSteps()"><option ' + (!s.checkAction||s.checkAction==='check'?'selected':'') + ' value="check">Always check</option><option ' + (s.checkAction==='uncheck'?'selected':'') + ' value="uncheck">Always uncheck</option><option ' + (s.checkAction==='toggle'?'selected':'') + ' value="toggle">Toggle</option><option ' + (s.checkAction==='conditional'?'selected':'') + ' value="conditional">Conditional — from column</option></select></div></div>' + (s.checkAction==='conditional' ? tokenBar(s.id,'condCol') + '<div class="row">' + valField(s.id,'condCol',s.condCol||'','{{Opt in}}','Column to read') + '<div class="fg"><label>Truthy values (comma separated)</label><input type="text" value="' + (esc(s.truthyVals)||'yes,true,1,x') + '" oninput="u(' + s.id + ',\'truthyVals\',this.value)"/><div class="hint">Case-insensitive. Checks box if cell matches any of these.</div></div></div>' : '');
+  if(s.type==='checkbox') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="optIn"]','CSS selector') + '<div class="fg"><label>Action</label><select onchange="u(' + s.id + ',\'checkAction\',this.value);renderSteps()"><option ' + (!s.checkAction||s.checkAction==='check'?'selected':'') + ' value="check">Always check</option><option ' + (s.checkAction==='uncheck'?'selected':'') + ' value="uncheck">Always uncheck</option><option ' + (s.checkAction==='toggle'?'selected':'') + ' value="toggle">Toggle</option><option ' + (s.checkAction==='conditional'?'selected':'') + ' value="conditional">Conditional — from column</option></select></div></div>' + (s.checkAction==='conditional' ? tokenBar(s.id,'condCol') + '<div class="row">' + valField(s.id,'condCol',s.condCol||'','{{Opt in}}','Column to read') + '<div class="fg"><label>Truthy values (comma separated)</label><input type="text" value="' + (esc(s.truthyVals)||'yes,true,1,x') + '" oninput="u(' + s.id + ',\'truthyVals\',this.value)"/><div class="hint">Case-insensitive. Checks box if cell matches any of these.</div></div></div>' : '') + findByTextBlock(s);
 
-  if(s.type==='clear') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="notes"]','CSS selector') + '</div>';
+  if(s.type==='clear') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="notes"]','CSS selector') + '</div>' + findByTextBlock(s);
 
   if(s.type==='wait') return '<div class="row"><div class="fg"><label>Wait type</label><select onchange="u(' + s.id + ',\'waitType\',this.value);renderSteps()"><option ' + (!s.waitType||s.waitType==='fixed'?'selected':'') + ' value="fixed">Fixed duration</option><option ' + (s.waitType==='random'?'selected':'') + ' value="random">Random range</option><option ' + (s.waitType==='element'?'selected':'') + ' value="element">Wait for element</option><option ' + (s.waitType==='navigation'?'selected':'') + ' value="navigation">Wait for navigation</option></select><div class="hint">All times in <strong>seconds</strong> — converted to ms in the script</div></div>' +
     ((!s.waitType||s.waitType==='fixed') ? '<div class="fg"><label>Duration (seconds)</label><input type="number" value="' + (s.waitSec||1) + '" min="0" step="0.1" oninput="u(' + s.id + ',\'waitSec\',this.value)"/></div>' : '') +
@@ -1605,7 +1667,7 @@ function bodyHTML(s) {
     (s.waitType==='element' ? '<div class="fg"><label>CSS selector to wait for</label><div class="sel-wrap"><input type="text" id="fi-' + s.id + '-waitSel" value="' + esc(s.waitSel) + '" placeholder=".success-banner" oninput="u(' + s.id + ',\'waitSel\',this.value)" onfocus="pendingInsertId=' + s.id + ';pendingInsertField=\'waitSel\'"/><button class="paste-btn" onclick="openPasteModal(' + s.id + ',\'waitSel\')">Paste HTML</button></div></div>' : '') +
     '</div>';
 
-  if(s.type==='assert') return '<div class="row">' + selField(s.id,'selector',s.selector||'','.toast-success','CSS selector to verify') + '<div class="fg"><label>Expected text (optional)</label><input type="text" id="fi-' + s.id + '-expected" value="' + esc(s.expected) + '" placeholder="Record saved" oninput="u(' + s.id + ',\'expected\',this.value)"/></div></div><div class="row"><div class="fg"><label>On failure</label><select onchange="u(' + s.id + ',\'onFail\',this.value)"><option ' + (!s.onFail||s.onFail==='stop'?'selected':'') + ' value="stop">Stop automation</option><option ' + (s.onFail==='skip'?'selected':'') + ' value="skip">Skip row</option><option ' + (s.onFail==='log'?'selected':'') + ' value="log">Log and continue</option></select></div></div>';
+  if(s.type==='assert') return '<div class="row">' + selField(s.id,'selector',s.selector||'','.toast-success','CSS selector to verify') + '<div class="fg"><label>Expected text (optional)</label><input type="text" id="fi-' + s.id + '-expected" value="' + esc(s.expected) + '" placeholder="Record saved" oninput="u(' + s.id + ',\'expected\',this.value)"/></div></div>' + findByTextBlock(s) + '<div class="row"><div class="fg"><label>On failure</label><select onchange="u(' + s.id + ',\'onFail\',this.value)"><option ' + (!s.onFail||s.onFail==='stop'?'selected':'') + ' value="stop">Stop automation</option><option ' + (s.onFail==='skip'?'selected':'') + ' value="skip">Skip row</option><option ' + (s.onFail==='log'?'selected':'') + ' value="log">Log and continue</option></select></div></div>';
 
   if(s.type==='dialog') return '<div class="row"><div class="fg"><label>Action</label><select onchange="u(' + s.id + ',\'dialogAction\',this.value)"><option ' + (!s.dialogAction||s.dialogAction==='accept'?'selected':'') + ' value="accept">Accept (click OK / confirm)</option><option ' + (s.dialogAction==='dismiss'?'selected':'') + ' value="dismiss">Dismiss (click Cancel)</option></select><div class="hint">Accept clicks OK on confirm dialogs. Dismiss clicks Cancel.</div></div><div class="fg"><label>Only trigger if dialog contains (optional)</label><input type="text" id="fi-' + s.id + '-dialogMatch" value="' + esc(s.dialogMatch) + '" placeholder="e.g. delete, are you sure" oninput="u(' + s.id + ',\'dialogMatch\',this.value)"/><div class="hint">Leave blank to handle any dialog. If set, only handles dialogs where the message contains this text.</div></div></div>';
   if(s.type==='textedit') {
@@ -1675,6 +1737,52 @@ function syncDelayMax() {
 }
 function toggleVisibility() { headless=!headless; const btn=document.getElementById('visToggle'); const lbl=document.getElementById('visLabel'); btn.classList.toggle('on',!headless); lbl.textContent=headless?'Hidden — runs in background':'Visible — watch it work'; }
 
+// v1.3.0 Item 8: validate {{token}} brace pairing in a field value. The runner's token
+// resolver only substitutes well-formed {{...}} pairs; anything malformed passes through
+// as literal text and silently corrupts the value written to PestPac (e.g. "{{First name}"
+// becomes the literal string instead of the column value). This catches the common typos
+// at save/validation time so the user sees them before a run.
+//
+// Returns an array of {t, msg} issue objects (t = 'err' | 'warn'). Empty array = clean.
+// Detects:
+//   - unbalanced brace counts (more { than } or vice versa)
+//   - a lone single brace where a double was clearly intended (e.g. "{First name}}")
+//   - empty token "{{}}"
+//   - nested/doubled-up openers like "{{{" or "{{ {{"
+// Does NOT flag a single { or } that is clearly intentional literal text with no other
+// braces around it (e.g. a JSON snippet) — only flags when {{ or }} appears, signaling
+// token intent. Conservative: when in doubt, warn rather than error so we don't block.
+function validateBracePairs(text){
+  const issues = [];
+  if(!text || typeof text !== 'string') return issues;
+  // Quick exit: no braces at all.
+  if(text.indexOf('{') === -1 && text.indexOf('}') === -1) return issues;
+  const opens = (text.match(/\{/g) || []).length;
+  const closes = (text.match(/\}/g) || []).length;
+  // Empty token.
+  if(/\{\{\s*\}\}/.test(text)){
+    issues.push({t:'err', msg:'Empty token "{{}}" — put a column name or token inside, or remove the braces.'});
+  }
+  // Triple-or-more opener / closer — almost always a typo.
+  if(/\{\{\{/.test(text) || /\}\}\}/.test(text)){
+    issues.push({t:'err', msg:'Too many braces ("{{{" or "}}}"). Tokens use exactly two: {{Column}}.'});
+  }
+  // Unbalanced total count. This catches "{{First name}" (3 vs 2) and "{First name}}" (1 vs 2).
+  if(opens !== closes){
+    issues.push({t:'err', msg:'Unbalanced braces: ' + opens + ' "{" vs ' + closes + ' "}". Each token needs matching {{ and }}.'});
+  } else {
+    // Counts match but pairing might still be wrong, e.g. "{First}name}" or "}}First{{".
+    // Strip well-formed tokens, then see if any stray brace remains.
+    const stripped = text.replace(/\{\{[^{}]*\}\}/g, '');
+    if(stripped.indexOf('{') !== -1 || stripped.indexOf('}') !== -1){
+      // Some braces aren't part of a clean {{...}} pair. Warn (not err) — could be an
+      // intentional literal brace, but more often it's a malformed token.
+      issues.push({t:'warn', msg:'Stray "{" or "}" outside a {{token}}. If you meant a token, use {{Name}}; if you meant a literal brace, ignore this.'});
+    }
+  }
+  return issues;
+}
+
 function runValidation() {
   const items=[],all=allSteps();
   let errs=0,warns=0;
@@ -1717,10 +1825,32 @@ function runValidation() {
       if(m==='remove-after'&&!s.charVal){issues.push({t:'warn',msg:'No character defined to split on.'});warns++;}
       if(m==='remove-before'&&!s.charVal){issues.push({t:'warn',msg:'No character defined to split on.'});warns++;}
     }
+    // v1.3.0 Item 8: brace-pair validation on all token-accepting fields. Runs before the
+    // token-in-spreadsheet check below. Catches malformed braces ("{{Name}", "{{}}", "{{{")
+    // that the well-formed-token regex silently skips. textedit search/replace fields accept
+    // tokens too, so they're included here even though they're not in the substitution check.
+    [s.value,s.url,s.condCol,s.searchVal,s.replaceVal].filter(v=>typeof v==='string'&&v.length).forEach(v=>{
+      validateBracePairs(v).forEach(bi=>{
+        issues.push(bi);
+        if(bi.t==='err') errs++; else warns++;
+      });
+    });
+    // v1.3.0 Item 1: find-by-text scope validation. When on, the step needs a container
+    // selector + match text, and the existing selector is the in-row target.
+    if(s.findByText){
+      if(!s.containerSel){issues.push({t:'err',msg:'Find-by-text is on but no container selector. Add the CSS for the repeating item (e.g. tr).'});errs++;}
+      if(!s.matchText){issues.push({t:'err',msg:'Find-by-text is on but no match text. Add the value (or {{Column}}) that identifies the right one.'});errs++;}
+      if(!s.selector){issues.push({t:'warn',msg:'Find-by-text is on but no target selector inside the matched item. Leave blank only if you mean to act on the whole container.'});warns++;}
+      // The match text accepts tokens too — brace-check it (added below for value/url already,
+      // but matchText isn't in that list, so check it here).
+      if(typeof s.matchText==='string'){
+        validateBracePairs(s.matchText).forEach(bi=>{ issues.push(bi); if(bi.t==='err') errs++; else warns++; });
+      }
+    }
     // v1.2.8: token validation branches on runMode.
     // Per-row flows: column names valid, CRED:* always valid, run-context tokens valid.
     // Once-flows: column names INVALID (no spreadsheet bound), CRED:* always valid, run-context tokens valid.
-    [s.value,s.url,s.condCol].filter(Boolean).forEach(v=>{
+    [s.value,s.url,s.condCol,s.matchText].filter(Boolean).forEach(v=>{
       [...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{
         const ref = m[1];
         if(ref.startsWith('CRED:')) return;  // credential refs always allowed
@@ -1839,6 +1969,8 @@ function updateStartModeHint(){
 }
 
 async function startRun(){
+  // v1.3.0 Item 3: log entry state so a stuck-second-start reproduction shows what was true on click.
+  console.log('[run] startRun: called, isRunning=' + isRunning + ', currentRunId=' + currentRunId + ', _stopInProgress=' + _stopInProgress);
   if(isRunning){alert('An automation is already running. Stop it first or wait for it to finish.');return;}
   if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
   if(!steps.length){alert('No steps defined. Build your flow first.');go('builder');return;}
@@ -1866,11 +1998,10 @@ async function startRun(){
   document.getElementById('runStatusMsg').style.color='var(--blue)';
   document.getElementById('runBtn').style.display='none';
   document.getElementById('stopBtn').style.display='';
-  document.getElementById('pauseBtn').style.display='';
   document.getElementById('nb-run').style.display='';
   // Lock the start-mode picker while running.
   const _smSel=document.getElementById('startModeSel'); if(_smSel)_smSel.disabled=true;
-  isRunning=true;isPaused=false;
+  isRunning=true;
   refreshRunBtn();
   go('run');
   if(!API.startAutomation){
@@ -1952,7 +2083,7 @@ async function retryFailedRows(){
   const confirmed = confirm('Retry '+n+' failed row'+(n===1?'':'s')+'?\n\n• Spreadsheet: '+snap.spreadsheetName+'\n• Profile: '+(profiles.find(p=>p.id===snap.profileId)||{}).name+'\n• Settings: same as original run (selector timeout, retry count, etc.)\n• A separate log file will be written for this retry.\n\nFailed rows: '+_failedRowIndexesThisRun.slice(0,20).join(', ')+(n>20?', + '+(n-20)+' more':''));
   if(!confirmed) return;
   // Set up renderer state for the retry run, mirroring startRun()'s lead-in.
-  isRunning=true;isPaused=false;
+  isRunning=true;
   refreshRunBtn();
   go('run');
   if(!API.startAutomation){alert('Internal error: automation API not available.');isRunning=false;refreshRunBtn();return;}
@@ -1974,7 +2105,6 @@ async function retryFailedRows(){
   document.getElementById('runStatusMsg').style.color='var(--blue)';
   document.getElementById('runBtn').style.display='none';
   document.getElementById('stopBtn').style.display='';
-  document.getElementById('pauseBtn').style.display='';
   document.getElementById('nb-run').style.display='';
   const _smSel=document.getElementById('startModeSel');if(_smSel)_smSel.disabled=true;
   const result = await API.startAutomation({
@@ -2007,8 +2137,12 @@ async function retryFailedRows(){
 // Uses clean-shutdown semantics (stdin command -> runner's __STOP__ sentinel -> finally block
 // runs with all the 2.7 checkpoint preservation logic). Disables Run button immediately so
 // a double-click during the stop window doesn't hit "already running."
+// v1.3.0 Item 3: added a 5-second safety timer. If the clean exit path doesn't fire runStopped()
+// (because the runner is hung, the close event got lost, etc.), the timer forces runStopped()
+// so the UI never gets permanently stuck on "Stopping…".
 let _stopInProgress = false;
 async function requestStop(){
+  console.log('[run] requestStop: called, isRunning=' + isRunning + ', _stopInProgress=' + _stopInProgress + ', currentRunId=' + currentRunId);
   if(_stopInProgress) return;  // ignore double-clicks during stop window
   if(!confirm('Stop the automation? The current row will finish, the log will be saved, and you can resume next launch from the Discard/Resume modal.')) return;
   _stopInProgress = true;
@@ -2018,10 +2152,21 @@ async function requestStop(){
   document.getElementById('runStatusMsg').textContent = 'Stopping… (waiting for current row to finish)';
   document.getElementById('runStatusMsg').style.color = 'var(--amber)';
   hidePause();
+  // v1.3.0 Item 3: safety timer. Capture currentRunId so a later run doesn't get its UI nuked
+  // by a stale timer if the user starts a new run within 5 seconds of stopping the previous one.
+  const _stopRunId = currentRunId;
+  setTimeout(() => {
+    if (_stopInProgress && currentRunId === _stopRunId) {
+      console.warn('[run] requestStop: SAFETY TIMER fired after 5s — runner did not exit cleanly. Forcing runStopped().');
+      runStopped();
+    }
+  }, 5000);
   if(API.runControl){
+    console.log('[run] requestStop: sending runControl({cmd:stop})');
     await API.runControl({runId: currentRunId, cmd: 'stop'});
   }else if(API.stopAutomation){
     // Fallback for older preload bridges. Force-kill is worse but better than nothing.
+    console.log('[run] requestStop: runControl unavailable, falling back to stopAutomation (force-kill)');
     await API.stopAutomation();
     runStopped();  // synchronous fallback since force-kill bypasses the done event
   }
@@ -2031,14 +2176,34 @@ async function requestStop(){
 
 async function stopRun(){return requestStop();}
 async function paneStop(){return requestStop();}
-async function togglePause(){if(isPaused){if(API.resumeRun)await API.resumeRun();isPaused=false;document.getElementById('pauseBtn').textContent='⏸ Pause';document.getElementById('runStatusMsg').textContent='Running…';document.getElementById('runStatusMsg').style.color='var(--green)';}else{if(API.pauseRun)await API.pauseRun();isPaused=true;document.getElementById('pauseBtn').textContent='▶ Resume';document.getElementById('runStatusMsg').textContent='Paused';document.getElementById('runStatusMsg').style.color='var(--amber)';}}
+// v1.3.0 Item 11: togglePause() removed. The function called API.pauseRun / API.resumeRun
+// which were never exposed by preload.js, so the button never did anything. Stop already
+// provides graceful safe-boundary halt.
 function runStopped(){
-  isRunning=false;isPaused=false;
+  // v1.3.0 Item 3: log entry state so we can see whether multiple callers raced into runStopped
+  // (clean path + safety timer + done event, etc.). The idempotent short-circuit below covers it.
+  console.log('[run] runStopped: entered, isRunning=' + isRunning + ', _stopInProgress=' + _stopInProgress + ', currentRunId=' + currentRunId);
+  // v1.3.0 Item 3: idempotent short-circuit. Safe to call from both the 'done' event handler
+  // AND the requestStop() safety timer. Whichever runs second is a no-op.
+  if (!isRunning && !_stopInProgress) {
+    console.log('[run] runStopped: already idle, short-circuiting');
+    return;
+  }
+  isRunning=false;
   // v1.2.5 item 2.4: clear stop-in-progress and re-enable buttons disabled by requestStop().
   _stopInProgress=false;
+  // v1.3.0 Item 3: reset additional state that previously leaked across runs. currentRunMode
+  // and the phase-indicator pip styles were not cleared, so a flow with a setup/teardown left
+  // pips lit on the next Run. These additions don't change Stop semantics, they just make sure
+  // every visible piece of state matches "idle" after a stop.
+  currentRunMode='run-all';
+  if (typeof updatePhaseIndicator === 'function') {
+    try {
+      ['setup','main','teardown'].forEach(p => updatePhaseIndicator(p, 'pending'));
+    } catch {}
+  }
   const runBtn=document.getElementById('runBtn');runBtn.style.display='';runBtn.disabled=false;
   const stopBtn=document.getElementById('stopBtn');stopBtn.style.display='none';stopBtn.disabled=false;
-  document.getElementById('pauseBtn').style.display='none';
   document.getElementById('nb-run').style.display='none';
   document.getElementById('runStatusMsg').textContent='Stopped';
   document.getElementById('runStatusMsg').style.color='var(--red)';
@@ -2046,6 +2211,7 @@ function runStopped(){
   const _smSel=document.getElementById('startModeSel');if(_smSel)_smSel.disabled=false;
   currentRunId=null;
   const _pp=document.getElementById('pausePanel');if(_pp)_pp.style.display='none';
+  console.log('[run] runStopped: complete, state reset');
 }
 
 // ── RESUME-ON-LAUNCH ──────────────────────────────────────────────────────
@@ -2222,9 +2388,8 @@ async function executeResume(orphan, profileId, resumeAction){
   document.getElementById('runStatusMsg').style.color='var(--blue)';
   document.getElementById('runBtn').style.display='none';
   document.getElementById('stopBtn').style.display='';
-  document.getElementById('pauseBtn').style.display='';
   document.getElementById('nb-run').style.display='';
-  isRunning=true;isPaused=false;
+  isRunning=true;
   refreshRunBtn();
   go('run');
 
@@ -2299,7 +2464,12 @@ function handleRunEvent(evt){
   else if(evt.type==='pause-step'){
     currentRunMode='step';
     showPause('step', evt);
-    addLiveLog('Paused before step '+(evt.stepIndex+1)+'/'+evt.totalSteps+' on row '+evt.rowIndex,'warn');
+    // v1.3.0 Item 9: phase-aware live-log line (setup/teardown have no row).
+    if(evt.phase==='setup' || evt.phase==='teardown'){
+      addLiveLog('Paused before '+evt.phase+' step '+(evt.stepIndex+1)+'/'+evt.totalSteps,'warn');
+    } else {
+      addLiveLog('Paused before step '+(evt.stepIndex+1)+'/'+evt.totalSteps+' on row '+evt.rowIndex,'warn');
+    }
   }
   else if(evt.type==='pause-row'){
     currentRunMode='step-row';
@@ -2321,7 +2491,17 @@ function handleRunEvent(evt){
     // Background alert so user notices on a long-running unattended overnight job.
     setTimeout(()=>{alert('Circuit breaker tripped\n\n'+evt.consecutiveErrors+' consecutive errors starting near row '+(evt.lastSuccessfulRow||'?')+'.\n\nThe run was stopped to prevent further wasted time. Your checkpoint has been preserved — relaunch BUU to resume from the last successful row.');},200);
   }
-  else if(evt.type==='row-start'){hidePause();addLiveLog('Row '+evt.rowIndex+'/'+evt.totalRows+': '+(evt.url||''),'info');document.getElementById('runStatusMsg').textContent='Row '+evt.rowIndex+' of '+evt.totalRows.toLocaleString()+'…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
+  else if(evt.type==='row-start'){
+    // v1.3.0 Item 3a: do NOT hidePause() here. Earlier code hid the pause panel on every
+    // row-start, then the next pause-step event re-mounted it — producing a visible flicker
+    // between steps in step mode. The next pause event updates the panel content correctly;
+    // hiding/re-showing serves no purpose. hidePause() is still called from the deliberate
+    // "leaving paused state" paths: paneNextStep, paneNextRow, paneRunAll, runStopped, and
+    // the stopped/fatal/complete event handlers.
+    addLiveLog('Row '+evt.rowIndex+'/'+evt.totalRows+': '+(evt.url||''),'info');
+    document.getElementById('runStatusMsg').textContent='Row '+evt.rowIndex+' of '+evt.totalRows.toLocaleString()+'…';
+    document.getElementById('runStatusMsg').style.color='var(--blue)';
+  }
   else if(evt.type==='row-done'){runRowsDone=evt.rowIndex;runOk=evt.ok||runOk+1;runErr=evt.errs||runErr;runSkip=evt.skipped||runSkip;addLiveLog('✓ Row '+evt.rowIndex+' done ('+evt.durationMs+'ms)','ok');addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:'ok',duration:evt.durationMs,url:evt.url||'',fieldsWritten:evt.fieldsWritten||'',failedStep:'',error:''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
   else if(evt.type==='row-error'){runRowsDone=evt.rowIndex;runErr=evt.errs||runErr+1;runOk=evt.ok||runOk;runSkip=evt.skipped||runSkip;
     // v1.2.5 item 2.10 (Phase 8): runner now passes evt.status so we can distinguish
@@ -2388,7 +2568,13 @@ function handleRunEvent(evt){
       }
     }
   }
-  else if(evt.type==='done'||evt.type==='closed'){if(isRunning){addLiveLog('Process exited (code '+( evt.code||0)+')','warn');hidePause();runStopped();}if(evt.logPath&&!currentLogPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';}}
+  else if(evt.type==='done'||evt.type==='closed'){
+    // v1.3.0 Item 3: log the done/closed event so we can confirm it actually fires (the
+    // "can't run second flow" symptom is consistent with this never reaching the renderer).
+    console.log('[run] handleRunEvent: ' + evt.type + ' received, code=' + (evt.code||0) + ', isRunning=' + isRunning + ', runId=' + (evt.runId||'(none)'));
+    if(isRunning){addLiveLog('Process exited (code '+( evt.code||0)+')','warn');hidePause();runStopped();}
+    if(evt.logPath&&!currentLogPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';}
+  }
 }
 
 // ── PAUSE-STATE UI (v1.2.4) ─────────────────────────────────────────────────
@@ -2404,19 +2590,33 @@ function showPause(kind, evt){
   const nextRowBtn=document.getElementById('paneNextRowBtn');
 
   if(kind==='step'){
-    pos.textContent='Row '+evt.rowIndex+' of '+(evt.totalRows||'?')+' · step '+(evt.stepIndex+1)+' of '+evt.totalSteps;
+    // v1.3.0 Item 9: setup/teardown pauses carry evt.phase ('setup'/'teardown') and have
+    // no rowIndex. Label them by phase instead of "Row undefined". Main-flow pauses keep
+    // the row-based label.
+    if(evt.phase==='setup' || evt.phase==='teardown'){
+      const _ph = evt.phase==='setup' ? 'Setup' : 'Teardown';
+      pos.textContent=_ph+' · step '+(evt.stepIndex+1)+' of '+evt.totalSteps;
+    } else {
+      pos.textContent='Row '+evt.rowIndex+' of '+(evt.totalRows||'?')+' · step '+(evt.stepIndex+1)+' of '+evt.totalSteps;
+    }
     preview.style.display='';
     rowDataPanel.style.display='';
     const s=evt.step||{};
     document.getElementById('pausePreviewLabel').textContent=(s.label||s.type||'(step)')+'  ['+(s.type||'')+']';
     document.getElementById('pausePreviewSel').textContent=s.selector||'(no selector for this step type)';
     document.getElementById('pausePreviewVal').textContent=s.value||'(no resolved value)';
-    // Show row data as key:value lines, capped to keep UI compact
+    // Show row data as key:value lines, capped to keep UI compact.
+    // Setup/teardown have no row — hide the row-data panel for those.
     const row=evt.row||{};
-    const lines=Object.keys(row).slice(0,30).map(k=>k+': '+String(row[k])).join('\n');
-    document.getElementById('pauseRowDataBody').textContent=lines||'(empty row)';
+    if(evt.phase==='setup' || evt.phase==='teardown'){
+      rowDataPanel.style.display='none';
+    } else {
+      const lines=Object.keys(row).slice(0,30).map(k=>k+': '+String(row[k])).join('\n');
+      document.getElementById('pauseRowDataBody').textContent=lines||'(empty row)';
+    }
     nextStepBtn.style.display='';
-    nextRowBtn.style.display='';
+    // Next-row makes no sense in a once-flow phase — hide it for setup/teardown.
+    nextRowBtn.style.display=(evt.phase==='setup' || evt.phase==='teardown') ? 'none' : '';
   } else if(kind==='step-row'){
     pos.textContent='Completed row '+evt.rowIndex+' of '+(evt.totalRows||'?')+' · '+(evt.ok||0)+' ok / '+(evt.errs||0)+' err / '+(evt.skipped||0)+' skip';
     preview.style.display='none';
@@ -2708,7 +2908,36 @@ async function loadFlow(){
 function openFlowsFolder(){if(API.openFlowsFolder)API.openFlowsFolder();}
 async function checkUpdates(){if(API.checkForUpdates)await API.checkForUpdates();else alert('Update checks only work in the desktop app.');}
 async function doUpdate(){if(!updInfo||!API.installUpdate)return;document.getElementById('updBtn').disabled=true;const r=await API.installUpdate({downloadUrl:updInfo.downloadUrl});if(!r.ok)alert('Update failed: '+r.error);}
-function refreshRunBtn(){document.getElementById('runBtn').disabled=!(!isRunning&&steps.length>0&&activeProfileId&&ssPath);}
+// v1.3.0 Item 4: toolbar Run button serves double duty. When idle with a previous log
+// and the Run gate-conditions aren't met (no flow/profile/spreadsheet loaded), the button
+// becomes "Open last log" instead of sitting disabled and gray. When the Run conditions
+// ARE met, it's the normal Run button. runBtnClick() routes to the right action.
+function runBtnClick(){
+  const canRun = (!isRunning && steps.length > 0 && activeProfileId && ssPath);
+  if(!isRunning && currentLogPath && !canRun){
+    return API.openFile && API.openFile(currentLogPath);
+  }
+  return startRun();
+}
+function refreshRunBtn(){
+  const btn = document.getElementById('runBtn');
+  const lbl = document.getElementById('runBtnLbl');
+  const icon = document.getElementById('runBtnIcon');
+  const canRun = (!isRunning && steps.length > 0 && activeProfileId && ssPath);
+  // "Open last log" mode: idle, a log exists, Run conditions not met.
+  if (!isRunning && currentLogPath && !canRun) {
+    btn.disabled = false;
+    if (lbl) lbl.textContent = 'Open last log';
+    if (icon) icon.innerHTML = '<path d="M3 3h7l3 3v7H3z" stroke-linejoin="round"/><path d="M10 3v3h3"/>';
+    btn.classList.remove('grn');
+    return;
+  }
+  // Normal Run mode.
+  btn.disabled = !canRun;
+  if (lbl) lbl.textContent = 'Run automation';
+  if (icon) icon.innerHTML = '<polygon points="3,2 14,8 3,14"/>';
+  btn.classList.add('grn');
+}
 
 function seedExampleSteps(){steps=[{id:nid++,type:'navigate',url:'{{URL}}',waitAfter:'load',open:false}];renderSteps();}
 </script>
