@@ -17,6 +17,44 @@
   push rather than during the session, and prefers brutal honesty over softened status reports.
 - This block is intentionally redundant across design docs so any fresh session sees it.
 
+## CURRENT STATE (updated 2026-05-20) — READ THIS
+
+**SHIPPED:** v1.3.0 through v1.3.3 are all built, pushed, and published to GitHub.
+- v1.3.0 = the 11-item polish/bugfix release (find-by-text, step-mode setup/teardown, stop/restart
+  hardening, brace validation, Open-last-log, drag-handle text-selection, Pause-button removal, etc.).
+- v1.3.0 also tried `perMachine: true` (taskbar-pin experiment) — **Smart App Control hard-blocked it,
+  REVERTED to perMachine:false**, asset re-uploaded. Do not retry perMachine without a different approach.
+- v1.3.1 = diagnostic build (red bar) to prove the build pipeline reaches the screen.
+- v1.3.2 = real UI-size fix: native Chromium zoom (the CSS font bump never cascaded because elements pin
+  their own px). Removed red bar.
+- v1.3.3 = zoom raised to 1.35; window now sizes to 85% of the actual screen work area (screen-relative,
+  via electron `screen` module in main.js createWindow), not fixed pixels. **CURRENT SHIPPED VERSION.**
+
+**NEXT UP: v1.3.4 — full backlog is in `BUU-v1.3.4-DESIGN.md`.** Items captured 2026-05-20 from a long
+live-use session building a zip→salesperson reassignment flow against PestPac's TechnicianAutoFill lookup
+table. Summary (detail + where-to-look + effort in the 1.3.4 doc):
+- **A** — multi-condition match builder for find-by-text (+ button, per-line mode + AND/OR/NOT; replaces
+  single match field; includes regex-escaping fix). The big feature.
+- **B** — find-by-text container field's Paste HTML extracts the per-row `id`, not the stable class.
+- **C** — workbook load grabs sheet index 0 even when HIDDEN; should load first VISIBLE sheet.
+- **D** — drag-and-drop of column-token chips into fields not working (needs repro; suspect v1.3.0 Item 2).
+- **E** — validation shows error/warn COUNTS but not the messages; surface them + consolidated pre-run list.
+- **F** — pause/verification panel disappears on "Next Step" (paneNextStep calls hidePause; Item 3a variant).
+- **G** — "No URL column found" errors even when a hardcoded http URL is in a navigate step; relax the check.
+- **H** — can't right-click (context menu) into Paste HTML box; + audit ALL inputs for right-click/copy/paste.
+- **I** — run guard stuck after Stop ("Another automation is already running", 0 done); Stop doesn't clear
+  the main-process `automationProcesses` Map (v1.3.0 Item 3 only fixed renderer state, not the backend map).
+- **J** — step drag-reorder has no auto-scroll while dragging (worse now that UI is bigger).
+- **K** — step drag-reorder shows TWO drop lines, only one works, hit zone too narrow; make ONE smooth line.
+- **CF-1** — historical run-log scanning never built (oldest debt, from v1.2.4 / handoff bug 6.1).
+- **CF-2** — file-upload step (Item 13) never built; driver = ~20k docs to upload; scope depends on where
+  files live (4–5 hr local vs 20–30 hr cloud). BLOCKING QUESTION: where do the 20k files live?
+- **CF-3** — per-step on-fail flows (Item 12) never built; v1.2.8-magnitude; candidate for v1.4.0.
+- **CF-4** — BUUA hybrid backend parked on WorkWave API access (4 OAuth attempts 401'd; awaiting real
+  ClientId/ClientSecret from WorkWave support). Not missed — externally blocked.
+
+J/K/D all live in the same drag-reorder code — fix together. Suggested 1.3.4 order in the 1.3.4 doc.
+
 ---
 
 ## SESSION PICKUP NOTE (2026-05-04)
