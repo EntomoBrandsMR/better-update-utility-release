@@ -537,4 +537,40 @@ probably all be fixed together in one focused drag-reorder overhaul.
 indicator + edge auto-scroll + verify text-selection/drag-handle from Item 2 still intact). Worth doing as
 one pass since J, K, and D all live in the same drag code.
 
+---
+
+## DISCUSSION TOPIC (NOT a quick 1.3.4 item) — embed the automated browser INSIDE the BUU window instead of popping out a separate Chromium
+
+**Requested 2026-05-20 by Matthew:** "instead of popping out a whole web page, can we open the web page in
+the app?"
+
+**Why it's appealing:** single-window experience; in step mode you'd see the verification panel and the
+live automated page side-by-side; no window juggling between BUU and the popped-out Chromium.
+
+**Why it is NOT a quick add — current architecture:** BUU's runner launches a SEPARATE bundled Chromium
+(`chromium\chrome.exe`) as a child process and drives it with Playwright (`playwright-core`). That separate
+browser window is the "popout." This separate-process model is battle-tested and is the most reliable part
+of BUU — the runner ↔ browser connection is core plumbing.
+
+**Approaches (rough, in increasing risk):**
+1. Electron `BrowserView` (or `<webview>`) embedded in the BUU window, driven via CDP. Playwright would
+   need to connect to / drive the embedded view instead of spawning its own Chromium
+   (`chromium.connectOverCDP` against an embedded Electron BrowserView, or restructure so the runner targets
+   the in-app view). This is the "proper" embed but it changes how the runner attaches to the browser.
+2. Reposition/reparent Playwright's spawned Chromium window into the BUU frame — hacky, OS-specific,
+   fragile. Not recommended.
+3. Full rearchitecture to run automation against an in-app webview. Large.
+
+**Tradeoff / recommendation:** real UX win, but it touches the single most reliable subsystem in BUU. The
+project philosophy is "don't break the thing that works for a nicety." If embedding adds any flakiness to
+the automation itself, that's a far worse trade than a popout window. So: do NOT bolt this onto the 1.3.4
+bugfix batch. It deserves its own focused design pass and its own release (v1.4.x candidate), with a
+spike/prototype to confirm Playwright can reliably drive an embedded Electron BrowserView before committing.
+
+**Open questions for the design pass:** Does Playwright reliably drive an Electron BrowserView via CDP in
+this Electron version (28.3.3)? Does the bundled-Chromium-vs-Electron-Chromium version difference matter?
+How does headless mode interact with an embedded view (headless makes no sense embedded — would embedding
+force headed-only)? How does it affect the future multi-runner / 3-concurrent model (BUUA) — you can't
+embed 3 browsers in one window cleanly? Resolve these before any code.
+
 ## END
