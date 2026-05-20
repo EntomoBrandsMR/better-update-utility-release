@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.3.2';
+const CURRENT_VERSION = '1.3.3';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -2251,8 +2251,16 @@ function getIconPath() {
 
 function createWindow() {
   const iconPath = getIconPath();
+  // v1.3.x: size the window relative to the user's actual screen instead of a fixed pixel
+  // size. Use 85% of the primary display's work area (screen minus taskbar), so the window
+  // is proportionally large on any monitor and never opens bigger than the display. Floors
+  // keep it usable on very small screens. workAreaSize is valid here because createWindow
+  // runs from app.whenReady().
+  const { width: scrW, height: scrH } = screen.getPrimaryDisplay().workAreaSize;
+  const winW = Math.max(1000, Math.round(scrW * 0.85));
+  const winH = Math.max(680, Math.round(scrH * 0.85));
   mainWindow = new BrowserWindow({
-    width: 1300, height: 900, minWidth: 1000, minHeight: 680,
+    width: winW, height: winH, minWidth: 1000, minHeight: 680,
     icon: iconPath,
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
     backgroundColor: '#0f0f11', show: false, title: 'Better Update Utility'
@@ -2263,9 +2271,9 @@ function createWindow() {
   // never cascaded. Native Chromium zoom scales the ENTIRE rendered UI uniformly — fonts,
   // padding, icons — regardless of inheritance. This is the reliable "make everything bigger"
   // lever. Applied on did-finish-load because setZoomFactor before the page loads gets reset.
-  // 1.25 = 25% larger. Adjust this single number to taste.
+  // 1.35 = 35% larger. Adjust this single number to taste.
   mainWindow.webContents.on('did-finish-load', () => {
-    try { mainWindow.webContents.setZoomFactor(1.25); } catch (e) {}
+    try { mainWindow.webContents.setZoomFactor(1.35); } catch (e) {}
   });
   mainWindow.once('ready-to-show', () => { mainWindow.show(); checkForUpdates(false); });
   mainWindow.setMenuBarVisibility(false);
