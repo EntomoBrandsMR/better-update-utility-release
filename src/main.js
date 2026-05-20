@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.3.1';
+const CURRENT_VERSION = '1.3.2';
 const SERVICE_NAME = 'BetterUpdateUtility';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
@@ -2258,6 +2258,15 @@ function createWindow() {
     backgroundColor: '#0f0f11', show: false, title: 'Better Update Utility'
   });
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
+  // v1.3.1 Item 6 (real fix): the per-class CSS font bumps didn't visibly change anything
+  // because nearly every element in index.html pins its own px font-size, so bumping `body`
+  // never cascaded. Native Chromium zoom scales the ENTIRE rendered UI uniformly — fonts,
+  // padding, icons — regardless of inheritance. This is the reliable "make everything bigger"
+  // lever. Applied on did-finish-load because setZoomFactor before the page loads gets reset.
+  // 1.25 = 25% larger. Adjust this single number to taste.
+  mainWindow.webContents.on('did-finish-load', () => {
+    try { mainWindow.webContents.setZoomFactor(1.25); } catch (e) {}
+  });
   mainWindow.once('ready-to-show', () => { mainWindow.show(); checkForUpdates(false); });
   mainWindow.setMenuBarVisibility(false);
 }

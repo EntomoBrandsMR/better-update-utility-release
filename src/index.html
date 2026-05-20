@@ -50,7 +50,7 @@ html, body {
   height: 100%; overflow: hidden;
   background: var(--bg); color: var(--tx);
   font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 18px; line-height: 1.5;
+  font-size: 13px; line-height: 1.5;
 }
 
 /* ── SCROLLBAR ── */
@@ -67,9 +67,9 @@ html, body {
   position: relative;
 }
 .topbar::after {
-  content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 6px;
-  background: #ff0000;
-  opacity: 1;
+  content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, var(--blue) 0%, var(--purple) 50%, var(--teal) 100%);
+  opacity: 0.6;
 }
 .tb-logo {
   display: flex; align-items: center; gap: 9px;
