@@ -706,17 +706,20 @@ textarea { resize: vertical; min-height: 60px; }
   <!-- v1.3.4 Phase 3: worker-pool launcher. Pick N workers; rows are sharded across them
        and run headless in parallel. "Auto" fills in the hardware-suggested cap. -->
   <div id="poolControls" style="display:inline-flex;align-items:center;gap:6px;margin-left:4px">
-    <span style="font-size:11px;color:var(--t3)">Workers</span>
-    <input id="poolWorkerCount" type="number" min="1" max="100" value="4" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px">
-    <span style="font-size:11px;color:var(--t3)">Batch</span>
-    <input id="poolBatchSize" type="number" min="1" max="500" value="10" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Rows each worker claims per pull">
-    <label style="font-size:11px;color:var(--t3);display:inline-flex;align-items:center;gap:3px" title="Periodically re-check PestPac free licenses and scale workers up/down"><input id="poolElastic" type="checkbox" style="margin:0">Elastic</label>
-    <input id="poolLicBuffer" type="number" min="0" max="100" value="10" style="width:42px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Keep this many licenses free">
-    <input id="poolLicInterval" type="number" min="1" max="120" value="5" style="width:42px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="License re-check interval (minutes)">
-    <button class="tbtn" id="poolAutoBtn" onclick="poolFillAuto()" title="Suggest a worker count based on this machine's RAM/CPU">Auto</button>
-    <button class="tbtn" id="poolAddJobBtn" onclick="poolAddJob()" title="Stage the current flow+sheet as a job (for multi-flow runs)">+ Job</button>
-    <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" title="Start the elastic worker pool">⚡ Run pool</button>
-  </div>
+      <span style="font-size:11px;color:var(--t3)">Workers</span>
+      <input id="poolWorkerCount" type="number" min="1" max="100" value="4" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="How many workers to start with. Use Auto to size it by hardware and free licenses.">
+      <span style="font-size:11px;color:var(--t3)">Batch</span>
+      <input id="poolBatchSize" type="number" min="1" max="500" value="10" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Rows each worker claims per pull">
+      <span style="font-size:11px;color:var(--t3)" title="Licenses to always keep free. Used by Auto and by Auto-scale.">Buffer</span>
+      <input id="poolLicBuffer" type="number" min="0" max="100" value="10" style="width:42px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Keep this many PestPac licenses free (never consumed by workers)">
+      <label style="font-size:11px;color:var(--t3);display:inline-flex;align-items:center;gap:3px" title="While running, periodically re-check free licenses and scale workers up or down automatically"><input id="poolElastic" type="checkbox" style="margin:0" onchange="poolToggleAutoScale()">Auto-scale</label>
+      <span id="poolIntervalLbl" style="font-size:11px;color:var(--t3);opacity:.4" title="How often Auto-scale re-checks licenses (minutes)">every</span>
+      <input id="poolLicInterval" type="number" min="1" max="120" value="5" disabled style="width:42px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px;opacity:.4" title="Auto-scale re-check interval (minutes)">
+      <span id="poolIntervalUnit" style="font-size:11px;color:var(--t3);opacity:.4">min</span>
+      <button class="tbtn" id="poolAutoBtn" onclick="poolFillAuto()" title="Suggest a worker count from the smaller of hardware cap and (free licenses minus buffer)">Auto</button>
+      <button class="tbtn" id="poolAddJobBtn" onclick="poolAddJob()" title="Stage the current flow+sheet as a job (for multi-flow runs)">+ Job</button>
+      <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" title="Start the worker pool">Run pool</button>
+    </div>
   <button class="tbtn red" id="stopBtn" onclick="stopRun()" style="display:none">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
     Stop
@@ -2928,6 +2931,18 @@ async function startWorkerPool(n, headlessPool){
     }
   }
   renderPool();
+}
+
+// v2.0.1: grey/enable the Auto-scale interval input based on the checkbox. The interval is
+// only meaningful when Auto-scale is on; buffer stays enabled because Auto uses it too.
+function poolToggleAutoScale(){
+  const on=!!(document.getElementById("poolElastic")||{}).checked;
+  const iv=document.getElementById("poolLicInterval");
+  const lbl=document.getElementById("poolIntervalLbl");
+  const unit=document.getElementById("poolIntervalUnit");
+  if(iv){ iv.disabled=!on; iv.style.opacity=on?"1":".4"; }
+  if(lbl) lbl.style.opacity=on?"1":".4";
+  if(unit) unit.style.opacity=on?"1":".4";
 }
 
 async function poolFillAuto(){
