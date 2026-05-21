@@ -1,5 +1,5 @@
 {
-  "version": "2.0.0",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v2.0.0/BUU.2.0.Setup.2.0.0.exe",
-  "notes": "BUU 2.0 - elastic worker pool. Persistent workers pull row batches from a coordinator with license-aware elastic scaling, zero-loss append-only resume, multi-flow job staging, merged pool log, and a file-upload step. Separate app from Legacy with its own data folder; your Legacy flows are copied in once on first launch."
+  "version": "2.0.1",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v2.0.1/BUU.2.0.Setup.2.0.1.exe",
+  "notes": "BUU 2.0.1 - bug fixes + UI polish. Fixed: the +Job and Run pool buttons did nothing (a silent error stopped them) - now working. Auto worker-count now accounts for both hardware and open PestPac licenses (suggests the smaller of the two). Renamed the Elastic checkbox to Auto-scale, labeled the Buffer and interval inputs, and the interval greys out when Auto-scale is off."
 }
