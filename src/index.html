@@ -707,9 +707,15 @@ textarea { resize: vertical; min-height: 60px; }
        and run headless in parallel. "Auto" fills in the hardware-suggested cap. -->
   <div id="poolControls" style="display:inline-flex;align-items:center;gap:6px;margin-left:4px">
     <span style="font-size:11px;color:var(--t3)">Workers</span>
-    <input id="poolWorkerCount" type="number" min="1" max="100" value="4" style="width:54px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px">
+    <input id="poolWorkerCount" type="number" min="1" max="100" value="4" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px">
+    <span style="font-size:11px;color:var(--t3)">Batch</span>
+    <input id="poolBatchSize" type="number" min="1" max="500" value="10" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Rows each worker claims per pull">
+    <label style="font-size:11px;color:var(--t3);display:inline-flex;align-items:center;gap:3px" title="Periodically re-check PestPac free licenses and scale workers up/down"><input id="poolElastic" type="checkbox" style="margin:0">Elastic</label>
+    <input id="poolLicBuffer" type="number" min="0" max="100" value="10" style="width:42px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Keep this many licenses free">
+    <input id="poolLicInterval" type="number" min="1" max="120" value="5" style="width:42px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="License re-check interval (minutes)">
     <button class="tbtn" id="poolAutoBtn" onclick="poolFillAuto()" title="Suggest a worker count based on this machine's RAM/CPU">Auto</button>
-    <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" title="Shard rows across N workers and run headless in parallel">⚡ Run pool</button>
+    <button class="tbtn" id="poolAddJobBtn" onclick="poolAddJob()" title="Stage the current flow+sheet as a job (for multi-flow runs)">+ Job</button>
+    <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" title="Start the elastic worker pool">⚡ Run pool</button>
   </div>
   <button class="tbtn red" id="stopBtn" onclick="stopRun()" style="display:none">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
@@ -2211,8 +2217,8 @@ async function requestStop(){
 }
 
 async function stopRun(){
-  // v1.3.4 Phase 3: if a worker pool is running, Stop means stop-all-workers.
-  if(pool.active) return stopWorkerPool();
+  // v2.0.0: if the elastic pool is running, Stop drains the pool. Otherwise single-run stop.
+  if(coordActive) return stopWorkerPool();
   return requestStop();
 }
 async function paneStop(){return requestStop();}
@@ -2476,9 +2482,8 @@ async function executeResume(orphan, profileId, resumeAction){
 }
 
 function handleRunEvent(evt){
-  // v1.3.4 Phase 3: when a worker pool is active, route events to the pool by runId and
-  // skip the single-run UI path entirely (the pool owns the stat strip + grid).
-  if(pool.active){ poolHandleEvent(evt); return; }
+  // v2.0.0: the elastic pool uses its OWN event channel (onPoolStatus), not automation-event.
+  // This handler now only serves single-run mode. (Legacy static-pool routing removed.)
   if(evt.type==='start'){runTotal=evt.totalRows||0;updateRunStats(0,0,0,0);addLiveLog('Starting — '+runTotal.toLocaleString()+' rows','info');}
   else if(evt.type==='log'){addLiveLog(evt.message,'info');}
   else if(evt.type==='mode'){
@@ -2729,6 +2734,8 @@ const pool = {
   workers: new Map(),   // runId -> {runId, label, total, done, ok, err, skip, status, startedAt, flowName}
   startedAt: null,
 };
+// v2.0.0: true while the elastic coordinator pool is running (drives Stop routing).
+let coordActive = false;
 
 // Build N equal row-ranges over `total` rows (1-based, inclusive). Returns [{start,end}].
 // start is the resume-from value (runner processes rows > start), end is inclusive END_ROW.
@@ -2870,33 +2877,115 @@ async function poolFillAuto(){
   }catch(e){ alert('Could not compute cap: '+e.message); }
 }
 
-// v1.3.4 Phase 3: Run-pool button. Reads the worker count, confirms, and launches the pool.
+// v2.0.0: Run-pool now drives the elastic COORDINATOR (pull-queue). It stages the CURRENT
+// flow+sheet+profile as one job, then starts the pool with N workers. Multi-flow: stage more
+// jobs first via "Add job to pool" before clicking Run pool. Workers pull batches from main;
+// no row pre-division. Optional elastic license scaling.
 async function poolRunClick(){
   const n = Math.max(1, Math.min(100, parseInt(document.getElementById('poolWorkerCount').value)||1));
-  if(!ssPath){ alert('Load a spreadsheet first.'); go('import'); return; }
-  if(!steps.length){ alert('Build your flow first.'); go('builder'); return; }
-  if(!activeProfileId){ alert('Select a login profile first.'); go('profiles'); return; }
-  const total = ssRowCount||0;
-  const per = Math.ceil(total/n);
-  if(!confirm('Run worker pool?\n\n• '+n+' workers (headless)\n• '+total.toLocaleString()+' rows ÷ '+n+' ≈ '+per.toLocaleString()+' rows each\n• Flow: '+(currentFlowName||'current')+'\n• Profile: '+((profiles.find(p=>p.id===activeProfileId)||{}).name||'?')+'\n\nEach worker logs into PestPac separately. Continue?')) return;
-  startWorkerPool(n, true);
+  // If no jobs are staged yet, stage the current flow/sheet as a single job.
+  const status = API.poolGetStatus ? await API.poolGetStatus() : {jobs:0};
+  if(!status.jobs){
+    const staged = await poolStageCurrent();
+    if(!staged) return;
+  }
+  const batchSize = parseInt((document.getElementById('poolBatchSize')||{}).value) || 10;
+  const elastic = !!(document.getElementById('poolElastic')||{}).checked;
+  const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
+  const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
+  if(!confirm('Start worker pool?\n\n• '+n+' workers (headless, batch size '+batchSize+')\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n\nWorkers pull batches until all jobs drain. Continue?')) return;
+  const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
+  if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
+  poolUIActive(true);
+  go('run');
 }
 
-// Stop ALL workers in the pool (clean stop each).
-async function stopWorkerPool(){
-  if(!pool.active) return;
-  if(!confirm('Stop all '+pool.workers.size+' workers? Each finishes its current row, saves its log, and can be resumed.')) return;
-  document.getElementById('runStatusMsg').textContent='Stopping all workers…';
-  for(const runId of pool.workers.keys()){
-    try{ if(API.runControl) await API.runControl({runId, cmd:'stop'}); }catch(e){}
-  }
-  // Safety: force-kill any that don't exit within 90s.
-  setTimeout(async()=>{
-    if(!pool.active) return;
-    for(const [runId,w] of pool.workers){ if(w.status==='running'||w.status==='starting'){ try{ if(API.stopAutomation) await API.stopAutomation({runId}); }catch(e){} w.status='stopped'; } }
-    renderPool(); poolFinished();
-  }, 90000);
+// Stage the currently loaded flow+sheet+profile as one pool job.
+async function poolStageCurrent(){
+  if(!activeProfileId){ alert('Select a login profile first.'); go('profiles'); return false; }
+  if(!steps.length){ alert('Build your flow first.'); go('builder'); return false; }
+  if(!ssPath){ alert('Load a spreadsheet first.'); go('import'); return false; }
+  const _setupFlowId = (typeof setupFlowId!=='undefined') ? setupFlowId : null;
+  const _teardownFlowId = (typeof teardownFlowId!=='undefined') ? teardownFlowId : null;
+  const res = await API.poolSubmitJob({
+    label: (currentFlowName||'flow')+' · '+ssName,
+    flowSteps: allSteps(),
+    spreadsheetPath: ssPath,
+    profileId: activeProfileId,
+    setupFlowId: _setupFlowId, teardownFlowId: _teardownFlowId,
+    errHandle: (document.getElementById('errHandle')||{}).value || 'retry',
+  });
+  if(res && res.ok===false){ alert('Could not stage job: '+(res.error||'unknown')); return false; }
+  return true;
 }
+
+// "Add job to pool" — stage current flow/sheet without starting, for multi-flow runs.
+async function poolAddJob(){
+  const ok = await poolStageCurrent();
+  if(ok) alert('Job staged. Load a different flow/spreadsheet and add more, or click "Run pool" to start.');
+}
+
+function poolUIActive(active){
+  coordActive = active;
+  isRunning = active;
+  document.getElementById('runBtn').style.display = active?'none':'';
+  document.getElementById('stopBtn').style.display = active?'':'none';
+  document.getElementById('nb-run').style.display = active?'':'none';
+  if(active){ runStartTime=Date.now(); startElapsedTicker(); }
+}
+
+// v2.0.0: Stop drives the coordinator — every worker drains cleanly (finishes its current
+// batch, runs teardown, logs out). Force-kill backstop lives in main (2-min timer).
+async function stopWorkerPool(){
+  if(!confirm('Stop the pool? Each worker finishes its current batch, then runs teardown and logs out cleanly.')) return;
+  document.getElementById('runStatusMsg').textContent='Stopping pool — workers draining…';
+  if(API.poolStop) await API.poolStop();
+}
+
+// v2.0.0: render coordinator status (pushed via onPoolStatus). Builds the per-worker grid
+// + aggregate strip from main's COORD state. Replaces the old per-runId static rendering.
+function renderCoordStatus(st){
+  const grid=document.getElementById('workerGrid');
+  const hd=document.getElementById('workerGridHd');
+  if(!st || !st.active){ if(grid)grid.style.display='none'; if(hd)hd.style.display='none'; return; }
+  grid.style.display='grid'; hd.style.display='';
+  // Per-worker cards.
+  grid.innerHTML = (st.workers||[]).map(function(w){
+    const sc = w.status==='running'?'var(--blue)':w.status==='draining'?'var(--amber)':w.status==='done'?'var(--green)':w.status==='error'?'var(--red)':'var(--t3)';
+    return '<div class="card" style="padding:10px 12px;border:1px solid var(--brd)">'
+      + '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><div style="font-size:12px;font-weight:700;color:var(--t2)">'+w.workerId.slice(-6)+'</div><div style="font-size:10px;font-weight:700;color:'+sc+';text-transform:uppercase">'+w.status+'</div></div>'
+      + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+w.done.toLocaleString()+'</b> done</span><span style="color:var(--green)">'+w.ok.toLocaleString()+' ok</span><span style="color:var(--red)">'+w.err.toLocaleString()+' err</span><span style="color:var(--amber)">'+w.skip.toLocaleString()+' skip</span></div></div>';
+  }).join('');
+  // Aggregate strip.
+  let done=0,ok=0,err=0,skip=0,total=0;
+  for(const j of (st.jobs||[])){ done+=j.done; ok+=j.ok; err+=j.err; skip+=j.skip; total+=j.totalRows; }
+  document.getElementById('rs-done').textContent=done.toLocaleString();
+  document.getElementById('rs-ok').textContent=ok.toLocaleString();
+  document.getElementById('rs-err').textContent=err.toLocaleString();
+  document.getElementById('rs-skip').textContent=skip.toLocaleString();
+  const pct=total>0?Math.round(done/total*100):0;
+  document.getElementById('runProgBar').style.width=pct+'%';
+  document.getElementById('rs-pct').textContent=pct+'%';
+  if(done>0&&runStartTime){const mins=(Date.now()-runStartTime)/60000;const rate=mins>0?Math.round(done/mins):0;document.getElementById('rs-rate').textContent=rate.toLocaleString();const remain=total-done;const eta=rate>0?Math.round(remain/rate):0;document.getElementById('rs-eta').textContent=eta>60?Math.round(eta/60)+'h':eta+'m';}
+  document.getElementById('runStatusMsg').textContent='Pool · '+st.liveWorkers+' worker(s) live, target '+st.desiredWorkers+' · '+done.toLocaleString()+'/'+total.toLocaleString()+' rows';
+}
+
+// Wire coordinator events once.
+if(API.onPoolStatus) API.onPoolStatus(function(st){ renderCoordStatus(st); });
+if(API.onPoolComplete) API.onPoolComplete(function(d){
+  document.getElementById('runStatusMsg').textContent='Pool complete';
+  poolUIActive(false); stopElapsedTicker();
+  const grid=document.getElementById('workerGrid'); if(grid) setTimeout(()=>{grid.style.display='none';document.getElementById('workerGridHd').style.display='none';},1500);
+});
+if(API.onPoolLicenseUpdate) API.onPoolLicenseUpdate(function(d){
+  if(d.error){ console.warn('[pool] license recheck failed:',d.error); return; }
+  console.log('[pool] license update: free='+d.freeLicenses+' newTarget='+d.newTarget);
+});
+
+// ── legacy static-pool stubs (no longer used; kept as no-ops to avoid reference errors) ──
+function startWorkerPool(){ /* superseded by coordinator poolRunClick */ }
+function poolHandleEvent(){ }
+function poolFinished(){ poolUIActive(false); }
 function openLogsFolder(){if(API.openLogsFolder)API.openLogsFolder();}
 function clearLogTable(){if(!confirm('Clear the log table? (Excel files on disk are not affected.)'))return;logEntries=[];document.getElementById('logBody').innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--t3);padding:28px;font-size:12px">No log entries yet.</td></tr>';document.getElementById('nb-log').style.display='none';}
 
