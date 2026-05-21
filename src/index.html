@@ -2930,18 +2930,35 @@ async function startWorkerPool(n, headlessPool){
   renderPool();
 }
 
-// v1.3.4 Phase 3: fill the worker-count input with the hardware-suggested cap.
 async function poolFillAuto(){
+  const inp=document.getElementById('poolWorkerCount');
+  const btn=document.getElementById('poolAutoBtn');
   try{
     if(!API.getWorkerCaps){ alert('Worker-cap API unavailable.'); return; }
-    const caps = await API.getWorkerCaps();
-    const inp = document.getElementById('poolWorkerCount');
-    inp.value = caps.effectiveCap;
-    alert('Suggested workers: '+caps.effectiveCap+'\n\nBased on this machine:\n• '+caps.cpuCount+' CPU cores\n• '+caps.freeMemGB+' GB free / '+caps.totalMemGB+' GB total RAM\n• Hardware cap: '+caps.hardwareCap+(caps.configOverride?('\n• Config override: '+caps.configOverride):'')+'\n\nYou can override the number manually. Hard ceiling is '+caps.hardCeiling+'.');
-  }catch(e){ alert('Could not compute cap: '+e.message); }
-}
-
-// v2.0.0: Run-pool now drives the elastic COORDINATOR (pull-queue). It stages the CURRENT
+    const caps=await API.getWorkerCaps();
+    const hw=caps.hardwareCap;
+    // License side — needs a profile. Use the active profile; buffer from the UI field.
+    if(!activeProfileId){
+      inp.value=hw;
+      alert('Set to hardware cap: '+hw+'\\n\\n(No login profile selected, so licenses could not be checked. Select a profile and click Auto again to also account for open licenses.)\\n\\nMachine: '+caps.cpuCount+' CPU cores, '+caps.freeMemGB+'/'+caps.totalMemGB+' GB free RAM.');
+      return;
+    }
+    const buf=parseInt((document.getElementById('poolLicBuffer')||{}).value)||10;
+    if(btn){ btn.disabled=true; btn.textContent='Checking…'; }
+    let lic=null;
+    try{ lic=await API.checkLicenseCap({ profileId: activeProfileId, buffer: buf }); }catch(e){ lic={ok:false,error:e.message}; }
+    if(btn){ btn.disabled=false; btn.textContent='Auto'; }
+    if(!lic||lic.ok===false){
+      inp.value=hw;
+      alert('Could not read licenses: '+((lic&&lic.error)||'unknown')+'\\n\\nFell back to hardware cap: '+hw+'\\n\\nYou can set the number manually, or fix the profile/login and try Auto again.');
+      return;
+    }
+    const licCap=Math.max(1, lic.freeLicenses - buf);
+    const chosen=Math.max(1, Math.min(hw, licCap));
+    inp.value=chosen;
+    alert('Suggested workers: '+chosen+'\\n\\nThis is the SMALLER of:\\n  • Hardware cap: '+hw+'  ('+caps.cpuCount+' cores, '+caps.freeMemGB+'/'+caps.totalMemGB+' GB free)\\n  • License cap: '+licCap+'  ('+lic.freeLicenses+' free − '+buf+' buffer)\\n\\nEach worker uses one PestPac login, so workers are capped at free licenses minus your buffer. Adjust the buffer field and click Auto again to change the reserve.');
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent='Auto'; } alert('Could not compute cap: '+e.message); }
+}// v2.0.0: Run-pool now drives the elastic COORDINATOR (pull-queue). It stages the CURRENT
 // flow+sheet+profile as one job, then starts the pool with N workers. Multi-flow: stage more
 // jobs first via "Add job to pool" before clicking Run pool. Workers pull batches from main;
 // no row pre-division. Optional elastic license scaling.
