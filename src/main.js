@@ -7,8 +7,12 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '1.3.5';
-const SERVICE_NAME = 'BetterUpdateUtility';
+const CURRENT_VERSION = '2.0.0';
+const SERVICE_NAME = 'BUU2';
+// v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
+// Legacy — different credentials store, checkpoints, logs, config. We force a distinct
+// userData directory so the two installs are fully isolated and can run side by side.
+// Set BEFORE app is ready (see app.setPath call near startup).
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
 
 let mainWindow;
@@ -2418,7 +2422,7 @@ function createWindow() {
     width: winW, height: winH, minWidth: 1000, minHeight: 680,
     icon: iconPath,
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
-    backgroundColor: '#0f0f11', show: false, title: 'Better Update Utility'
+    backgroundColor: '#0f0f11', show: false, title: 'BUU 2.0'
   });
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
   // v1.3.1 Item 6 (real fix): the per-class CSS font bumps didn't visibly change anything
@@ -2438,13 +2442,16 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
+  // v2.0.0: force a stable distinct app name so userData resolves to a BUU-2-specific folder
+  // (%APPDATA%\BUU 2.0) in BOTH dev and packaged runs — fully isolated from Legacy's data.
+  try { app.setName('BUU 2.0'); } catch(e){}
   app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
   });
-  app.setAppUserModelId('com.entomobands.better-update-utility');
+  app.setAppUserModelId('com.entomobands.buu-2');
   app.whenReady().then(createWindow);
 }
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

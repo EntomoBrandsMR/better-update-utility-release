@@ -1,7 +1,7 @@
 {
-  "name": "better-update-utility",
-  "version": "1.3.5",
-  "description": "Better Update Utility — PestPac automation",
+  "name": "buu-2",
+  "version": "2.0.0",
+  "description": "BUU 2.0 — PestPac automation with elastic worker pool",
   "author": "Entomo Brands",
   "main": "src/main.js",
   "scripts": {
@@ -10,8 +10,8 @@
     "postinstall": "electron-builder install-app-deps && npx playwright install chromium"
   },
   "build": {
-    "appId": "com.entomobands.better-update-utility",
-    "productName": "Better Update Utility",
+    "appId": "com.entomobands.buu-2",
+    "productName": "BUU 2.0",
     "directories": {
       "output": "dist"
     },
