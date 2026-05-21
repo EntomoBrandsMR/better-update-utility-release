@@ -754,25 +754,60 @@ function resolvePreview(step, row, creds){
 const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32);
 function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
 function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
-function saveChk(row){try{
-  let prev={};try{prev=JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));}catch{}
+// v1.3.4 Item I (checkpoint integrity): read the existing checkpoint and return it parsed,
+// or return null if it can't be read/parsed. The crucial contract: a null return means
+// "do NOT write" — callers must never write a fresh {} over a checkpoint they failed to
+// read, because that destroys the resume context (runId/spreadsheetPath/flowSnapshot/etc).
+// This is the root cause of the gutted-checkpoint bug: the old read-modify-write swallowed
+// read errors, left prev={}, and wrote that empty object back, making resume impossible.
+function readChkOrNull(){
+  try{
+    var raw = fs.readFileSync(CHECKPOINT,'utf8');
+    var obj = JSON.parse(raw);
+    // Guard against an already-gutted file: a valid resumable checkpoint has a runId.
+    // If the file parsed but has no runId, treat it as unreadable rather than building on it.
+    if(obj && typeof obj === 'object' && obj.runId) return obj;
+    return null;
+  }catch(e){ return null; }
+}
+// v1.3.4 Item I: atomic write — write to a temp sibling then rename over the target, so a
+// crash mid-write can never leave a half-written/truncated checkpoint. rename is atomic on
+// the same volume (userData is local AppData, not a network/OneDrive path, so this holds).
+function writeChkAtomic(obj){
+  try{
+    var tmp = CHECKPOINT + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(obj));
+    fs.renameSync(tmp, CHECKPOINT);
+    return true;
+  }catch(e){
+    emit({type:'log', message:'Checkpoint write failed (non-fatal): '+(e&&e.message||e)});
+    return false;
+  }
+}
+function saveChk(row){
+  // Read-or-skip: if we can't read the existing checkpoint intact, skip this update entirely
+  // rather than clobbering it. The next successful row will checkpoint again.
+  var prev = readChkOrNull();
+  if(!prev) return;
   prev.rowIndex=row;prev.ts=new Date().toISOString();
   // v1.2.8: mirror rowIndex into phaseProgress.mainRowIndex for v3 readers.
   if(prev.phaseProgress){ prev.phaseProgress.mainRowIndex = row; }
-  fs.writeFileSync(CHECKPOINT,JSON.stringify(prev));
-}catch{}}
+  writeChkAtomic(prev);
+}
 // v1.2.8: mark a phase completed (or its progress field) in the checkpoint.
 // Used to record setupCompleted=true after setup runs cleanly, teardownCompleted=true
 // after teardown runs cleanly. Idempotent.
 function markPhaseDone(phase){
-  try{
-    let prev={};try{prev=JSON.parse(fs.readFileSync(CHECKPOINT,'utf8'));}catch{}
-    if(!prev.phaseProgress) prev.phaseProgress = {setupCompleted:false, mainRowIndex:0, teardownCompleted:false};
-    if(phase === 'setup') prev.phaseProgress.setupCompleted = true;
-    else if(phase === 'teardown') prev.phaseProgress.teardownCompleted = true;
-    prev.ts = new Date().toISOString();
-    fs.writeFileSync(CHECKPOINT, JSON.stringify(prev));
-  }catch{}
+  // v1.3.4 Item I: read-or-skip + atomic write (same contract as saveChk). The old version
+  // wrote prev={} on a read failure, which is exactly how a checkpoint ended up as
+  // {phaseProgress:{...},ts:...} with every resume field gone. If we can't read it, skip.
+  var prev = readChkOrNull();
+  if(!prev) return;
+  if(!prev.phaseProgress) prev.phaseProgress = {setupCompleted:false, mainRowIndex:0, teardownCompleted:false};
+  if(phase === 'setup') prev.phaseProgress.setupCompleted = true;
+  else if(phase === 'teardown') prev.phaseProgress.teardownCompleted = true;
+  prev.ts = new Date().toISOString();
+  writeChkAtomic(prev);
 }
 
 const ALL_STEPS = ${JSON.stringify(steps)};
