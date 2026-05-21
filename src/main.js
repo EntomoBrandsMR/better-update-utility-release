@@ -49,6 +49,217 @@ function getMaxConcurrentRuns() {
   } catch (e) {}
   return computeHardwareCap();
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// v2.0.0 — ELASTIC POOL COORDINATOR (main-process owned)
+// The coordinator owns a shared row queue per job and hands out batches to persistent
+// worker processes on request. Workers don't own a row range; they pull batches until the
+// queue is drained or they're told to retire. This enables elastic scaling (spawn/retire
+// at batch boundaries based on license availability) and natural load-balancing.
+//
+// One coordinator instance per "pool run". A pool run can contain multiple JOBS (different
+// flow+spreadsheet+profile); each job has its own row queue. Workers are assigned to a job.
+// ════════════════════════════════════════════════════════════════════════════
+const COORD = {
+  active: false,
+  batchSize: 10,
+  jobs: new Map(),      // jobId -> { jobId, label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, totalRows, nextRow, rows, done, ok, err, skip, finished }
+  workers: new Map(),   // workerId -> { workerId, jobId, process, status, batch, done, ok, err, skip, startedAt, runnerLogStream, runnerPath, credPath }
+  desiredWorkers: 0,    // target worker count (license/hardware bounded)
+  licenseTimer: null,
+};
+
+// Count rows in a spreadsheet (sync, used at job submission to build the queue size).
+function countRowsSync(spreadsheetPath){
+  try{
+    const probe = require('xlsx');
+    const ext = path.extname(spreadsheetPath).toLowerCase();
+    if (ext === '.csv') {
+      return Math.max(0, fs.readFileSync(spreadsheetPath,'utf8').split('\n').filter(Boolean).length - 1);
+    }
+    const wb = probe.readFile(spreadsheetPath);
+    return probe.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]).length;
+  }catch(e){ return 0; }
+}
+
+// Hand out the next batch of row indexes (1-based) for a job. Returns [] when drained.
+function coordNextBatch(jobId){
+  const job = COORD.jobs.get(jobId);
+  if(!job) return [];
+  const batch = [];
+  while(batch.length < COORD.batchSize && job.nextRow <= job.totalRows){
+    batch.push(job.nextRow);
+    job.nextRow++;
+  }
+  return batch;
+}
+
+// True when every job's queue is drained AND every worker has reported finished.
+function coordAllDrained(){
+  for(const job of COORD.jobs.values()){ if(job.nextRow <= job.totalRows) return false; }
+  return true;
+}
+
+// Broadcast aggregate pool status to the renderer.
+function coordEmitStatus(){
+  if(!mainWindow) return;
+  const jobs = Array.from(COORD.jobs.values()).map(j => ({
+    jobId: j.jobId, label: j.label, totalRows: j.totalRows,
+    done: j.done, ok: j.ok, err: j.err, skip: j.skip,
+    remaining: Math.max(0, j.totalRows - (j.nextRow - 1)), finished: j.finished,
+  }));
+  const workers = Array.from(COORD.workers.values()).map(w => ({
+    workerId: w.workerId, jobId: w.jobId, status: w.status,
+    done: w.done, ok: w.ok, err: w.err, skip: w.skip, batchSize: (w.batch||[]).length,
+  }));
+  mainWindow.webContents.send('pool-status', {
+    active: COORD.active, batchSize: COORD.batchSize,
+    desiredWorkers: COORD.desiredWorkers, liveWorkers: COORD.workers.size,
+    jobs, workers,
+  });
+}
+
+// Pick a job that still has rows to hand out (round-robin-ish: first non-drained job).
+function coordPickJobForWorker(){
+  for(const job of COORD.jobs.values()){
+    if(!job.finished && job.nextRow <= job.totalRows) return job.jobId;
+  }
+  return null;
+}
+
+// Spawn one persistent batch-pulling worker, assigned to a job. The worker logs in once,
+// then pulls batches via stdin/stdout until told to drain/retire. Returns the workerId.
+async function coordSpawnWorker(){
+  const jobId = coordPickJobForWorker();
+  if(!jobId){ return null; } // nothing left to work on
+  const job = COORD.jobs.get(jobId);
+  const workerId = 'w' + Date.now() + '-' + Math.floor(Math.random()*1000);
+
+  const chromiumExe = getBundledChromiumPath();
+  if(!chromiumExe){ console.error('[coord] cannot spawn worker: chromium not found'); return null; }
+
+  // Resolve setup/teardown step arrays for this job (same logic as single-run).
+  const setupSteps = job.setupFlowId ? ((resolveOnceFlowByName(job.setupFlowId)||{}).steps || []) : [];
+  const teardownSteps = job.teardownFlowId ? ((resolveOnceFlowByName(job.teardownFlowId)||{}).steps || []) : [];
+
+  // Credentials for this job's profile.
+  const all = readAllProfiles();
+  const prof = all.find(p => p.id === job.profileId) || {};
+  if (keytar) {
+    prof.companyKey = await keytar.getPassword(SERVICE_NAME, `${job.profileId}:companyKey`) || prof.companyKey || '';
+    prof.username   = await keytar.getPassword(SERVICE_NAME, `${job.profileId}:username`)   || prof.username   || '';
+    prof.password   = await keytar.getPassword(SERVICE_NAME, `${job.profileId}:password`)   || prof.password   || '';
+  }
+  const credPath = path.join(os.tmpdir(), `buu2-cred-${workerId}.enc`);
+  fs.writeFileSync(credPath, encStore([prof]));
+
+  const runnerPath = path.join(os.tmpdir(), `buu2-worker-${workerId}.js`);
+  const logPath = path.join(getLogsDir(), `BUU2-log-${new Date().toISOString().slice(0,10)}-${workerId}.xlsx`);
+  const runnerLogPath = path.join(getLogsDir(), `buu2-worker-${workerId}.log`);
+  const runnerLogStream = fs.createWriteStream(runnerLogPath, { flags: 'a' });
+
+  const script = buildPoolWorker({
+    flowSteps: job.flowSteps,
+    setupSteps, teardownSteps,
+    spreadsheetPath: job.spreadsheetPath,
+    logPath,
+    chromiumExePath: chromiumExe,
+    errHandle: job.errHandle || 'retry',
+    selectorTimeout: 30, pageLoadMode: 'domcontentloaded', retryCount: 2,
+    runContext: { runId: workerId, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
+  });
+  fs.writeFileSync(runnerPath, script);
+
+  const env = { ...process.env };
+  const nodeModulesPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+    : path.join(__dirname, '..', 'node_modules');
+  env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
+
+  const entry = { workerId, jobId, process: null, status: 'starting', batch: [], done:0, ok:0, err:0, skip:0, startedAt: Date.now(), runnerLogStream, runnerPath, credPath, logPath };
+  COORD.workers.set(workerId, entry);
+
+  const proc = spawn(process.execPath, [runnerPath, job.spreadsheetPath, credPath], { stdio:['pipe','pipe','pipe'], env });
+  entry.process = proc;
+
+  proc.stderr.on('data', d => runnerLogStream.write(`[STDERR] ${String(d)}\n`));
+  proc.stdout.on('data', d => {
+    runnerLogStream.write(`[STDOUT] ${String(d)}\n`);
+    String(d).split('\n').filter(Boolean).forEach(line => {
+      let msg; try { msg = JSON.parse(line); } catch { return; }
+      coordHandleWorkerMessage(workerId, msg);
+    });
+  });
+  proc.on('close', code => {
+    runnerLogStream.write(`[${new Date().toISOString()}] worker exited code=${code}\n`);
+    runnerLogStream.end();
+    const w = COORD.workers.get(workerId);
+    if(w){ w.status = (code===0?'done':'error'); }
+    COORD.workers.delete(workerId);
+    try { fs.unlinkSync(runnerPath); } catch {}
+    try { fs.unlinkSync(credPath); } catch {}
+    coordEmitStatus();
+    coordCheckComplete();
+  });
+
+  coordEmitStatus();
+  return workerId;
+}
+
+// Handle a message from a worker: request-batch, row-result, ready, phase events.
+function coordHandleWorkerMessage(workerId, msg){
+  const w = COORD.workers.get(workerId);
+  if(!w) return;
+  const job = COORD.jobs.get(w.jobId);
+  switch(msg.type){
+    case 'ready':
+      w.status = 'running';
+      break;
+    case 'request-batch': {
+      // Hand out the next batch for this worker's job. If the worker's job is drained,
+      // try to reassign to another job that still has rows. If none, retire the worker.
+      let batch = job ? coordNextBatch(w.jobId) : [];
+      if(batch.length === 0){
+        const otherJob = coordPickJobForWorker();
+        if(otherJob){ w.jobId = otherJob; batch = coordNextBatch(otherJob); }
+      }
+      if(batch.length === 0){
+        // Nothing left anywhere — tell the worker to finish (run teardown + logout + exit).
+        try { w.process.stdin.write(JSON.stringify({ cmd:'drain' }) + '\n'); } catch {}
+        w.status = 'draining';
+      } else {
+        w.batch = batch;
+        try { w.process.stdin.write(JSON.stringify({ cmd:'batch', rows: batch }) + '\n'); } catch {}
+        w.status = 'running';
+      }
+      break;
+    }
+    case 'row-result': {
+      w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else if(msg.status==='skip') w.skip++; else if(msg.status==='error') w.err++;
+      if(job){ job.done++; if(msg.status==='ok'||msg.status==='ok (retry)') job.ok++; else if(msg.status==='skip') job.skip++; else if(msg.status==='error') job.err++; }
+      break;
+    }
+    case 'retired':
+      w.status = 'retiring';
+      break;
+  }
+  coordEmitStatus();
+}
+
+// Mark jobs finished when drained and emit completion when the whole pool is done.
+function coordCheckComplete(){
+  for(const job of COORD.jobs.values()){
+    if(job.nextRow > job.totalRows) job.finished = true;
+  }
+  if(COORD.active && COORD.workers.size === 0 && coordAllDrained()){
+    COORD.active = false;
+    if(COORD.licenseTimer){ clearInterval(COORD.licenseTimer); COORD.licenseTimer = null; }
+    if(mainWindow) mainWindow.webContents.send('pool-complete', {
+      jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err, skip:j.skip })),
+    });
+  }
+}
+
 let keytar = null;
 try { keytar = require('keytar'); } catch(e) {}
 
@@ -2143,6 +2354,214 @@ main().catch(e=>{
   try{flush();}catch{}
   process.exit(1);
 });
+`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v2.0.0 — POOL WORKER TEMPLATE (batch-pulling, persistent)
+// Differs from buildRunner: the worker does NOT own the row loop. It logs in once, then
+// repeatedly: emit {type:'request-batch'} → wait for stdin {cmd:'batch',rows:[...]} or
+// {cmd:'drain'} → process those specific row indexes → repeat. On 'drain' it runs teardown
+// + logout and exits. The coordinator (main) owns the queue and hands out batches.
+// Reuses the same per-step engine semantics as buildRunner (token resolve, iframe-aware
+// locators, find-by-text, retry). Each processed row is reported via {type:'row-result'}.
+// ════════════════════════════════════════════════════════════════════════════
+function buildPoolWorker(cfg){
+  const {
+    flowSteps, setupSteps = [], teardownSteps = [], spreadsheetPath, logPath,
+    chromiumExePath, errHandle = 'retry', selectorTimeout = 30,
+    pageLoadMode = 'domcontentloaded', retryCount = 2, runContext = {},
+  } = cfg;
+  return `
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const _nm = process.env.NODE_PATH || path.join(__dirname);
+function _require(mod){ try{return require(mod);}catch(e){ try{return require(path.join(_nm,mod));}catch(e2){ throw new Error('Cannot find: '+mod); } } }
+if(process.env.NODE_PATH){ try{require('module').Module._initPaths();}catch(e){} }
+const { chromium } = _require('playwright-core');
+const XLSX = _require('xlsx');
+
+const SPREADSHEET = process.argv[2];
+const CRED_PATH = process.argv[3];
+const LOG_PATH = ${JSON.stringify(logPath)};
+const ERR_HANDLE = ${JSON.stringify(errHandle)};
+const SELECTOR_TIMEOUT = ${parseInt(selectorTimeout) * 1000};
+const PAGE_LOAD_MODE = ${JSON.stringify(pageLoadMode)};
+const RETRY_COUNT = ${parseInt(retryCount)};
+const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
+const FLOW_STEPS = ${JSON.stringify(flowSteps)};
+const SETUP_STEPS = ${JSON.stringify(setupSteps)};
+const TEARDOWN_STEPS = ${JSON.stringify(teardownSteps)};
+const RUN_CONTEXT = ${JSON.stringify(runContext)};
+const LOGIN_STEPS = FLOW_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
+const DATA_STEPS  = FLOW_STEPS.filter(s => !s.locked && s.type !== 'pestpac-logout');
+const LOGOUT_STEP = FLOW_STEPS.find(s => s.type === 'pestpac-logout') || {type:'pestpac-logout'};
+
+const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32);
+function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
+function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
+
+// ── stdin command channel: receives {cmd:'batch',rows:[...]} or {cmd:'drain'} ──
+let _pendingBatchResolve = null;
+const _readline = require('readline');
+const _rl = _readline.createInterface({ input: process.stdin, terminal: false });
+_rl.on('line', function(line){
+  let msg; try{ msg = JSON.parse(line); }catch(e){ return; }
+  if(!msg || !msg.cmd) return;
+  if(_pendingBatchResolve){ const r=_pendingBatchResolve; _pendingBatchResolve=null; r(msg); }
+});
+function requestBatch(){
+  emit({type:'request-batch'});
+  return new Promise(function(r){ _pendingBatchResolve = r; });
+}
+
+// ── log buffer (per-worker Excel log) ──
+let logEntries=[], flushTimer=null;
+function addLog(e){logEntries.push(e);if(logEntries.length%50===0)flush();else{clearTimeout(flushTimer);flushTimer=setTimeout(flush,3000);}}
+function flush(){
+  try{
+    const wb=XLSX.utils.book_new();
+    const summary=[{Metric:'Worker',Value:${JSON.stringify(runContext.runId||'')}},{Metric:'Processed',Value:logEntries.filter(e=>e.row).length},{Metric:'Last updated',Value:new Date().toLocaleString()}];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), 'Summary');
+    if(logEntries.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(logEntries), 'Rows');
+    XLSX.writeFile(wb, LOG_PATH);
+  }catch(e){ emit({type:'log-error', message:e.message}); }
+}
+
+// ── load all rows into memory once (workers index into this by 1-based row number) ──
+function loadAllRows(fp){
+  const ext=path.extname(fp).toLowerCase();
+  if(ext==='.csv'){
+    const lines=fs.readFileSync(fp,'utf8').split('\\n').filter(Boolean);
+    const headers=lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''));
+    const out=[];
+    for(let i=1;i<lines.length;i++){ const vals=lines[i].split(',').map(v=>v.trim().replace(/^"|"$/g,'')); const row={}; headers.forEach((h,j)=>row[h]=vals[j]||''); out.push(row); }
+    return out;
+  }
+  const wb=XLSX.readFile(fp);
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+}
+
+async function loginToPestPac(page, creds){
+  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  await page.waitForSelector('input[name="uid"]',{timeout:15000});
+  await page.fill('input[name="uid"]',creds.companyKey||'');
+  await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+  await page.waitForSelector('input[name="username"]',{timeout:15000});
+  await page.fill('input[name="username"]',creds.username||'');
+  await page.fill('input[name="password"]',creds.password||'');
+  await page.click('button[data-testid="loginBtn"]');
+  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
+}
+
+async function findLocator(page, selector, opts){
+  opts=opts||{}; const timeoutMs=opts.timeout||30000; const startedAt=Date.now();
+  while(Date.now()-startedAt<timeoutMs){
+    try{ const top=page.locator(selector); if(await top.count()>0) return top; }catch(_){}
+    const main=page.mainFrame();
+    for(const f of page.frames()){ if(f===main) continue; try{ const inF=f.locator(selector); if(await inF.count()>0) return inF; }catch(_){} }
+    await new Promise(function(r){ setTimeout(r,250); });
+  }
+  throw new Error('Selector "'+selector+'" not found in any frame after '+timeoutMs+'ms');
+}
+function matchesText(h,n,mode){ h=(h==null?'':String(h)); n=(n==null?'':String(n)); switch(mode||'contains'){ case 'exact':return h.trim()===n.trim(); case 'starts':return h.trim().indexOf(n.trim())===0; case 'ends':{var ht=h.trim(),nt=n.trim();return nt.length<=ht.length&&ht.lastIndexOf(nt)===(ht.length-nt.length);} case 'contains-ci':return h.trim().toLowerCase().indexOf(n.trim().toLowerCase())!==-1; case 'exact-ci':return h.trim().toLowerCase()===n.trim().toLowerCase(); case 'regex':try{return new RegExp(n).test(h);}catch(e){throw new Error('regex invalid: '+n);} default:return h.trim().indexOf(n.trim())!==-1; } }
+async function findInContainer(page, containerSel, matchText, targetSel, mode, opts){
+  opts=opts||{}; const timeoutMs=opts.timeout||30000; const startedAt=Date.now();
+  while(Date.now()-startedAt<timeoutMs){
+    const frames=[page.mainFrame()]; for(const f of page.frames()){ if(f!==page.mainFrame()) frames.push(f); }
+    const matched=[];
+    for(const f of frames){ let containers; try{ containers=f.locator(containerSel); }catch(e){ continue; } let count; try{ count=await containers.count(); }catch(e){ continue; }
+      for(let ci=0; ci<count; ci++){ let txt=''; try{ txt=await containers.nth(ci).innerText({timeout:2000}); }catch(e){ try{ txt=await containers.nth(ci).textContent({timeout:2000})||''; }catch(e2){ txt=''; } } if(matchesText(txt,matchText,mode)) matched.push({frame:f,index:ci}); } }
+    if(matched.length===1){ const m=matched[0]; const c=m.frame.locator(containerSel).nth(m.index); return targetSel?c.locator(targetSel):c; }
+    if(matched.length>1) throw new Error('Find-by-text matched '+matched.length+' containers for "'+matchText+'"; expected 1.');
+    await new Promise(function(r){ setTimeout(r,250); });
+  }
+  throw new Error('Find-by-text found no container matching "'+matchText+'"');
+}
+async function resolveStepLocator(page, step, resolveFn){
+  if(step.findByText){ const m=resolveFn(step.matchText||''); return await findInContainer(page, step.containerSel||'', m, step.selector||'', step.matchMode||'contains', {timeout:SELECTOR_TIMEOUT}); }
+  return await findLocator(page, step.selector, {timeout:SELECTOR_TIMEOUT});
+}
+
+async function runStep(page, step, row, creds){
+  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
+  const ms=s=>Math.round(parseFloat(s||1)*1000);
+  switch(step.type){
+    case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:30000}); break;}
+    case 'click':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().click(); if(step.waitFor){ const wl=await findLocator(page,step.waitFor,{timeout:SELECTOR_TIMEOUT}); await wl.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); } break; }
+    case 'type':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.clearFirst!=='no') await loc.first().fill(''); const val=r(step.value); const delay=parseInt(step.typeDelay||0); if(delay>0) await loc.first().pressSequentially(val,{delay:delay}); else await loc.first().fill(val); break; }
+    case 'select':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().selectOption({label:r(step.value)}); break; }
+    case 'checkbox':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.checkAction==='check')await loc.first().check(); else if(step.checkAction==='uncheck')await loc.first().uncheck(); else if(step.checkAction==='toggle')await loc.first().click(); else if(step.checkAction==='conditional'){ const tv=(step.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase()); if(tv.includes(String(r(step.condCol)).trim().toLowerCase()))await loc.first().check(); else await loc.first().uncheck(); } break; }
+    case 'clear':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().fill(''); break; }
+    case 'wait':if(step.waitType==='random'){const mn=ms(step.waitMin||1),mx=ms(step.waitMax||3);await page.waitForTimeout(Math.floor(Math.random()*(mx-mn+1))+mn);}else if(step.waitType==='element'){const loc=await findLocator(page,step.waitSel||'',{timeout:30000});await loc.first().waitFor({state:'visible',timeout:30000});}else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
+    case 'assert':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.expected){ const t=await loc.first().textContent(); if(!t||!t.includes(step.expected)) throw new Error('Assert failed: expected "'+step.expected+'"'); } break; }
+    case 'pestpac-login':{ await loginToPestPac(page,creds); break; }
+    case 'pestpac-logout':{ await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000}); await page.waitForSelector('div.select',{timeout:10000}); await page.click('div.select'); await page.waitForSelector('a.logout',{timeout:5000}); await page.click('a.logout'); await page.waitForTimeout(1500); break; }
+    case 'dialog':{ const matchText=step.dialogMatch||''; const dialogAction=step.dialogAction||'accept'; if(page._buuDialogListener){ try{page.off('dialog',page._buuDialogListener);}catch(_){} page._buuDialogListener=null; } const handler=async dialog=>{ try{page.off('dialog',handler);}catch(_){} if(page._buuDialogListener===handler)page._buuDialogListener=null; const msg=dialog.message(); const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase()); try{ if(matches){ if(dialogAction==='dismiss')await dialog.dismiss(); else await dialog.accept(); } else { await dialog.dismiss(); } }catch(e){} }; page._buuDialogListener=handler; page.on('dialog',handler); break; }
+  }
+}
+
+// Run a once-flow (setup/teardown) — no row context.
+async function runOnceFlow(page, steps, creds){
+  for(let i=0;i<steps.length;i++){ try{ await runStep(page, steps[i], {}, creds); }catch(e){ return {ok:false, error:e.message, stepIndex:i}; } }
+  return {ok:true};
+}
+
+async function processRow(page, row, creds){
+  const done=[];
+  const attempt=async()=>{ done.length=0; for(let si=0;si<DATA_STEPS.length;si++){ await runStep(page, DATA_STEPS[si], row, creds); done.push(DATA_STEPS[si]._label||DATA_STEPS[si].type); } };
+  try{ await attempt(); return {status:'ok', fieldsWritten:done.join(' | ')}; }
+  catch(e){
+    if(ERR_HANDLE==='retry'){
+      let attemptN=0, lastErr=e;
+      while(attemptN<RETRY_COUNT){ attemptN++; try{ await attempt(); return {status:'ok (retry)', fieldsWritten:done.join(' | ')}; }catch(e2){ lastErr=e2; } }
+      return {status:'skip', error:('After '+attemptN+' retries: '+lastErr.message), failedStep:done[done.length-1]||'?'};
+    }
+    return {status:'skip', error:e.message, failedStep:done[done.length-1]||'?'};
+  }
+}
+
+async function main(){
+  const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
+  const ALL_ROWS = loadAllRows(SPREADSHEET);
+  const browser = await chromium.launch({ headless:true, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage','--disable-background-timer-throttling'] });
+  const page = await (await browser.newContext()).newPage();
+
+  // Login once.
+  for(const step of LOGIN_STEPS){ try{ await runStep(page,step,{},creds); }catch(e){ emit({type:'fatal',error:'Login failed: '+e.message}); flush(); await browser.close(); process.exit(1); } }
+  // Setup once-flow (per worker — each worker is its own session).
+  if(SETUP_STEPS.length){ const sr=await runOnceFlow(page,SETUP_STEPS,creds); if(!sr.ok){ emit({type:'fatal',error:'Setup failed: '+sr.error}); flush(); await browser.close(); process.exit(1); } }
+
+  emit({type:'ready'});
+
+  // Batch-pull loop: ask for work, process, repeat until 'drain'.
+  let draining=false;
+  while(!draining){
+    const msg = await requestBatch();
+    if(!msg || msg.cmd==='drain'){ draining=true; break; }
+    if(msg.cmd!=='batch' || !Array.isArray(msg.rows) || msg.rows.length===0){ continue; }
+    for(const rowNum of msg.rows){
+      const row = ALL_ROWS[rowNum-1];
+      if(!row){ emit({type:'row-result', row:rowNum, status:'skip', error:'row index out of range'}); continue; }
+      const t0=Date.now();
+      const res = await processRow(page, row, creds);
+      const entry={ row:rowNum, timestamp:new Date().toISOString(), url:row.URL||row.url||'', status:res.status, error:res.error||'', failedStep:res.failedStep||'', fieldsWritten:res.fieldsWritten||'', durationMs:Date.now()-t0 };
+      addLog(entry);
+      emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0});
+    }
+  }
+
+  // Teardown + logout on drain.
+  if(TEARDOWN_STEPS.length){ try{ await runOnceFlow(page,TEARDOWN_STEPS,creds); }catch(e){} }
+  try{ await runStep(page, LOGOUT_STEP, {}, creds); }catch(e){}
+  flush();
+  await browser.close();
+  emit({type:'retired'});
+  process.exit(0);
+}
+main().catch(e=>{ emit({type:'fatal',error:e.message}); try{flush();}catch{} process.exit(1); });
 `;
 }
 
