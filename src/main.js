@@ -1550,8 +1550,17 @@ async function main(){
     process.exit(1);
   }
   emit({ type: 'log', message: 'Using browser: ' + CHROMIUM_EXE });
-  const browser = await chromium.launch({ headless: HEADLESS, executablePath: CHROMIUM_EXE });
-  const page=await(await browser.newContext()).newPage();
+  // v1.3.4 Phase 2: incognito + lean launch. newContext() is already a fresh isolated
+  // (incognito-equivalent) context — no shared cookies/cache. We make it explicit and add
+  // launch args that cut per-worker resource use, which matters a lot in the worker pool
+  // (many Chromiums at once). --disable-gpu only when headless (no rendering surface needed).
+  const _launchArgs = ['--disable-dev-shm-usage','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding'];
+  if (HEADLESS) _launchArgs.push('--disable-gpu');
+  const browser = await chromium.launch({ headless: HEADLESS, executablePath: CHROMIUM_EXE, args: _launchArgs });
+  // Explicit fresh incognito context. No persistent storage — every worker starts clean,
+  // which also sidesteps PestPac session/cache cruft that can slow first navigations.
+  const _ctx = await browser.newContext();
+  const page = await _ctx.newPage();
   let ri=0,ok=0,errs=0,skipped=0,start=Date.now();
   // v1.2.5 item 2.3b: circuit breaker state
   let consecutiveErrors=0,lastSuccessfulRow=0,_breakerTripped=false;
