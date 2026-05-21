@@ -13,9 +13,38 @@ const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-upd
 
 let mainWindow;
 // Map of runId -> { process, runId, profileId, logPath, startedAt, runnerLogStream, runnerPath, credPath }
-// For v1.2.3 only one entry can exist at a time; v1.3.0 will lift this cap.
-const MAX_CONCURRENT_RUNS = 1;
+// v1.3.4 Phase 3: cap is no longer a hard const of 1. It's a runtime ceiling that defaults to
+// a hardware-derived suggestion (see computeHardwareCap) and can be overridden via config.
+// The worker pool spawns up to this many concurrent workers. start-automation enforces it.
 const automationProcesses = new Map();
+// Absolute safety ceiling regardless of config/hardware — prevents a typo'd config from
+// trying to launch 10000 Chromiums. The hardware cap will almost always be lower.
+const MAX_WORKERS_HARD_CEILING = 100;
+// v1.3.4 Phase 3: estimate how many headless Chromium workers this machine can run.
+// Heuristic: each headless worker ~600MB working set under PestPac; also bounded by CPU.
+// We leave headroom (use ~70% of free RAM) so the machine stays responsive. Returns >=1.
+function computeHardwareCap() {
+  try {
+    const freeBytes = os.freemem();
+    const cpus = (os.cpus() || []).length || 2;
+    const perWorkerBytes = 600 * 1024 * 1024; // ~600MB per headless worker, conservative
+    const byRam = Math.floor((freeBytes * 0.70) / perWorkerBytes);
+    const byCpu = Math.max(1, Math.round(cpus * 1.5)); // ~1.5 workers/core for IO-bound browser work
+    const cap = Math.max(1, Math.min(byRam, byCpu, MAX_WORKERS_HARD_CEILING));
+    return cap;
+  } catch (e) {
+    return 1; // safe fallback
+  }
+}
+// The effective cap: config override if set and sane, else hardware suggestion.
+function getMaxConcurrentRuns() {
+  try {
+    const cfg = readConfig();
+    const override = cfg && parseInt(cfg.maxWorkers);
+    if (override && override > 0) return Math.min(override, MAX_WORKERS_HARD_CEILING);
+  } catch (e) {}
+  return computeHardwareCap();
+}
 let keytar = null;
 try { keytar = require('keytar'); } catch(e) {}
 
@@ -141,6 +170,79 @@ ipcMain.handle('install-chromium', async () => {
   return { ok: true };
 });
 
+// v1.3.4 Phase 3: worker-pool sizing. Returns the hardware-derived cap, the current config
+// override (if any), the effective cap, and the raw inputs so the UI can explain the number.
+ipcMain.handle('get-worker-caps', async () => {
+  let cfgOverride = null;
+  try { const c = readConfig(); if (c && parseInt(c.maxWorkers) > 0) cfgOverride = parseInt(c.maxWorkers); } catch(e){}
+  return {
+    hardwareCap: computeHardwareCap(),
+    configOverride: cfgOverride,
+    effectiveCap: getMaxConcurrentRuns(),
+    hardCeiling: MAX_WORKERS_HARD_CEILING,
+    freeMemGB: Math.round(os.freemem() / (1024*1024*1024) * 10) / 10,
+    totalMemGB: Math.round(os.totalmem() / (1024*1024*1024) * 10) / 10,
+    cpuCount: (os.cpus() || []).length,
+    runningWorkers: automationProcesses.size,
+  };
+});
+
+// v1.3.4 Phase 3: license-aware cap. Launches a headless browser with the given profile,
+// logs in, reads PestPac's license page, parses "Number of free licenses:", and returns
+// (free - buffer) as a suggested cap. buffer defaults to 10 so some licenses stay open.
+// Returns { ok, freeLicenses, suggested, error }. Read-only — navigates and scrapes only.
+ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
+  const BUF = (buffer != null) ? Math.max(0, parseInt(buffer)) : 10;
+  const chromiumExe = getBundledChromiumPath();
+  if (!chromiumExe) return { ok: false, error: 'Chromium not found.' };
+  const all = readAllProfiles();
+  const prof = all.find(p => p.id === profileId) || {};
+  if (keytar) {
+    prof.companyKey = await keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
+    prof.username   = await keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
+    prof.password   = await keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
+  }
+  let browser;
+  try {
+    const { chromium } = require('playwright-core');
+    browser = await chromium.launch({ headless: true, executablePath: chromiumExe, args: ['--disable-gpu','--disable-dev-shm-usage'] });
+    const page = await (await browser.newContext()).newPage();
+    // Login (mirrors the runner's loginToPestPac sequence).
+    await page.goto(prof.loginUrl || 'https://login.pestpac.com/', { waitUntil: 'load', timeout: 30000 });
+    await page.waitForSelector('input[name="uid"]', { timeout: 15000 });
+    await page.fill('input[name="uid"]', prof.companyKey || '');
+    await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+    await page.waitForSelector('input[name="username"]', { timeout: 15000 });
+    await page.fill('input[name="username"]', prof.username || '');
+    await page.fill('input[name="password"]', prof.password || '');
+    await page.click('button[data-testid="loginBtn"]');
+    await page.waitForSelector('a[href*="AutoLogin"]', { timeout: 30000 });
+    // Navigate to the license page and read the free-licenses cell.
+    await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
+    // The label cell is <td ...>Number of free licenses:</td>; the value is the NEXT cell.
+    const freeText = await page.evaluate(() => {
+      const tds = Array.from(document.querySelectorAll('td'));
+      for (const td of tds) {
+        if ((td.textContent || '').trim().toLowerCase().startsWith('number of free licenses')) {
+          // value is usually the adjacent sibling cell
+          const sib = td.nextElementSibling;
+          if (sib) return (sib.textContent || '').trim();
+        }
+      }
+      return null;
+    });
+    await browser.close();
+    if (freeText == null) return { ok: false, error: 'Could not find "Number of free licenses" on the license page.' };
+    const free = parseInt(String(freeText).replace(/[^0-9]/g, ''));
+    if (isNaN(free)) return { ok: false, error: 'Free-licenses value was not a number: "' + freeText + '"' };
+    const suggested = Math.max(1, free - BUF);
+    return { ok: true, freeLicenses: free, buffer: BUF, suggested };
+  } catch (e) {
+    try { if (browser) await browser.close(); } catch(_){}
+    return { ok: false, error: e.message };
+  }
+});
+
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 // v1.2.8: resolve a flow by its `name` field. Scans the flows directory, matches by
@@ -165,7 +267,7 @@ function resolveOnceFlowByName(name) {
   return null;
 }
 
-ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes, startMode, resumeAction, runMode, setupFlowId, teardownFlowId }) => {
+ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profileId, headless, runId, resumeFromRow, endRow, errHandle, rowDelayMin, rowDelayMax, selectorTimeout, pageLoadMode, retryCount, breakerThreshold, reauthInterval, retryRowIndexes, startMode, resumeAction, runMode, setupFlowId, teardownFlowId }) => {
   // v1.3.0 Item 3: log every start attempt with state context. Pairs with renderer-side
   // [run] log lines so cross-process traces can be reconstructed after a stuck-state report.
   console.log('[main] start-automation: runId=' + runId + ', profileId=' + profileId + ', resumeFromRow=' + (resumeFromRow||0) + ', currentMapSize=' + automationProcesses.size);
@@ -182,14 +284,13 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
   // v1.2.5 item 2.12: retry-failed-rows. When set, runner processes ONLY these row indexes
   // (source-row numbers, 1-based). Empty/null means normal full-run behavior.
   retryRowIndexes = Array.isArray(retryRowIndexes) ? retryRowIndexes.map(n => parseInt(n)).filter(n => n > 0) : [];
-  // Concurrency guard — refuse if at cap. Prevents zombie runners.
-  if (automationProcesses.size >= MAX_CONCURRENT_RUNS) {
-    const running = Array.from(automationProcesses.values())[0];
-    const startedTime = running ? new Date(running.startedAt).toLocaleTimeString() : 'unknown';
-    // v1.3.0 Item 3: log the rejection with the existing runId so we can tell if the stuck state
-    // is "map didn't clear after a previous run" or "user clicked Run twice fast."
-    console.warn('[main] start-automation REJECTED: cap reached, size=' + automationProcesses.size + ', existing runId=' + (running && running.runId));
-    return { ok: false, error: `Another automation is already running (started ${startedTime}). Stop it first or wait for it to finish.` };
+  // v1.3.4 Phase 3: worker-pool concurrency guard. Refuse only when the pool is at its
+  // effective cap (hardware-derived or config override), not at a hard 1. Each accepted
+  // call becomes one worker with its own runId/row-range.
+  const _maxRuns = getMaxConcurrentRuns();
+  if (automationProcesses.size >= _maxRuns) {
+    console.warn('[main] start-automation REJECTED: pool full, size=' + automationProcesses.size + ', cap=' + _maxRuns);
+    return { ok: false, error: `Worker pool is full (${automationProcesses.size}/${_maxRuns} running). Wait for a worker to finish or raise the worker limit.` };
   }
   const steps = JSON.parse(stepsJson);
   const logPath = path.join(getLogsDir(), `BUU-log-${new Date().toISOString().slice(0,10)}-${runId}.xlsx`);
@@ -304,6 +405,9 @@ ipcMain.handle('start-automation', async (_, { stepsJson, spreadsheetPath, profi
     logPath,
     checkpointPath,
     resumeFrom: resumeFromRow || 0,
+    // v1.3.4 Phase 3: upper row bound for worker-pool sharding. 0 = no bound (process to end).
+    // Each worker gets [resumeFrom, endRow]; the runner skips rows outside its slice.
+    endRow: endRow || 0,
     headless,
     errHandle: errHandle || 'retry',
     rowDelayMin: rowDelayMin || 0,
@@ -565,6 +669,7 @@ function buildRunner(cfg) {
     rowDelayMin, rowDelayMax, chromiumExePath, startMode,
     selectorTimeout, pageLoadMode, retryCount, breakerThreshold,
     reauthInterval, retryRowIndexes,
+    endRow = 0,  // v1.3.4 Phase 3: worker-pool upper row bound (0 = to end)
     // v1.2.8 additions:
     setupSteps = [], teardownSteps = [], runContext = {},
     resumeAction = null  // 'run-teardown-only' skips setup + row loop
@@ -598,6 +703,9 @@ const XLSX = _require('xlsx');
 const LOG_PATH = ${JSON.stringify(logPath)};
 const CHECKPOINT = ${JSON.stringify(checkpointPath)};
 const RESUME_FROM = ${resumeFrom};
+// v1.3.4 Phase 3: worker-pool upper row bound. Worker processes source rows
+// (RESUME_FROM, END_ROW]. 0 means no upper bound (process to the end of the sheet).
+const END_ROW = ${endRow};
 const HEADLESS = ${headless};
 const ERR_HANDLE = ${JSON.stringify(errHandle)};
 const ROW_DELAY_MIN = ${Math.round(parseFloat(rowDelayMin) * 1000)};
@@ -1723,6 +1831,9 @@ async function main(){
       if(_stopRequested) break;
       ri++;
       if(ri<=RESUME_FROM)continue;
+      // v1.3.4 Phase 3: worker-pool upper bound. Once past this worker's slice, stop —
+      // remaining rows belong to other workers. END_ROW=0 means no bound (full sheet).
+      if(END_ROW > 0 && ri > END_ROW) break;
       // v1.2.5 item 2.12: retry-failed mode skips any source row not in the retry set.
       // Increment ri (so log row numbers match source) but skip processing entirely.
       if(IS_RETRY_RUN && !RETRY_ROW_INDEXES.has(ri)) continue;

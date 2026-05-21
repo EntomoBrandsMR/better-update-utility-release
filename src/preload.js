@@ -34,4 +34,7 @@ contextBridge.exposeInMainWorld('api', {
   discardCheckpoint:   (p)     => ipcRenderer.invoke('discard-checkpoint', p),
   onAutomationEvent:   (cb)    => ipcRenderer.on('automation-event', (_, d) => cb(d)),
   runControl:          (d)     => ipcRenderer.invoke('run-control', d),
+  // v1.3.4 Phase 3: worker-pool sizing + license-aware cap.
+  getWorkerCaps:       ()      => ipcRenderer.invoke('get-worker-caps'),
+  checkLicenseCap:     (d)     => ipcRenderer.invoke('check-license-cap', d),
 });
