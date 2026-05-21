@@ -1054,6 +1054,10 @@ textarea { resize: vertical; min-height: 60px; }
       <div class="run-stat"><div class="run-stat-val" id="rs-pct">0%</div><div class="run-stat-lbl">Complete</div></div>
       <div class="run-stat"><div class="run-stat-val" id="rs-elapsed">-</div><div class="run-stat-lbl">Elapsed</div></div>
     </div>
+    <!-- v2.0.0: staged-jobs list. Shows jobs queued for the pool (label, rows, remove).
+         Visible whenever there are staged jobs; lets you review/remove before Run pool. -->
+    <div id="stagedJobsHd" style="display:none;font-size:11px;font-weight:600;color:var(--t3);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em">Staged jobs <button class="btn sm" style="margin-left:8px;padding:1px 8px" onclick="poolClearStaged()">Clear all</button></div>
+    <div id="stagedJobsList" style="display:none;flex-direction:column;gap:6px"></div>
     <!-- v1.3.4 Phase 3: worker pool grid. One compact stat strip per live worker, rendered
          into here by the pool code. Hidden for single-run mode (the aggregate strip above
          is the whole story then). Live-output console removed per design — overall numbers
@@ -1075,12 +1079,24 @@ textarea { resize: vertical; min-height: 60px; }
       <div style="display:flex;gap:6px">
         <button class="btn grn sm" onclick="openLogsFolder()">Open logs folder</button>
         <button class="btn sm" id="openLastLogBtn" onclick="openCurrentLog()" style="display:none">Open current log</button>
+        <button class="btn sm" onclick="loadMergedPoolLog()" title="Combined per-row record across all pool workers (from the resume journal)">⚡ Merged pool log</button>
         <button class="btn red sm" onclick="clearLogTable()">Clear table</button>
       </div>
     </div>
     <p style="font-size:12px;color:var(--t2);margin-bottom:14px;line-height:1.65">
       The full Excel log saves to your logs folder continuously during a run. This table shows the last 500 entries.
     </p>
+    <!-- v2.0.0: merged pool log — combined per-row record across all workers, read from the
+         journal. Hidden until "Merged pool log" is clicked. -->
+    <div id="mergedPoolLog" style="display:none;margin-bottom:16px">
+      <div id="mergedPoolLogStats" style="font-size:12px;color:var(--t2);margin-bottom:8px"></div>
+      <div class="log-wrap" style="max-height:340px">
+        <table class="log-tbl">
+          <thead><tr><th style="width:60px">Row</th><th style="width:100px">Status</th><th>Job</th></tr></thead>
+          <tbody id="mergedPoolLogBody"></tbody>
+        </table>
+      </div>
+    </div>
     <div id="logStats" class="stat-grid" style="display:none"></div>
     <div class="log-wrap">
       <table class="log-tbl">
@@ -2959,7 +2975,10 @@ async function poolStageCurrent(){
 // "Add job to pool" — stage current flow/sheet without starting, for multi-flow runs.
 async function poolAddJob(){
   const ok = await poolStageCurrent();
-  if(ok) alert('Job staged. Load a different flow/spreadsheet and add more, or click "Run pool" to start.');
+  if(ok){
+    if(API.poolGetStatus) await API.poolGetStatus(); // refresh staged-jobs list
+    go('run'); // show the staged-jobs list so the user sees it was added
+  }
 }
 
 function poolUIActive(active){
@@ -2980,10 +2999,13 @@ async function stopWorkerPool(){
 }
 
 // v2.0.0: render coordinator status (pushed via onPoolStatus). Builds the per-worker grid
-// + aggregate strip from main's COORD state. Replaces the old per-runId static rendering.
+// + aggregate strip from main's COORD state. Also renders the staged-jobs list (which shows
+// even when the pool is NOT running, so you can review/remove before launch).
 function renderCoordStatus(st){
   const grid=document.getElementById('workerGrid');
   const hd=document.getElementById('workerGridHd');
+  // ── staged-jobs list (visible whenever jobs exist; remove buttons only when not running) ──
+  renderStagedJobs(st);
   if(!st || !st.active){ if(grid)grid.style.display='none'; if(hd)hd.style.display='none'; return; }
   grid.style.display='grid'; hd.style.display='';
   // Per-worker cards.
@@ -3007,6 +3029,35 @@ function renderCoordStatus(st){
   document.getElementById('runStatusMsg').textContent='Pool · '+st.liveWorkers+' worker(s) live, target '+st.desiredWorkers+' · '+done.toLocaleString()+'/'+total.toLocaleString()+' rows';
 }
 
+// Render the staged-jobs list. When the pool is running, jobs show live progress and the
+// remove button is hidden (can't remove a running job). When idle, shows remove buttons.
+function renderStagedJobs(st){
+  const hd=document.getElementById('stagedJobsHd');
+  const list=document.getElementById('stagedJobsList');
+  if(!hd||!list) return;
+  const jobs=(st&&st.jobs)||[];
+  if(jobs.length===0){ hd.style.display='none'; list.style.display='none'; return; }
+  hd.style.display=''; list.style.display='flex';
+  const running = st && st.active;
+  list.innerHTML = jobs.map(function(j){
+    const prog = running ? (' · '+j.done.toLocaleString()+'/'+j.totalRows.toLocaleString()+' done'+(j.remaining!=null?(' · '+j.remaining.toLocaleString()+' left'):'')) : (' · '+j.totalRows.toLocaleString()+' rows');
+    const rm = running ? '' : '<button class="btn sm" style="padding:1px 8px;color:var(--red)" onclick="poolRemoveStaged(\''+j.jobId+'\')">Remove</button>';
+    return '<div class="card" style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border:1px solid var(--brd)">'
+      + '<div style="font-size:12px;color:var(--t2)"><b>'+(j.label||j.jobId)+'</b><span style="color:var(--t3)">'+prog+'</span></div>'
+      + rm + '</div>';
+  }).join('');
+}
+
+async function poolRemoveStaged(jobId){
+  if(API.poolRemoveJob) await API.poolRemoveJob({ jobId });
+  if(API.poolGetStatus) await API.poolGetStatus(); // triggers a fresh pool-status emit
+}
+async function poolClearStaged(){
+  if(!confirm('Clear all staged jobs?')) return;
+  if(API.poolClearJobs) await API.poolClearJobs();
+  if(API.poolGetStatus) await API.poolGetStatus();
+}
+
 // Wire coordinator events once.
 if(API.onPoolStatus) API.onPoolStatus(function(st){ renderCoordStatus(st); });
 if(API.onPoolComplete) API.onPoolComplete(function(d){
@@ -3024,6 +3075,37 @@ function startWorkerPool(){ /* superseded by coordinator poolRunClick */ }
 function poolHandleEvent(){ }
 function poolFinished(){ poolUIActive(false); }
 function openLogsFolder(){if(API.openLogsFolder)API.openLogsFolder();}
+
+// v2.0.0: load the merged pool log (combined per-row record from the journal across all
+// workers). Reads the current run's journal, or the most recent orphan if none active.
+async function loadMergedPoolLog(){
+  const wrap=document.getElementById('mergedPoolLog');
+  const stats=document.getElementById('mergedPoolLogStats');
+  const body=document.getElementById('mergedPoolLogBody');
+  if(!API.poolReadJournal){ alert('Merged log not available.'); return; }
+  let poolId=null;
+  // If no active pool, offer the most recent orphan journal.
+  const status = API.poolGetStatus ? await API.poolGetStatus() : {active:false};
+  if(!status.active && API.poolFindOrphans){
+    const orphans = await API.poolFindOrphans();
+    if(orphans && orphans.length){ poolId = orphans[0].poolId; }
+  }
+  const res = await API.poolReadJournal(poolId?{poolId}:{});
+  if(!res || res.ok===false){ alert('No pool log found.'+(res&&res.error?('\n\n'+res.error):'')); return; }
+  wrap.style.display='';
+  stats.innerHTML = '<b>'+res.counts.total.toLocaleString()+'</b> rows recorded · '
+    + '<span style="color:var(--green)">'+res.counts.ok.toLocaleString()+' ok</span> · '
+    + '<span style="color:var(--amber)">'+res.counts.skip.toLocaleString()+' skip</span> · '
+    + '<span style="color:var(--red)">'+res.counts.error.toLocaleString()+' error</span>'
+    + ' &nbsp; <span style="color:var(--t3)">(pool '+res.poolId+')</span>';
+  // Render up to 1000 rows for performance; note if truncated.
+  const rows = res.rows.slice(0,1000);
+  body.innerHTML = rows.map(function(r){
+    const sc = (r.status==='ok'||r.status==='ok (retry)')?'s-ok':r.status==='error'?'s-err':'s-skip';
+    return '<tr><td>'+r.row+'</td><td class="'+sc+'">'+r.status+'</td><td style="font-size:11px;color:var(--t2)">'+(r.job||'')+'</td></tr>';
+  }).join('');
+  if(res.rows.length>1000){ body.innerHTML += '<tr><td colspan="3" style="text-align:center;color:var(--t3);padding:10px">… '+(res.rows.length-1000).toLocaleString()+' more rows (open the per-worker Excel files for the full record)</td></tr>'; }
+}
 function clearLogTable(){if(!confirm('Clear the log table? (Excel files on disk are not affected.)'))return;logEntries=[];document.getElementById('logBody').innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--t3);padding:28px;font-size:12px">No log entries yet.</td></tr>';document.getElementById('nb-log').style.display='none';}
 
 async function loadProfiles(){

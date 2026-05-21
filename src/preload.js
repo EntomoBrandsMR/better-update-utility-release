@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('api', {
   poolFindOrphans:     ()      => ipcRenderer.invoke('pool-find-orphans'),
   poolResume:          (d)     => ipcRenderer.invoke('pool-resume', d),
   poolDiscardOrphan:   (d)     => ipcRenderer.invoke('pool-discard-orphan', d),
+  poolReadJournal:     (d)     => ipcRenderer.invoke('pool-read-journal', d),
   onPoolStatus:        (cb)    => ipcRenderer.on('pool-status', (_, d) => cb(d)),
   onPoolComplete:      (cb)    => ipcRenderer.on('pool-complete', (_, d) => cb(d)),
   onPoolLicenseUpdate: (cb)    => ipcRenderer.on('pool-license-update', (_, d) => cb(d)),

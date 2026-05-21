@@ -717,6 +717,39 @@ ipcMain.handle('pool-discard-orphan', async (_, { poolId }) => {
   return { ok: true };
 });
 
+// v2.0.0 merged log: read a pool journal (current run if poolId omitted) and return a merged,
+// per-row record across ALL workers/jobs. This is the combined log the per-worker Excel files
+// don't give you on their own. Returns { ok, poolId, jobs:[{jobId,label}], rows:[{job,row,status}], counts }.
+ipcMain.handle('pool-read-journal', async (_, args) => {
+  const poolId = (args && args.poolId) || COORD.poolId;
+  if (!poolId) return { ok: false, error: 'No active or specified pool run.' };
+  const jp = coordJournalPath(poolId);
+  const metaPath = coordJournalMetaPath(poolId);
+  if (!fs.existsSync(jp)) return { ok: false, error: 'Journal not found for ' + poolId };
+  let meta = { jobs: [] };
+  try { if (fs.existsSync(metaPath)) meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch {}
+  const labelByJob = {}; for (const j of (meta.jobs||[])) labelByJob[j.jobId] = j.label;
+  const rows = [];
+  const counts = { ok: 0, skip: 0, error: 0, total: 0 };
+  try {
+    const lines = fs.readFileSync(jp, 'utf8').split('\n');
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const rec = JSON.parse(line);
+        const status = rec.s;
+        rows.push({ job: labelByJob[rec.j] || rec.j, row: rec.r, status });
+        counts.total++;
+        if (status === 'ok' || status === 'ok (retry)') counts.ok++;
+        else if (status === 'skip') counts.skip++;
+        else if (status === 'error') counts.error++;
+      } catch {}
+    }
+  } catch (e) { return { ok: false, error: e.message }; }
+  rows.sort((a,b) => a.row - b.row);
+  return { ok: true, poolId, jobs: (meta.jobs||[]).map(j=>({jobId:j.jobId,label:j.label})), rows, counts };
+});
+
 // Scale the live worker count toward `target`: spawn if below, retire surplus if above.
 // Retirement is graceful — surplus workers get 'drain' and finish their current batch.
 async function coordScaleTo(target){
