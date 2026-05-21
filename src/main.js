@@ -67,7 +67,89 @@ const COORD = {
   workers: new Map(),   // workerId -> { workerId, jobId, process, status, batch, done, ok, err, skip, startedAt, runnerLogStream, runnerPath, credPath }
   desiredWorkers: 0,    // target worker count (license/hardware bounded)
   licenseTimer: null,
+  poolId: null,         // v2.0.0 resume: id for this pool run's journal file
+  journalStream: null,  // append-only results journal (one line per completed row)
 };
+
+// v2.0.0 resume: append-only journal. Path is per-pool-run so a fresh run never appends to
+// an old one. Lives in userData (local, atomic small appends).
+function coordJournalPath(poolId){ return path.join(app.getPath('userData'), `pool-journal-${poolId}.jsonl`); }
+function coordJournalMetaPath(poolId){ return path.join(app.getPath('userData'), `pool-journal-${poolId}.meta.json`); }
+
+// Open a fresh journal for a new pool run. Writes a meta sidecar describing the jobs so a
+// resume can reconstruct queues without the renderer re-staging them.
+function coordOpenJournal(){
+  COORD.poolId = 'pool' + Date.now();
+  try{
+    // Meta: enough to rebuild each job (label, sheet, profile, flow, total). flowSteps included
+    // so resume is fully self-contained even if the user changed the in-app flow since.
+    const meta = {
+      poolId: COORD.poolId,
+      batchSize: COORD.batchSize,
+      startedAt: new Date().toISOString(),
+      jobs: Array.from(COORD.jobs.values()).map(j => ({
+        jobId: j.jobId, label: j.label, spreadsheetPath: j.spreadsheetPath,
+        profileId: j.profileId, setupFlowId: j.setupFlowId, teardownFlowId: j.teardownFlowId,
+        errHandle: j.errHandle, totalRows: j.totalRows, flowSteps: j.flowSteps,
+      })),
+    };
+    fs.writeFileSync(coordJournalMetaPath(COORD.poolId), JSON.stringify(meta));
+    COORD.journalStream = fs.createWriteStream(coordJournalPath(COORD.poolId), { flags: 'a' });
+  }catch(e){ console.error('[coord] could not open journal:', e.message); COORD.journalStream = null; }
+}
+
+// Append one completed-row record. Called on every row-result BEFORE updating counters, so
+// the durable record always precedes the in-memory state. One short line; OS-atomic for small writes.
+function coordJournalAppend(jobId, row, status){
+  if(!COORD.journalStream) return;
+  try{ COORD.journalStream.write(JSON.stringify({ j: jobId, r: row, s: status }) + '\n'); }catch(e){}
+}
+
+// Close + clean up the journal on clean pool completion (nothing to resume).
+function coordCloseJournal(deleteFiles){
+  try{ if(COORD.journalStream){ COORD.journalStream.end(); COORD.journalStream = null; } }catch(e){}
+  if(deleteFiles && COORD.poolId){
+    try{ fs.unlinkSync(coordJournalPath(COORD.poolId)); }catch(e){}
+    try{ fs.unlinkSync(coordJournalMetaPath(COORD.poolId)); }catch(e){}
+  }
+}
+
+// Scan userData for orphan pool journals (a pool run that didn't complete cleanly). Returns
+// [{poolId, startedAt, jobs:[{label,total,completed,remaining}], totalRemaining}].
+function coordFindOrphanPools(){
+  const dir = app.getPath('userData');
+  const out = [];
+  let files; try{ files = fs.readdirSync(dir); }catch{ return out; }
+  for(const f of files){
+    const m = f.match(/^pool-journal-(pool\d+)\.meta\.json$/);
+    if(!m) continue;
+    const poolId = m[1];
+    try{
+      const meta = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      // Count completed rows per job from the journal.
+      const completedByJob = {};
+      const jp = coordJournalPath(poolId);
+      if(fs.existsSync(jp)){
+        const lines = fs.readFileSync(jp, 'utf8').split('\n');
+        for(const line of lines){ if(!line) continue; try{ const rec = JSON.parse(line); (completedByJob[rec.j] = completedByJob[rec.j] || new Set()).add(rec.r); }catch{} }
+      }
+      let totalRemaining = 0;
+      const jobs = meta.jobs.map(j => {
+        const completed = (completedByJob[j.jobId] || new Set()).size;
+        const remaining = Math.max(0, j.totalRows - completed);
+        totalRemaining += remaining;
+        return { jobId: j.jobId, label: j.label, total: j.totalRows, completed, remaining };
+      });
+      // Only surface pools that actually have remaining work.
+      if(totalRemaining > 0) out.push({ poolId, startedAt: meta.startedAt, jobs, totalRemaining });
+      else { // fully done but never cleaned — remove the stale files
+        try{ fs.unlinkSync(jp); }catch{} try{ fs.unlinkSync(path.join(dir, f)); }catch{}
+      }
+    }catch(e){}
+  }
+  out.sort((a,b)=>(b.startedAt||'').localeCompare(a.startedAt||''));
+  return out;
+}
 
 // Count rows in a spreadsheet (sync, used at job submission to build the queue size).
 function countRowsSync(spreadsheetPath){
@@ -83,13 +165,16 @@ function countRowsSync(spreadsheetPath){
 }
 
 // Hand out the next batch of row indexes (1-based) for a job. Returns [] when drained.
+// v2.0.0 resume: skips rows already in job.completedRows so a resumed pool doesn't redo them.
 function coordNextBatch(jobId){
   const job = COORD.jobs.get(jobId);
   if(!job) return [];
   const batch = [];
   while(batch.length < COORD.batchSize && job.nextRow <= job.totalRows){
-    batch.push(job.nextRow);
+    const r = job.nextRow;
     job.nextRow++;
+    if(job.completedRows && job.completedRows.has(r)) continue; // already done in a prior run
+    batch.push(r);
   }
   return batch;
 }
@@ -235,6 +320,9 @@ function coordHandleWorkerMessage(workerId, msg){
       break;
     }
     case 'row-result': {
+      // v2.0.0 resume: journal FIRST (durable record precedes in-memory counters).
+      coordJournalAppend(w.jobId, msg.row, msg.status);
+      if(job && job.completedRows) job.completedRows.add(msg.row);
       w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else if(msg.status==='skip') w.skip++; else if(msg.status==='error') w.err++;
       if(job){ job.done++; if(msg.status==='ok'||msg.status==='ok (retry)') job.ok++; else if(msg.status==='skip') job.skip++; else if(msg.status==='error') job.err++; }
       break;
@@ -254,6 +342,8 @@ function coordCheckComplete(){
   if(COORD.active && COORD.workers.size === 0 && coordAllDrained()){
     COORD.active = false;
     if(COORD.licenseTimer){ clearInterval(COORD.licenseTimer); COORD.licenseTimer = null; }
+    // v2.0.0 resume: clean completion — close + delete the journal (nothing to resume).
+    coordCloseJournal(true);
     if(mainWindow) mainWindow.webContents.send('pool-complete', {
       jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err, skip:j.skip })),
     });
@@ -504,8 +594,9 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || 10));
   // Reset per-run job counters in case jobs were staged then this is a restart.
-  for (const job of COORD.jobs.values()) { job.nextRow = 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; }
+  for (const job of COORD.jobs.values()) { job.nextRow = 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; if(!job.completedRows) job.completedRows = new Set(); }
   COORD.active = true;
+  coordOpenJournal();  // v2.0.0 resume: start the append-only journal for this run
 
   const hwCap = computeHardwareCap();
   let target = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING, hwCap));
@@ -560,6 +651,70 @@ ipcMain.handle('pool-set-workers', async (_, { workerCount }) => {
 ipcMain.handle('pool-get-status', async () => {
   coordEmitStatus();
   return { active: COORD.active, liveWorkers: COORD.workers.size, desiredWorkers: COORD.desiredWorkers, jobs: COORD.jobs.size };
+});
+
+// v2.0.0 resume: list orphan pool runs (journal exists with remaining work).
+ipcMain.handle('pool-find-orphans', async () => {
+  return coordFindOrphanPools();
+});
+
+// v2.0.0 resume: rebuild the pool from an orphan journal and restart it. Reconstructs each
+// job from the meta sidecar, loads the completed-row sets from the journal, then APPENDS to
+// the SAME journal (so the resumed run keeps one continuous record).
+ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin }) => {
+  if (COORD.active) return { ok: false, error: 'Pool already running.' };
+  const metaPath = coordJournalMetaPath(poolId);
+  const jp = coordJournalPath(poolId);
+  if (!fs.existsSync(metaPath)) return { ok: false, error: 'Resume metadata not found for ' + poolId };
+  let meta;
+  try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch(e){ return { ok:false, error:'Could not read resume metadata: '+e.message }; }
+
+  // Load completed rows per job from the journal.
+  const completedByJob = {};
+  if (fs.existsSync(jp)) {
+    const lines = fs.readFileSync(jp, 'utf8').split('\n');
+    for (const line of lines){ if(!line) continue; try{ const rec=JSON.parse(line); (completedByJob[rec.j]=completedByJob[rec.j]||new Set()).add(rec.r); }catch{} }
+  }
+
+  // Rebuild COORD.jobs from meta, pre-seeding completedRows.
+  COORD.jobs.clear();
+  for (const j of meta.jobs){
+    COORD.jobs.set(j.jobId, {
+      jobId: j.jobId, label: j.label, flowSteps: j.flowSteps,
+      spreadsheetPath: j.spreadsheetPath, profileId: j.profileId,
+      setupFlowId: j.setupFlowId, teardownFlowId: j.teardownFlowId,
+      errHandle: j.errHandle, totalRows: j.totalRows,
+      nextRow: 1, done: 0, ok: 0, err: 0, skip: 0, finished: false,
+      completedRows: completedByJob[j.jobId] || new Set(),
+    });
+  }
+  // Seed counters from the completed sets so the UI shows real progress immediately.
+  for (const job of COORD.jobs.values()){ job.done = job.completedRows.size; }
+
+  COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || meta.batchSize || 10));
+  COORD.active = true;
+  // Re-open the SAME journal in append mode (continue the continuous record).
+  COORD.poolId = poolId;
+  try { COORD.journalStream = fs.createWriteStream(jp, { flags: 'a' }); } catch(e){ COORD.journalStream = null; }
+
+  const hwCap = computeHardwareCap();
+  let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, j.totalRows - j.completedRows.size);
+  let target = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING, hwCap, Math.max(1, totalRemaining)));
+  COORD.desiredWorkers = target;
+  for (let i = 0; i < target; i++) { await coordSpawnWorker(); }
+
+  if (elastic && licenseProfileId) {
+    COORD.licenseTimer = setInterval(() => coordLicenseScale(licenseProfileId, licenseBuffer, hwCap), Math.max(1, parseInt(licenseIntervalMin) || 5) * 60 * 1000);
+  }
+  coordEmitStatus();
+  return { ok: true, resumed: true, totalRemaining, started: COORD.workers.size };
+});
+
+// v2.0.0 resume: discard an orphan pool (delete its journal + meta).
+ipcMain.handle('pool-discard-orphan', async (_, { poolId }) => {
+  try { fs.unlinkSync(coordJournalPath(poolId)); } catch {}
+  try { fs.unlinkSync(coordJournalMetaPath(poolId)); } catch {}
+  return { ok: true };
 });
 
 // Scale the live worker count toward `target`: spawn if below, retire surplus if above.

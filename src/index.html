@@ -1241,10 +1241,47 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
       } catch(e) { console.error('Orphan checkpoint scan failed:', e); }
     }
+    // v2.0.0: scan for orphan POOL runs (elastic pool that didn't finish) and offer resume.
+    if (API.poolFindOrphans) {
+      try {
+        const pools = await API.poolFindOrphans();
+        for (const p of pools) {
+          await offerPoolResume(p);
+          break; // only offer the most recent; resuming starts a run
+        }
+      } catch(e) { console.error('Orphan pool scan failed:', e); }
+    }
   } catch(e) {
     console.error('Init error:', e);
   }
 });
+
+// v2.0.0: offer to resume an unfinished pool run. Uses the journal's per-row record, so we
+// know exactly how many rows remain. Resuming spawns fresh workers that skip completed rows.
+async function offerPoolResume(p){
+  const total = p.jobs.reduce((s,j)=>s+j.total,0);
+  const done = p.jobs.reduce((s,j)=>s+j.completed,0);
+  const when = p.startedAt ? new Date(p.startedAt).toLocaleString() : 'unknown time';
+  const jobLines = p.jobs.map(j=>'  • '+j.label+': '+j.completed.toLocaleString()+'/'+j.total.toLocaleString()+' done, '+j.remaining.toLocaleString()+' left').join('\n');
+  const msg = 'Unfinished worker pool found (started '+when+').\n\n'
+    + done.toLocaleString()+' of '+total.toLocaleString()+' rows completed · '+p.totalRemaining.toLocaleString()+' remaining\n\n'+jobLines
+    + '\n\nResume it now? (Cancel lets you discard or ignore it.)';
+  if(confirm(msg)){
+    const n = Math.max(1, Math.min(100, parseInt((document.getElementById('poolWorkerCount')||{}).value)||4));
+    const batchSize = parseInt((document.getElementById('poolBatchSize')||{}).value) || 10;
+    const elastic = !!(document.getElementById('poolElastic')||{}).checked;
+    const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
+    const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
+    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
+    if(res && res.ok===false){ alert('Could not resume pool: '+(res.error||'unknown')); return; }
+    poolUIActive(true);
+    go('run');
+  } else {
+    if(confirm('Discard this unfinished pool? (Its progress journal will be deleted. Choose Cancel to keep it for later.)')){
+      if(API.poolDiscardOrphan) await API.poolDiscardOrphan({ poolId:p.poolId });
+    }
+  }
+}
 
 async function startChromiumInstall() {
   const btn = document.getElementById('setupStartBtn');
