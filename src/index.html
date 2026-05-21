@@ -2913,7 +2913,7 @@ async function startWorkerPool(n, headlessPool){
   for(let i=0;i<ranges.length;i++){
     const rg=ranges[i];
     const runId = Date.now().toString()+'-'+i;
-    pool.workers.set(runId, {runId, label:'Worker '+(i+1)+' · rows '+(rg.start+1)+'–'+rg.end, total:rg.end-rg.start, done:0, ok:0, err:0, skip:0, status:'starting', startedAt:Date.now(), flowName:(currentFlowName||'flow')});
+    pool.workers.set(runId, {runId, label:'Worker '+(i+1)+' · rows '+(rg.start+1)+'–'+rg.end, total:rg.end-rg.start, done:0, ok:0, err:0, skip:0, status:'starting', startedAt:Date.now(), flowName:(flowName||'flow')});
     pool._lastRunId=runId;
     const res = await API.startAutomation({
       stepsJson, spreadsheetPath: ssPath, profileId: activeProfileId,
@@ -2989,7 +2989,7 @@ async function poolStageCurrent(){
   const _setupFlowId = (typeof setupFlowId!=='undefined') ? setupFlowId : null;
   const _teardownFlowId = (typeof teardownFlowId!=='undefined') ? teardownFlowId : null;
   const res = await API.poolSubmitJob({
-    label: (currentFlowName||'flow')+' · '+ssName,
+    label: (flowName||'flow')+' · '+ssName,
     flowSteps: allSteps(),
     spreadsheetPath: ssPath,
     profileId: activeProfileId,
