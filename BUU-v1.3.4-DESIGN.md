@@ -480,6 +480,17 @@ never reported. Confirm `requestStop`/`stop-automation` deletes from `automation
 **Effort estimate:** 1–1.5 hr. Startup watchdog + guaranteed guard-clear on spawn failure / process exit /
 no-first-event. Validate runner template after if any runner-side change; mostly main.js + renderer.
 
+**UPDATE 2 (Matthew, 2026-05-20) — the guard blocks RESUME/RETRY too, raising priority.** Trying to
+"restart missed steps" (resume-from-checkpoint, and/or retry-failed-rows — confirm which feature name with
+Matthew next session) throws the SAME "Another automation is already running" error as starting a second
+flow. This confirms the stuck `automationProcesses` guard blocks EVERY path that calls `start-automation`,
+not just a manual second run — resume and retry are collateral damage. So Item I is not an edge case; it
+blocks a whole class of normal operations (run-again-after-stop, resume, retry). Fix priority: HIGH, do
+early in 1.3.4. The fix is the same root cause: ensure the main-process guard map is reliably cleared on
+stop / completion / spawn-failure / process-exit, and that resume & retry paths either reuse the cleared
+state or don't trip the guard at all. While fixing, audit ALL callers of start-automation (fresh run,
+second run, resume-from-checkpoint, retry-failed-rows) against the guard so each starts clean.
+
 ---
 
 ## ITEM J — Step drag-reorder: no auto-scroll while dragging (made worse by the bigger UI)
