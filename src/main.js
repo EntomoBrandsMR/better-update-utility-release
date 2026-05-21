@@ -13,7 +13,10 @@ const SERVICE_NAME = 'BUU2';
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
 // userData directory so the two installs are fully isolated and can run side by side.
 // Set BEFORE app is ready (see app.setPath call near startup).
-const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version.json';
+// v2.0.0: BUU 2.0 has its OWN update channel so it never cross-wires with Legacy. Legacy
+// reads version.json (1.3.x line); BUU 2.0 reads version-buu2.json (2.x line). The two apps
+// never see each other's updates.
+const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version-buu2.json';
 
 let mainWindow;
 // Map of runId -> { process, runId, profileId, logPath, startedAt, runnerLogStream, runnerPath, credPath }
@@ -361,8 +364,47 @@ function getLogsDir() {
 }
 function getFlowsDir() {
   const dir = path.join(app.getPath('userData'), 'flows');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const fresh = !fs.existsSync(dir);
+  if (fresh) fs.mkdirSync(dir, { recursive: true });
+  // v2.0.0: one-time migration of Legacy's saved flows into BUU 2.0 (copy, not share).
+  // Runs once — guarded by a .migrated marker — so after the copy the two apps stay fully
+  // independent (editing a flow in 2.0 never touches Legacy's, and vice versa).
+  migrateLegacyFlowsOnce(dir);
   return dir;
+}
+
+// Copy Legacy's flow .json files into BUU 2.0's flows dir, exactly once. No-op for the Legacy
+// build itself (its source dir == its dest dir). Marker file prevents re-copying so the user's
+// own deletions/edits in 2.0 are never undone by a later launch.
+function migrateLegacyFlowsOnce(destDir) {
+  try {
+    const marker = path.join(destDir, '.legacy-flows-migrated');
+    if (fs.existsSync(marker)) return; // already migrated
+    // Legacy's userData lives next to ours under %APPDATA% (roaming). Resolve its flows dir.
+    const appData = app.getPath('appData'); // %APPDATA% (Roaming) — parent of all app userData dirs
+    const legacyFlows = path.join(appData, 'better-update-utility', 'flows');
+    // Guard: if this IS the Legacy app (same path), don't copy onto itself.
+    if (path.normalize(legacyFlows) === path.normalize(destDir)) { return; }
+    if (!fs.existsSync(legacyFlows)) {
+      // No Legacy flows to copy (fresh machine, or Legacy never installed). Still drop the
+      // marker so we don't re-scan every launch.
+      fs.writeFileSync(marker, new Date().toISOString());
+      return;
+    }
+    let copied = 0;
+    for (const f of fs.readdirSync(legacyFlows)) {
+      if (!f.toLowerCase().endsWith('.json')) continue;
+      const src = path.join(legacyFlows, f);
+      const dst = path.join(destDir, f);
+      try {
+        if (!fs.existsSync(dst)) { fs.copyFileSync(src, dst); copied++; }
+      } catch (e) { /* skip a single bad file, keep going */ }
+    }
+    fs.writeFileSync(marker, JSON.stringify({ at: new Date().toISOString(), copied, from: legacyFlows }));
+    console.log(`[migrate] copied ${copied} Legacy flow(s) into BUU 2.0`);
+  } catch (e) {
+    console.error('[migrate] flow migration failed (non-fatal):', e.message);
+  }
 }
 function getBrowsersDir() {
   const dir = path.join(app.getPath('userData'), 'browsers');
