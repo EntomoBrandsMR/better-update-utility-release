@@ -896,6 +896,7 @@ textarea { resize: vertical; min-height: 60px; }
       <button class="add-opt" onclick="addStep('wait')">Wait</button>
       <button class="add-opt" onclick="addStep('assert')">Assert / verify</button>
       <button class="add-opt" onclick="addStep('dialog')">Handle dialog</button>
+      <button class="add-opt" onclick="addStep('fileupload')">Upload file</button>
       <button class="add-opt" onclick="addStep('textedit')">Text edit</button>
     </div>
     <div class="infobox">
@@ -1473,6 +1474,10 @@ const SM = {
     const when = s.dialogMatch ? 'if contains "'+s.dialogMatch+'"' : 'any dialog';
     return (action==='accept'?'Accept':'Dismiss') + ' dialog — ' + when;
   }},
+  fileupload: { label:'Upload file', badge:'bd-edit', desc: s => {
+    const src = s.pathColumn ? ('path from {{'+s.pathColumn+'}}') : (s.filePath ? s.filePath : 'no path set');
+    return 'Upload file → ' + (s.selector||'(no selector)') + ' · ' + src;
+  }},
 };
 
 function renderSteps() {
@@ -1748,6 +1753,12 @@ function bodyHTML(s) {
   if(s.type==='assert') return '<div class="row">' + selField(s.id,'selector',s.selector||'','.toast-success','CSS selector to verify') + '<div class="fg"><label>Expected text (optional)</label><input type="text" id="fi-' + s.id + '-expected" value="' + esc(s.expected) + '" placeholder="Record saved" oninput="u(' + s.id + ',\'expected\',this.value)"/></div></div>' + findByTextBlock(s) + '<div class="row"><div class="fg"><label>On failure</label><select onchange="u(' + s.id + ',\'onFail\',this.value)"><option ' + (!s.onFail||s.onFail==='stop'?'selected':'') + ' value="stop">Stop automation</option><option ' + (s.onFail==='skip'?'selected':'') + ' value="skip">Skip row</option><option ' + (s.onFail==='log'?'selected':'') + ' value="log">Log and continue</option></select></div></div>';
 
   if(s.type==='dialog') return '<div class="row"><div class="fg"><label>Action</label><select onchange="u(' + s.id + ',\'dialogAction\',this.value)"><option ' + (!s.dialogAction||s.dialogAction==='accept'?'selected':'') + ' value="accept">Accept (click OK / confirm)</option><option ' + (s.dialogAction==='dismiss'?'selected':'') + ' value="dismiss">Dismiss (click Cancel)</option></select><div class="hint">Accept clicks OK on confirm dialogs. Dismiss clicks Cancel.</div></div><div class="fg"><label>Only trigger if dialog contains (optional)</label><input type="text" id="fi-' + s.id + '-dialogMatch" value="' + esc(s.dialogMatch) + '" placeholder="e.g. delete, are you sure" oninput="u(' + s.id + ',\'dialogMatch\',this.value)"/><div class="hint">Leave blank to handle any dialog. If set, only handles dialogs where the message contains this text.</div></div></div>';
+  if(s.type==='fileupload') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[type="file"]','File input CSS selector') + '</div>'
+    + '<div class="row"><div class="fg"><label>File path source</label><select onchange="u(' + s.id + ',\'pathSource\',this.value);renderSteps()"><option ' + (!s.pathSource||s.pathSource==='column'?'selected':'') + ' value="column">From a spreadsheet column</option><option ' + (s.pathSource==='fixed'?'selected':'') + ' value="fixed">Fixed folder + filename column</option></select><div class="hint">The file must already exist on this PC at the resolved path.</div></div></div>'
+    + ((!s.pathSource||s.pathSource==='column')
+        ? (tokenBar(s.id,'pathColumn') + '<div class="row">' + valField(s.id,'pathColumn',s.pathColumn||'','{{FilePath}}','Column holding the full file path') + '</div>')
+        : ('<div class="row"><div class="fg"><label>Folder (fixed)</label><input type="text" id="fi-' + s.id + '-baseFolder" value="' + esc(s.baseFolder) + '" placeholder="C:\\\\Docs\\\\Uploads" oninput="u(' + s.id + ',\'baseFolder\',this.value)"/><div class="hint">Base folder all files live in.</div></div>' + valField(s.id,'fileNameColumn',s.fileNameColumn||'','{{FileName}}','Column holding the file name') + '</div>'))
+    + '<div class="row"><div class="fg"><label>If file missing</label><select onchange="u(' + s.id + ',\'onMissing\',this.value)"><option ' + (!s.onMissing||s.onMissing==='skip'?'selected':'') + ' value="skip">Skip row (count as skipped)</option><option ' + (s.onMissing==='error'?'selected':'') + ' value="error">Error the row</option></select><div class="hint">Files are resolved per row; a missing file won\'t crash the worker.</div></div></div>';
   if(s.type==='textedit') {
     const mode = s.editMode||'find-replace';
     const modeOpts = [

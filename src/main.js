@@ -2012,6 +2012,18 @@ async function runStep(page,step,row,creds){
       await page.click('a.logout');
       await page.waitForTimeout(1500);
       break;}
+    case 'fileupload':{
+      // v2.0.0: upload a file via Playwright setInputFiles. Path resolves per row from a
+      // column, or a fixed folder + a filename column. File must exist on this PC.
+      let _filePath='';
+      if(step.pathSource==='fixed'){ const _base=(step.baseFolder||'').replace(/[\\\\/]+$/,''); const _fn=r(step.fileNameColumn||''); _filePath=_fn?(_base+'\\\\'+_fn):''; }
+      else { _filePath=r(step.pathColumn||''); }
+      emit({type:'log',message:'Upload file → '+(_filePath||'(no path resolved!)')});
+      if(!_filePath) throw new Error('File upload: no file path resolved for this row');
+      if(!fs.existsSync(_filePath)) throw new Error('File upload: file not found: '+_filePath);
+      const _ul=await resolveStepLocator(page, step, r);
+      await _ul.first().setInputFiles(_filePath);
+      break;}
     case 'dialog':{
       // Register a one-time dialog handler for the next dialog that appears.
       // v1.2.7-fix: previously this used page.once() with no cleanup. If a row's
@@ -2865,6 +2877,15 @@ async function runStep(page, step, row, creds){
     case 'assert':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.expected){ const t=await loc.first().textContent(); if(!t||!t.includes(step.expected)) throw new Error('Assert failed: expected "'+step.expected+'"'); } break; }
     case 'pestpac-login':{ await loginToPestPac(page,creds); break; }
     case 'pestpac-logout':{ await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000}); await page.waitForSelector('div.select',{timeout:10000}); await page.click('div.select'); await page.waitForSelector('a.logout',{timeout:5000}); await page.click('a.logout'); await page.waitForTimeout(1500); break; }
+    case 'fileupload':{
+      // Resolve the file path for this row (column path, or fixed folder + filename column).
+      let filePath='';
+      if(step.pathSource==='fixed'){ const base=(step.baseFolder||'').replace(/[\\\\/]+$/,''); const fn=r(step.fileNameColumn||''); filePath = fn ? (base + '\\\\' + fn) : ''; }
+      else { filePath = r(step.pathColumn||''); }
+      if(!filePath){ throw new Error('File upload: no file path resolved for this row'); }
+      if(!fs.existsSync(filePath)){ throw new Error('File upload: file not found: '+filePath); }
+      const loc=await resolveStepLocator(page,step,r); await loc.first().setInputFiles(filePath); break;
+    }
     case 'dialog':{ const matchText=step.dialogMatch||''; const dialogAction=step.dialogAction||'accept'; if(page._buuDialogListener){ try{page.off('dialog',page._buuDialogListener);}catch(_){} page._buuDialogListener=null; } const handler=async dialog=>{ try{page.off('dialog',handler);}catch(_){} if(page._buuDialogListener===handler)page._buuDialogListener=null; const msg=dialog.message(); const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase()); try{ if(matches){ if(dialogAction==='dismiss')await dialog.dismiss(); else await dialog.accept(); } else { await dialog.dismiss(); } }catch(e){} }; page._buuDialogListener=handler; page.on('dialog',handler); break; }
   }
 }
