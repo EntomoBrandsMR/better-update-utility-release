@@ -458,6 +458,184 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// v2.0.0 — POOL IPC HANDLERS (renderer drives the coordinator)
+// ════════════════════════════════════════════════════════════════════════════
+
+// Submit a job into the (not-yet-started) pool. Returns the jobId. Jobs are staged, then
+// 'pool-start' spawns workers to drain them. flowSteps is the full allSteps array.
+ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle }) => {
+  if (COORD.active) return { ok: false, error: 'Pool is already running. Stop it before staging new jobs.' };
+  const total = countRowsSync(spreadsheetPath);
+  if (total <= 0) return { ok: false, error: 'Could not read rows from ' + spreadsheetPath };
+  const jobId = 'job' + Date.now() + '-' + Math.floor(Math.random()*1000);
+  COORD.jobs.set(jobId, {
+    jobId, label: label || path.basename(spreadsheetPath),
+    flowSteps, spreadsheetPath, profileId,
+    setupFlowId: setupFlowId || null, teardownFlowId: teardownFlowId || null,
+    errHandle: errHandle || 'retry',
+    totalRows: total, nextRow: 1,
+    done: 0, ok: 0, err: 0, skip: 0, finished: false,
+  });
+  coordEmitStatus();
+  return { ok: true, jobId, totalRows: total };
+});
+
+// Remove a staged job (only when pool not running).
+ipcMain.handle('pool-remove-job', async (_, { jobId }) => {
+  if (COORD.active) return { ok: false, error: 'Cannot remove jobs while the pool is running.' };
+  COORD.jobs.delete(jobId);
+  coordEmitStatus();
+  return { ok: true };
+});
+
+// Clear all staged jobs (only when pool not running).
+ipcMain.handle('pool-clear-jobs', async () => {
+  if (COORD.active) return { ok: false, error: 'Cannot clear jobs while the pool is running.' };
+  COORD.jobs.clear();
+  coordEmitStatus();
+  return { ok: true };
+});
+
+// Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
+// enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
+ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin }) => {
+  if (COORD.active) return { ok: false, error: 'Pool already running.' };
+  if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
+  COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || 10));
+  // Reset per-run job counters in case jobs were staged then this is a restart.
+  for (const job of COORD.jobs.values()) { job.nextRow = 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; }
+  COORD.active = true;
+
+  const hwCap = computeHardwareCap();
+  let target = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING, hwCap));
+  COORD.desiredWorkers = target;
+
+  // Spawn initial workers (bounded by total rows available — no point spawning idle workers).
+  let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += j.totalRows;
+  target = Math.min(target, Math.max(1, totalRemaining));
+  for (let i = 0; i < target; i++) { await coordSpawnWorker(); }
+
+  // Elastic license loop.
+  if (elastic && licenseProfileId) {
+    COORD.licenseTimer = setInterval(() => coordLicenseScale(licenseProfileId, licenseBuffer, hwCap), Math.max(1, parseInt(licenseIntervalMin) || 5) * 60 * 1000);
+  }
+  coordEmitStatus();
+  return { ok: true, started: COORD.workers.size, desiredWorkers: COORD.desiredWorkers };
+});
+
+// Stop the pool: tell every worker to drain (clean — finishes current batch, runs teardown,
+// logs out, exits). Force-kills any that don't exit within 2 minutes.
+ipcMain.handle('pool-stop', async () => {
+  if (!COORD.active) return { ok: true, stopped: 0 };
+  if (COORD.licenseTimer) { clearInterval(COORD.licenseTimer); COORD.licenseTimer = null; }
+  // Drain all jobs so any subsequent request-batch gets 'drain'.
+  for (const job of COORD.jobs.values()) { job.nextRow = job.totalRows + 1; job.finished = true; }
+  // Proactively send drain to idle/running workers.
+  for (const w of COORD.workers.values()) {
+    try { w.process.stdin.write(JSON.stringify({ cmd: 'drain' }) + '\n'); } catch {}
+    w.status = 'draining';
+  }
+  const _ids = Array.from(COORD.workers.keys());
+  setTimeout(() => {
+    for (const id of _ids) {
+      const w = COORD.workers.get(id);
+      if (w && w.process) { try { w.process.kill(); } catch {} }
+    }
+  }, 120000);
+  coordEmitStatus();
+  return { ok: true, stopped: COORD.workers.size };
+});
+
+// Set the worker target while running: spawn more, or mark surplus for retirement.
+ipcMain.handle('pool-set-workers', async (_, { workerCount }) => {
+  if (!COORD.active) return { ok: false, error: 'Pool not running.' };
+  const hwCap = computeHardwareCap();
+  const target = Math.max(0, Math.min(parseInt(workerCount) || 0, MAX_WORKERS_HARD_CEILING, hwCap));
+  COORD.desiredWorkers = target;
+  await coordScaleTo(target);
+  return { ok: true, desiredWorkers: target, liveWorkers: COORD.workers.size };
+});
+
+ipcMain.handle('pool-get-status', async () => {
+  coordEmitStatus();
+  return { active: COORD.active, liveWorkers: COORD.workers.size, desiredWorkers: COORD.desiredWorkers, jobs: COORD.jobs.size };
+});
+
+// Scale the live worker count toward `target`: spawn if below, retire surplus if above.
+// Retirement is graceful — surplus workers get 'drain' and finish their current batch.
+async function coordScaleTo(target){
+  const live = COORD.workers.size;
+  if (target > live) {
+    let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, j.totalRows - (j.nextRow - 1));
+    const canSpawn = Math.min(target - live, Math.max(0, totalRemaining));
+    for (let i = 0; i < canSpawn; i++) await coordSpawnWorker();
+  } else if (target < live) {
+    let toRetire = live - target;
+    for (const w of COORD.workers.values()) {
+      if (toRetire <= 0) break;
+      if (w.status === 'running' || w.status === 'starting') {
+        try { w.process.stdin.write(JSON.stringify({ cmd: 'drain' }) + '\n'); } catch {}
+        w.status = 'draining';
+        toRetire--;
+      }
+    }
+  }
+  coordEmitStatus();
+}
+
+// Elastic license scaling: re-scrape free licenses and scale workers to (free - buffer),
+// also bounded by hardware. Runs on a timer when elastic mode is enabled.
+async function coordLicenseScale(profileId, buffer, hwCap){
+  if (!COORD.active) return;
+  const BUF = (buffer != null) ? Math.max(0, parseInt(buffer)) : 10;
+  const chromiumExe = getBundledChromiumPath();
+  if (!chromiumExe) return;
+  const all = readAllProfiles();
+  const prof = all.find(p => p.id === profileId) || {};
+  if (keytar) {
+    prof.companyKey = await keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
+    prof.username   = await keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
+    prof.password   = await keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
+  }
+  let browser;
+  try {
+    const { chromium } = require('playwright-core');
+    browser = await chromium.launch({ headless: true, executablePath: chromiumExe, args: ['--disable-gpu','--disable-dev-shm-usage'] });
+    const page = await (await browser.newContext()).newPage();
+    await page.goto(prof.loginUrl || 'https://login.pestpac.com/', { waitUntil: 'load', timeout: 30000 });
+    await page.waitForSelector('input[name="uid"]', { timeout: 15000 });
+    await page.fill('input[name="uid"]', prof.companyKey || '');
+    await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+    await page.waitForSelector('input[name="username"]', { timeout: 15000 });
+    await page.fill('input[name="username"]', prof.username || '');
+    await page.fill('input[name="password"]', prof.password || '');
+    await page.click('button[data-testid="loginBtn"]');
+    await page.waitForSelector('a[href*="AutoLogin"]', { timeout: 30000 });
+    await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
+    const freeText = await page.evaluate(() => {
+      const tds = Array.from(document.querySelectorAll('td'));
+      for (const td of tds) { if ((td.textContent||'').trim().toLowerCase().startsWith('number of free licenses')) { const s = td.nextElementSibling; if (s) return (s.textContent||'').trim(); } }
+      return null;
+    });
+    await browser.close();
+    if (freeText == null) return;
+    const free = parseInt(String(freeText).replace(/[^0-9]/g, ''));
+    if (isNaN(free)) return;
+    // free here is measured WHILE our workers are logged in, so it already reflects our usage.
+    // The number of additional workers we can safely add is (free - buffer); never go below 1.
+    const headroom = free - BUF;
+    const newTarget = Math.max(1, Math.min(COORD.workers.size + headroom, hwCap, MAX_WORKERS_HARD_CEILING));
+    if (mainWindow) mainWindow.webContents.send('pool-license-update', { freeLicenses: free, buffer: BUF, newTarget, liveWorkers: COORD.workers.size });
+    COORD.desiredWorkers = newTarget;
+    await coordScaleTo(newTarget);
+  } catch (e) {
+    try { if (browser) await browser.close(); } catch(_){}
+    if (mainWindow) mainWindow.webContents.send('pool-license-update', { error: e.message });
+  }
+}
+
+
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 // v1.2.8: resolve a flow by its `name` field. Scans the flows directory, matches by

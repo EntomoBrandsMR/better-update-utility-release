@@ -37,4 +37,15 @@ contextBridge.exposeInMainWorld('api', {
   // v1.3.4 Phase 3: worker-pool sizing + license-aware cap.
   getWorkerCaps:       ()      => ipcRenderer.invoke('get-worker-caps'),
   checkLicenseCap:     (d)     => ipcRenderer.invoke('check-license-cap', d),
+  // v2.0.0: elastic pull-queue pool.
+  poolSubmitJob:       (d)     => ipcRenderer.invoke('pool-submit-job', d),
+  poolRemoveJob:       (d)     => ipcRenderer.invoke('pool-remove-job', d),
+  poolClearJobs:       ()      => ipcRenderer.invoke('pool-clear-jobs'),
+  poolStart:           (d)     => ipcRenderer.invoke('pool-start', d),
+  poolStop:            ()      => ipcRenderer.invoke('pool-stop'),
+  poolSetWorkers:      (d)     => ipcRenderer.invoke('pool-set-workers', d),
+  poolGetStatus:       ()      => ipcRenderer.invoke('pool-get-status'),
+  onPoolStatus:        (cb)    => ipcRenderer.on('pool-status', (_, d) => cb(d)),
+  onPoolComplete:      (cb)    => ipcRenderer.on('pool-complete', (_, d) => cb(d)),
+  onPoolLicenseUpdate: (cb)    => ipcRenderer.on('pool-license-update', (_, d) => cb(d)),
 });
