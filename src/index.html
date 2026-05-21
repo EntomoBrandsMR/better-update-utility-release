@@ -707,6 +707,13 @@ textarea { resize: vertical; min-height: 60px; }
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
     Stop
   </button>
+  <!-- v1.3.4 Item I (3/4): Force-stop escape hatch. Hidden normally; revealed by requestStop()
+       while a clean stop is in progress, so a truly hung row never forces the user to close
+       the whole app (the failure mode that killed tonight's run). Force-kills the worker now. -->
+  <button class="tbtn red" id="forceStopBtn" onclick="forceStopNow()" style="display:none" title="Kill the worker immediately, abandoning the current row">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+    Force stop now
+  </button>
   <!-- v1.3.0 Item 11: Pause button removed. It was wired to API.pauseRun / API.resumeRun
        which were never exposed, and the runner has no 'pause' command. The button did nothing.
        Stop already provides graceful safe-boundary halt. A real Pause may return in a later release. -->
@@ -2149,21 +2156,38 @@ async function requestStop(){
   // Disable both Stop buttons too — clicking them again won't hurt but is misleading.
   document.getElementById('runBtn').disabled = true;
   document.getElementById('stopBtn').disabled = true;
-  document.getElementById('runStatusMsg').textContent = 'Stopping… (waiting for current row to finish)';
+  // v1.3.4 Item I (3/4): reveal the Force-stop escape hatch now that a clean stop is underway.
+  { const _fb = document.getElementById('forceStopBtn'); if(_fb){ _fb.style.display=''; _fb.disabled=false; } }
+  document.getElementById('runStatusMsg').textContent = 'Stopping… finishing current row (can take up to ~60s on a slow page). Use Force stop now if it hangs.';
   document.getElementById('runStatusMsg').style.color = 'var(--amber)';
   hidePause();
   // v1.3.0 Item 3: safety timer. Capture currentRunId so a later run doesn't get its UI nuked
   // by a stale timer if the user starts a new run within 5 seconds of stopping the previous one.
   const _stopRunId = currentRunId;
-  setTimeout(() => {
+  // v1.3.4 Item I (2/4): clean stop waits for the current row to finish, which on a slow
+  // PestPac page can legitimately take ~60s. The old 5s timer fired mid-row and only reset
+  // the UI (runStopped) while the worker kept running — the exact "Stop did nothing" bug.
+  // New behavior: 90s window (comfortably past one slow row), and on timeout actually
+  // FORCE-KILL the worker (stopAutomation) before resetting the UI, so a truly hung row
+  // can never outlive the stop request.
+  setTimeout(async () => {
     if (_stopInProgress && currentRunId === _stopRunId) {
-      console.warn('[run] requestStop: SAFETY TIMER fired after 5s — runner did not exit cleanly. Forcing runStopped().');
+      console.warn('[run] requestStop: SAFETY TIMER fired after 90s — clean stop did not complete, force-killing worker.');
+      try { if (API.stopAutomation) await API.stopAutomation({ runId: _stopRunId }); } catch(e){}
       runStopped();
     }
-  }, 5000);
+  }, 90000);
   if(API.runControl){
     console.log('[run] requestStop: sending runControl({cmd:stop})');
-    await API.runControl({runId: currentRunId, cmd: 'stop'});
+    // v1.3.4 Item I (4/4): check the result. If the stdin write to the worker failed (e.g. the
+    // worker already exited, or the pipe is gone), the clean-stop command never landed — surface
+    // it and force-kill immediately rather than waiting out the 90s timer on a dead worker.
+    const _res = await API.runControl({runId: currentRunId, cmd: 'stop'});
+    if(_res && _res.ok === false){
+      console.warn('[run] requestStop: runControl stop failed ('+(_res.error||'unknown')+') — force-killing now.');
+      try { if(API.stopAutomation) await API.stopAutomation({ runId: currentRunId }); } catch(e){}
+      runStopped();
+    }
   }else if(API.stopAutomation){
     // Fallback for older preload bridges. Force-kill is worse but better than nothing.
     console.log('[run] requestStop: runControl unavailable, falling back to stopAutomation (force-kill)');
@@ -2176,6 +2200,16 @@ async function requestStop(){
 
 async function stopRun(){return requestStop();}
 async function paneStop(){return requestStop();}
+// v1.3.4 Item I (3/4): Force-stop escape hatch. Immediately kills the worker process
+// (force-kill via stopAutomation), abandoning the current row, then resets the UI. Used
+// when a clean stop is hanging on a dead page. Resume/retry recovers the abandoned row.
+async function forceStopNow(){
+  console.log('[run] forceStopNow: force-killing worker runId=' + currentRunId);
+  const _fb = document.getElementById('forceStopBtn'); if(_fb) _fb.disabled = true;
+  document.getElementById('runStatusMsg').textContent = 'Force-stopping…';
+  try { if(API.stopAutomation) await API.stopAutomation({ runId: currentRunId }); } catch(e){}
+  runStopped();
+}
 // v1.3.0 Item 11: togglePause() removed. The function called API.pauseRun / API.resumeRun
 // which were never exposed by preload.js, so the button never did anything. Stop already
 // provides graceful safe-boundary halt.
@@ -2204,6 +2238,8 @@ function runStopped(){
   }
   const runBtn=document.getElementById('runBtn');runBtn.style.display='';runBtn.disabled=false;
   const stopBtn=document.getElementById('stopBtn');stopBtn.style.display='none';stopBtn.disabled=false;
+  // v1.3.4 Item I (3/4): hide + reset the Force-stop escape hatch on return to idle.
+  { const _fb=document.getElementById('forceStopBtn'); if(_fb){ _fb.style.display='none'; _fb.disabled=false; } }
   document.getElementById('nb-run').style.display='none';
   document.getElementById('runStatusMsg').textContent='Stopped';
   document.getElementById('runStatusMsg').style.color='var(--red)';
