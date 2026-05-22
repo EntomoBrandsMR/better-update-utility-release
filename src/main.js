@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.0.1';
+const CURRENT_VERSION = '2.0.2';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -117,6 +117,14 @@ function coordCloseJournal(deleteFiles){
   }
 }
 
+// v2.0.2: path of the 'done' marker that flags a journal as completed (kept for the merged
+// log / audit trail, but skipped by the resume scan so finished runs are not offered for resume).
+function coordJournalDonePath(poolId){ return path.join(app.getPath('userData'), `pool-journal-${poolId}.done`); }
+function coordMarkJournalDone(){
+  if(!COORD.poolId) return;
+  try{ fs.writeFileSync(coordJournalDonePath(COORD.poolId), new Date().toISOString()); }catch(e){}
+}
+
 // Scan userData for orphan pool journals (a pool run that didn't complete cleanly). Returns
 // [{poolId, startedAt, jobs:[{label,total,completed,remaining}], totalRemaining}].
 function coordFindOrphanPools(){
@@ -127,6 +135,8 @@ function coordFindOrphanPools(){
     const m = f.match(/^pool-journal-(pool\d+)\.meta\.json$/);
     if(!m) continue;
     const poolId = m[1];
+    // v2.0.2: a journal flagged .done is a COMPLETED run kept for the merged log - never offer it for resume.
+    try{ if(fs.existsSync(coordJournalDonePath(poolId))) continue; }catch(e){}
     try{
       const meta = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
       // Count completed rows per job from the journal.
@@ -345,8 +355,10 @@ function coordCheckComplete(){
   if(COORD.active && COORD.workers.size === 0 && coordAllDrained()){
     COORD.active = false;
     if(COORD.licenseTimer){ clearInterval(COORD.licenseTimer); COORD.licenseTimer = null; }
-    // v2.0.0 resume: clean completion — close + delete the journal (nothing to resume).
-    coordCloseJournal(true);
+    // v2.0.2: clean completion KEEPS the journal (also the merged-log / audit trail).
+    // Mark done with a sidecar so resume-scan skips it; merged log can still read it.
+    coordMarkJournalDone();
+    coordCloseJournal(false);
     if(mainWindow) mainWindow.webContents.send('pool-complete', {
       jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err, skip:j.skip })),
     });
@@ -762,9 +774,26 @@ ipcMain.handle('pool-discard-orphan', async (_, { poolId }) => {
 // v2.0.0 merged log: read a pool journal (current run if poolId omitted) and return a merged,
 // per-row record across ALL workers/jobs. This is the combined log the per-worker Excel files
 // don't give you on their own. Returns { ok, poolId, jobs:[{jobId,label}], rows:[{job,row,status}], counts }.
+// v2.0.2: find the most recent journal on disk (done OR active), for the merged-log fallback
+// when no specific poolId is given and no pool is currently active.
+function coordMostRecentJournalPoolId(){
+  try{
+    const dir = app.getPath('userData');
+    const metas = fs.readdirSync(dir).filter(f => /^pool-journal-pool\d+\.meta\.json$/.test(f));
+    let best=null, bestMtime=-1;
+    for(const f of metas){
+      const pid = f.replace(/^pool-journal-/, '').replace(/\.meta\.json$/, '');
+      const jp = coordJournalPath(pid);
+      if(!fs.existsSync(jp)) continue;
+      const mt = fs.statSync(jp).mtimeMs;
+      if(mt > bestMtime){ bestMtime = mt; best = pid; }
+    }
+    return best;
+  }catch(e){ return null; }
+}
 ipcMain.handle('pool-read-journal', async (_, args) => {
-  const poolId = (args && args.poolId) || COORD.poolId;
-  if (!poolId) return { ok: false, error: 'No active or specified pool run.' };
+  const poolId = (args && args.poolId) || COORD.poolId || coordMostRecentJournalPoolId();
+  if (!poolId) return { ok: false, error: 'No pool run found.' };
   const jp = coordJournalPath(poolId);
   const metaPath = coordJournalMetaPath(poolId);
   if (!fs.existsSync(jp)) return { ok: false, error: 'Journal not found for ' + poolId };
@@ -1336,6 +1365,9 @@ const ROW_DELAY_MAX = ${Math.round(parseFloat(rowDelayMax) * 1000)};
 // v1.2.5 item 2.8: tunable speed/resilience
 const SELECTOR_TIMEOUT = ${parseInt(selectorTimeout) * 1000};
 const PAGE_LOAD_MODE = ${JSON.stringify(pageLoadMode)};
+// v2.0.2: navigation timeout for the navigate step. PestPac lead pages can be very slow on a
+// large account, so this is 90s (vs the old hardcoded 30s) to cut false skips on slow loads.
+const NAV_TIMEOUT = 90000;
 const RETRY_COUNT = ${parseInt(retryCount)};
 // v1.2.5 item 2.3b: consecutive-error circuit breaker (0 = disabled)
 const BREAKER_THRESHOLD = ${parseInt(breakerThreshold)};
@@ -1975,7 +2007,7 @@ async function runStep(page,step,row,creds){
   };
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
-    case 'navigate':{const _navUrl=r(step.url);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step\\'s URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:PAGE_LOAD_MODE,timeout:30000});break;}
+    case 'navigate':{const _navUrl=r(step.url);emit({type:'log',message:'Navigate → '+(_navUrl||'(empty URL!)')});if(!_navUrl)throw new Error('Navigate URL resolved to empty — check the navigate step\\'s URL field and the column token (e.g. {{URL}}) matches your spreadsheet header exactly.');await page.goto(_navUrl,{waitUntil:PAGE_LOAD_MODE,timeout:NAV_TIMEOUT});break;}
     case 'click':{
       // v1.2.5-debug1 / v1.2.6: opt-in diagnostic dump. Originally added in the
       // local-only -debug1 build to investigate "Playwright doesn't see this button"
@@ -2809,6 +2841,9 @@ const LOG_PATH = ${JSON.stringify(logPath)};
 const ERR_HANDLE = ${JSON.stringify(errHandle)};
 const SELECTOR_TIMEOUT = ${parseInt(selectorTimeout) * 1000};
 const PAGE_LOAD_MODE = ${JSON.stringify(pageLoadMode)};
+// v2.0.2: navigation timeout for the navigate step. PestPac lead pages can be very slow on a
+// large account, so this is 90s (vs the old hardcoded 30s) to cut false skips on slow loads.
+const NAV_TIMEOUT = 90000;
 const RETRY_COUNT = ${parseInt(retryCount)};
 const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
 const FLOW_STEPS = ${JSON.stringify(flowSteps)};
@@ -2909,7 +2944,7 @@ async function runStep(page, step, row, creds){
   const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
-    case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:30000}); break;}
+    case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:NAV_TIMEOUT}); break;}
     case 'click':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().click(); if(step.waitFor){ const wl=await findLocator(page,step.waitFor,{timeout:SELECTOR_TIMEOUT}); await wl.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); } break; }
     case 'type':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.clearFirst!=='no') await loc.first().fill(''); const val=r(step.value); const delay=parseInt(step.typeDelay||0); if(delay>0) await loc.first().pressSequentially(val,{delay:delay}); else await loc.first().fill(val); break; }
     case 'select':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().selectOption({label:r(step.value)}); break; }

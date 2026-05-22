@@ -3056,7 +3056,7 @@ function renderCoordStatus(st){
     const sc = w.status==='running'?'var(--blue)':w.status==='draining'?'var(--amber)':w.status==='done'?'var(--green)':w.status==='error'?'var(--red)':'var(--t3)';
     return '<div class="card" style="padding:10px 12px;border:1px solid var(--brd)">'
       + '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><div style="font-size:12px;font-weight:700;color:var(--t2)">'+w.workerId.slice(-6)+'</div><div style="font-size:10px;font-weight:700;color:'+sc+';text-transform:uppercase">'+w.status+'</div></div>'
-      + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+w.done.toLocaleString()+'</b> done</span><span style="color:var(--green)">'+w.ok.toLocaleString()+' ok</span><span style="color:var(--red)">'+w.err.toLocaleString()+' err</span><span style="color:var(--amber)">'+w.skip.toLocaleString()+' skip</span></div></div>';
+      + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+(w.done||0).toLocaleString()+'</b> done</span><span style="color:var(--green)">'+(w.ok||0).toLocaleString()+' ok</span><span style="color:var(--red)">'+(w.err||0).toLocaleString()+' err</span><span style="color:var(--amber)">'+(w.skip||0).toLocaleString()+' skip</span></div></div>';
   }).join('');
   // Aggregate strip.
   let done=0,ok=0,err=0,skip=0,total=0;
@@ -3083,7 +3083,7 @@ function renderStagedJobs(st){
   hd.style.display=''; list.style.display='flex';
   const running = st && st.active;
   list.innerHTML = jobs.map(function(j){
-    const prog = running ? (' · '+j.done.toLocaleString()+'/'+j.totalRows.toLocaleString()+' done'+(j.remaining!=null?(' · '+j.remaining.toLocaleString()+' left'):'')) : (' · '+j.totalRows.toLocaleString()+' rows');
+    const prog = running ? (' · '+(j.done||0).toLocaleString()+'/'+(j.totalRows||0).toLocaleString()+' done'+(j.remaining!=null?(' · '+(j.remaining||0).toLocaleString()+' left'):'')) : (' · '+(j.totalRows||0).toLocaleString()+' rows');
     const rm = running ? '' : '<button class="btn sm" style="padding:1px 8px;color:var(--red)" onclick="poolRemoveStaged(\''+j.jobId+'\')">Remove</button>';
     return '<div class="card" style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border:1px solid var(--brd)">'
       + '<div style="font-size:12px;color:var(--t2)"><b>'+(j.label||j.jobId)+'</b><span style="color:var(--t3)">'+prog+'</span></div>'
