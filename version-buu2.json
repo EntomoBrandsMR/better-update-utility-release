@@ -1,5 +1,5 @@
 {
-  "version": "2.0.2",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v2.0.2/BUU.2.0.Setup.2.0.2.exe",
-  "notes": "BUU 2.0.2 - journal + slow-page fixes. The merged pool log now works after a run (the journal was being deleted on completion; it is now kept as the audit trail). Navigation timeout raised to 90s so slow PestPac lead pages are not falsely skipped. Fixed a worker-card visual glitch."
+  "version": "2.1.0",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v2.1.0/BUU.2.0.Setup.2.1.0.exe",
+  "notes": "BUU 2.1.0 - pin to taskbar, sidebar controls, step-to-pool handoff. NEW: on first launch BUU offers to pin itself to the Windows taskbar (asks once). The worker-pool controls (Workers/Batch/Buffer/Auto-scale/Auto/+Job/Run) moved from the top bar into a Worker pool panel in the sidebar. FIXED: stepping through rows manually then switching to the pool now resumes where you left off instead of restarting at row 1. Worker cap raised (ceiling 100->150, ~150MB/worker instead of 600MB) - the real limit is your PestPac licenses, not the machine."
 }
