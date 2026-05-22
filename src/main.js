@@ -209,6 +209,9 @@ function coordEmitStatus(){
   const workers = Array.from(COORD.workers.values()).map(w => ({
     workerId: w.workerId, jobId: w.jobId, status: w.status,
     done: w.done, ok: w.ok, err: w.err, skip: w.skip, batchSize: (w.batch||[]).length,
+    // v2.1.0 live detail: current row, position in batch, step in flow, logout result
+    currentRow: w.currentRow, batchPos: w.batchPos, batchTotal: w.batchSize,
+    step: w.step, totalSteps: w.totalSteps, loggedOut: w.loggedOut,
   }));
   mainWindow.webContents.send('pool-status', {
     active: COORD.active, batchSize: COORD.batchSize,
@@ -310,8 +313,31 @@ function coordHandleWorkerMessage(workerId, msg){
   if(!w) return;
   const job = COORD.jobs.get(w.jobId);
   switch(msg.type){
+    case 'logging-in':
+      w.status = 'logging-in';
+      break;
     case 'ready':
       w.status = 'running';
+      break;
+    case 'row-start':
+      // v2.1.0: live detail - which row, and position within the current batch (e.g. 3/10).
+      w.status = 'running';
+      w.currentRow = msg.row;
+      w.batchPos = msg.batchPos; w.batchSize = msg.batchSize;
+      w.step = 0; w.totalSteps = undefined;
+      break;
+    case 'step':
+      // live detail - which step of the flow this row is on (e.g. 7/8).
+      w.currentRow = msg.row; w.step = msg.step; w.totalSteps = msg.totalSteps;
+      break;
+    case 'shutting-down':
+      w.status = 'shutting-down';
+      break;
+    case 'logging-out':
+      w.status = 'logging-out';
+      break;
+    case 'logged-out':
+      w.loggedOut = !!msg.ok;
       break;
     case 'request-batch': {
       // Hand out the next batch for this worker's job. If the worker's job is drained,
@@ -341,7 +367,10 @@ function coordHandleWorkerMessage(workerId, msg){
       break;
     }
     case 'retired':
-      w.status = 'retiring';
+      // v2.1.0: worker finished its shutdown sequence (teardown+logout). Mark shut-down;
+      // the process 'close' handler removes it from the map (-> 'gone' in the UI).
+      w.status = 'shut-down';
+      if(msg.loggedOut!=null) w.loggedOut = !!msg.loggedOut;
       break;
   }
   coordEmitStatus();
@@ -681,13 +710,16 @@ ipcMain.handle('pool-stop', async () => {
     try { w.process.stdin.write(JSON.stringify({ cmd: 'drain' }) + '\n'); } catch {}
     w.status = 'draining';
   }
+  // v2.1.0: force-kill backstop raised to 180s. With 90s page timeouts, a worker can need up
+  // to ~90s to finish its current row + ~30s to log out. 180s guarantees clean logout first;
+  // only workers still alive after that (genuinely hung) get killed.
   const _ids = Array.from(COORD.workers.keys());
   setTimeout(() => {
     for (const id of _ids) {
       const w = COORD.workers.get(id);
       if (w && w.process) { try { w.process.kill(); } catch {} }
     }
-  }, 120000);
+  }, 180000);
   coordEmitStatus();
   return { ok: true, stopped: COORD.workers.size };
 });
@@ -2860,11 +2892,17 @@ function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
 
 // ── stdin command channel: receives {cmd:'batch',rows:[...]} or {cmd:'drain'} ──
 let _pendingBatchResolve = null;
+// v2.1.0: a drain command can arrive AT ANY TIME (mid-row, mid-batch). We set a global flag
+// immediately so the row loop can stop after the current row and log out cleanly, instead of
+// only noticing drain at the next batch boundary (which, with slow pages, meant the coordinator
+// force-killed the worker mid-row before it could log out - leaving sessions logged in).
+let _draining = false;
 const _readline = require('readline');
 const _rl = _readline.createInterface({ input: process.stdin, terminal: false });
 _rl.on('line', function(line){
   let msg; try{ msg = JSON.parse(line); }catch(e){ return; }
   if(!msg || !msg.cmd) return;
+  if(msg.cmd === 'drain'){ _draining = true; }
   if(_pendingBatchResolve){ const r=_pendingBatchResolve; _pendingBatchResolve=null; r(msg); }
 });
 function requestBatch(){
@@ -2973,9 +3011,10 @@ async function runOnceFlow(page, steps, creds){
   return {ok:true};
 }
 
-async function processRow(page, row, creds){
+async function processRow(page, row, creds, rowNum){
   const done=[];
-  const attempt=async()=>{ done.length=0; for(let si=0;si<DATA_STEPS.length;si++){ await runStep(page, DATA_STEPS[si], row, creds); done.push(DATA_STEPS[si]._label||DATA_STEPS[si].type); } };
+  // v2.1.0: emit step progress (e.g. step 7/8) so the UI can show what each worker is doing.
+  const attempt=async()=>{ done.length=0; for(let si=0;si<DATA_STEPS.length;si++){ emit({type:'step', row:rowNum, step:si+1, totalSteps:DATA_STEPS.length}); await runStep(page, DATA_STEPS[si], row, creds); done.push(DATA_STEPS[si]._label||DATA_STEPS[si].type); } };
   try{ await attempt(); return {status:'ok', fieldsWritten:done.join(' | ')}; }
   catch(e){
     if(ERR_HANDLE==='retry'){
@@ -2993,36 +3032,56 @@ async function main(){
   const browser = await chromium.launch({ headless:true, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage','--disable-background-timer-throttling'] });
   const page = await (await browser.newContext()).newPage();
 
+  // v2.1.0: report the login phase so the UI shows 'logging in' before 'running'.
+  emit({type:'logging-in'});
   // Login once.
-  for(const step of LOGIN_STEPS){ try{ await runStep(page,step,{},creds); }catch(e){ emit({type:'fatal',error:'Login failed: '+e.message}); flush(); await browser.close(); process.exit(1); } }
+  for(const step of LOGIN_STEPS){ try{ await runStep(page,step,{},creds); }catch(e){ emit({type:'fatal',error:'Login failed: '+e.message}); flush(); try{await browser.close();}catch(_){} process.exit(1); } }
   // Setup once-flow (per worker — each worker is its own session).
   if(SETUP_STEPS.length){ const sr=await runOnceFlow(page,SETUP_STEPS,creds); if(!sr.ok){ emit({type:'fatal',error:'Setup failed: '+sr.error}); flush(); await browser.close(); process.exit(1); } }
 
   emit({type:'ready'});
 
   // Batch-pull loop: ask for work, process, repeat until 'drain'.
-  let draining=false;
-  while(!draining){
+  // v2.1.0: _draining is set the instant a drain command arrives (even mid-batch). We check it
+  // BETWEEN EVERY ROW so the worker stops promptly and reaches logout, instead of grinding the
+  // whole batch of slow pages first (which let the force-kill fire before logout -> stuck sessions).
+  while(!_draining){
     const msg = await requestBatch();
-    if(!msg || msg.cmd==='drain'){ draining=true; break; }
+    if(!msg || msg.cmd==='drain' || _draining){ break; }
     if(msg.cmd!=='batch' || !Array.isArray(msg.rows) || msg.rows.length===0){ continue; }
-    for(const rowNum of msg.rows){
+    for(let _bi=0; _bi<msg.rows.length; _bi++){
+      const rowNum = msg.rows[_bi];
+      if(_draining){ break; }
       const row = ALL_ROWS[rowNum-1];
       if(!row){ emit({type:'row-result', row:rowNum, status:'skip', error:'row index out of range'}); continue; }
+      // batchPos/batchSize = e.g. 3/10 (which row of this batch); totalSteps for the step counter.
+      emit({type:'row-start', row:rowNum, batchPos:_bi+1, batchSize:msg.rows.length});
       const t0=Date.now();
-      const res = await processRow(page, row, creds);
+      const res = await processRow(page, row, creds, rowNum);
       const entry={ row:rowNum, timestamp:new Date().toISOString(), url:row.URL||row.url||'', status:res.status, error:res.error||'', failedStep:res.failedStep||'', fieldsWritten:res.fieldsWritten||'', durationMs:Date.now()-t0 };
       addLog(entry);
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0});
     }
   }
 
-  // Teardown + logout on drain.
+  // v2.1.0: shutdown sequence on drain. Report each phase so the UI can show
+// 'shutting down' -> 'logging out' -> gone. Logout MUST happen (frees the PestPac license),
+// so it gets its own try with a hard time budget and we report whether it succeeded.
+  emit({type:'shutting-down'});
   if(TEARDOWN_STEPS.length){ try{ await runOnceFlow(page,TEARDOWN_STEPS,creds); }catch(e){} }
-  try{ await runStep(page, LOGOUT_STEP, {}, creds); }catch(e){}
+  emit({type:'logging-out'});
+  let _loggedOut=false;
+  try{
+    // Hard cap the logout so a hung page can't block it forever.
+    await Promise.race([
+      runStep(page, LOGOUT_STEP, {}, creds).then(()=>{ _loggedOut=true; }),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('logout timeout')), 30000)),
+    ]);
+  }catch(e){ _loggedOut=false; }
+  emit({type:'logged-out', ok:_loggedOut});
   flush();
-  await browser.close();
-  emit({type:'retired'});
+  try{ await browser.close(); }catch(e){}
+  emit({type:'retired', loggedOut:_loggedOut});
   process.exit(0);
 }
 main().catch(e=>{ emit({type:'fatal',error:e.message}); try{flush();}catch{} process.exit(1); });

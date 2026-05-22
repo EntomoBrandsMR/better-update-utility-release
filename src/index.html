@@ -3053,9 +3053,28 @@ function renderCoordStatus(st){
   grid.style.display='grid'; hd.style.display='';
   // Per-worker cards.
   grid.innerHTML = (st.workers||[]).map(function(w){
-    const sc = w.status==='running'?'var(--blue)':w.status==='draining'?'var(--amber)':w.status==='done'?'var(--green)':w.status==='error'?'var(--red)':'var(--t3)';
+    // v2.1.0 phase model: starting -> logging-in -> running -> shutting-down -> logging-out -> shut-down
+    const PH = {
+      'starting':   {label:'STARTING',     color:'var(--t3)'},
+      'logging-in': {label:'LOGGING IN',   color:'var(--amber)'},
+      'running':    {label:'RUNNING',      color:'var(--blue)'},
+      'shutting-down':{label:'SHUTTING DOWN',color:'var(--amber)'},
+      'logging-out':{label:'LOGGING OUT',  color:'var(--amber)'},
+      'shut-down':  {label:'SHUT DOWN',    color:'var(--green)'},
+      'error':      {label:'ERROR',        color:'var(--red)'},
+    };
+    const ph = PH[w.status] || {label:String(w.status||'').toUpperCase(), color:'var(--t3)'};
+    // Live detail line: row N - 3/10 - step 7/8 (only while running with data).
+    let detail = '';
+    if(w.status==='running' && w.currentRow!=null){
+      const parts = ['row '+w.currentRow];
+      if(w.batchPos!=null && w.batchTotal!=null) parts.push(w.batchPos+'/'+w.batchTotal);
+      if(w.step!=null && w.totalSteps!=null && w.step>0) parts.push('step '+w.step+'/'+w.totalSteps);
+      detail = '<div style="font-size:10px;color:var(--t3);margin-bottom:4px">'+parts.join(' · ')+'</div>';
+    }
     return '<div class="card" style="padding:10px 12px;border:1px solid var(--brd)">'
-      + '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><div style="font-size:12px;font-weight:700;color:var(--t2)">'+w.workerId.slice(-6)+'</div><div style="font-size:10px;font-weight:700;color:'+sc+';text-transform:uppercase">'+w.status+'</div></div>'
+      + '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><div style="font-size:12px;font-weight:700;color:var(--t2)">'+w.workerId.slice(-6)+'</div><div style="font-size:10px;font-weight:700;color:'+ph.color+';text-transform:uppercase">'+ph.label+'</div></div>'
+      + detail
       + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+(w.done||0).toLocaleString()+'</b> done</span><span style="color:var(--green)">'+(w.ok||0).toLocaleString()+' ok</span><span style="color:var(--red)">'+(w.err||0).toLocaleString()+' err</span><span style="color:var(--amber)">'+(w.skip||0).toLocaleString()+' skip</span></div></div>';
   }).join('');
   // Aggregate strip.
