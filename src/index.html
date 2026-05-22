@@ -117,7 +117,7 @@ html, body {
 .sidebar {
   width: var(--sidebar); flex-shrink: 0;
   background: var(--surf); border-right: 1px solid var(--bdr);
-  display: flex; flex-direction: column; overflow: hidden;
+  display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden;
 }
 .sb-logo-area {
   padding: 14px 14px 10px;
@@ -703,23 +703,8 @@ textarea { resize: vertical; min-height: 60px; }
     <svg id="runBtnIcon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="3,2 14,8 3,14"/></svg>
     <span id="runBtnLbl">Run automation</span>
   </button>
-  <!-- v1.3.4 Phase 3: worker-pool launcher. Pick N workers; rows are sharded across them
-       and run headless in parallel. "Auto" fills in the hardware-suggested cap. -->
-  <div id="poolControls" style="display:inline-flex;align-items:center;gap:6px;margin-left:4px">
-      <span style="font-size:11px;color:var(--t3)">Workers</span>
-      <input id="poolWorkerCount" type="number" min="1" max="100" value="4" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="How many workers to start with. Use Auto to size it by hardware and free licenses.">
-      <span style="font-size:11px;color:var(--t3)">Batch</span>
-      <input id="poolBatchSize" type="number" min="1" max="500" value="10" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Rows each worker claims per pull">
-      <span style="font-size:11px;color:var(--t3)" title="Licenses to always keep free. Used by Auto and by Auto-scale.">Buffer</span>
-      <input id="poolLicBuffer" type="number" min="0" max="100" value="10" style="width:42px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Keep this many PestPac licenses free (never consumed by workers)">
-      <label style="font-size:11px;color:var(--t3);display:inline-flex;align-items:center;gap:3px" title="While running, periodically re-check free licenses and scale workers up or down automatically"><input id="poolElastic" type="checkbox" style="margin:0" onchange="poolToggleAutoScale()">Auto-scale</label>
-      <span id="poolIntervalLbl" style="font-size:11px;color:var(--t3);opacity:.4" title="How often Auto-scale re-checks licenses (minutes)">every</span>
-      <input id="poolLicInterval" type="number" min="1" max="120" value="5" disabled style="width:42px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px;opacity:.4" title="Auto-scale re-check interval (minutes)">
-      <span id="poolIntervalUnit" style="font-size:11px;color:var(--t3);opacity:.4">min</span>
-      <button class="tbtn" id="poolAutoBtn" onclick="poolFillAuto()" title="Suggest a worker count from the smaller of hardware cap and (free licenses minus buffer)">Auto</button>
-      <button class="tbtn" id="poolAddJobBtn" onclick="poolAddJob()" title="Stage the current flow+sheet as a job (for multi-flow runs)">+ Job</button>
-      <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" title="Start the worker pool">Run pool</button>
-    </div>
+  <!-- v2.1.0 (#4): the worker-pool controls (#poolControls) moved from here into the sidebar
+       "Worker pool" section. Layout only — same element IDs and handlers, no logic change. -->
   <button class="tbtn red" id="stopBtn" onclick="stopRun()" style="display:none">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
     Stop
@@ -768,6 +753,36 @@ textarea { resize: vertical; min-height: 60px; }
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h8M2 12h10"/></svg>
     Run log
     <span class="nb" id="nb-log" style="display:none;background:var(--blt);color:var(--blue)">0</span>
+  </div>
+
+  <div class="sb-sep"></div>
+  <!-- v2.1.0 (#4): worker-pool controls, moved here from the topbar. Same element IDs and
+       handlers as before — only the layout changed (inline strip -> stacked sidebar panel). -->
+  <div class="sb-sec">Worker pool</div>
+  <div id="poolControls" style="padding:4px 14px 8px;display:flex;flex-direction:column;gap:7px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <span style="font-size:11px;color:var(--t3)">Workers</span>
+      <input id="poolWorkerCount" type="number" min="1" max="100" value="4" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="How many workers to start with. Use Auto to size it by hardware and free licenses.">
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <span style="font-size:11px;color:var(--t3)">Batch</span>
+      <input id="poolBatchSize" type="number" min="1" max="500" value="10" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Rows each worker claims per pull">
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <span style="font-size:11px;color:var(--t3)" title="Licenses to always keep free. Used by Auto and by Auto-scale.">Buffer</span>
+      <input id="poolLicBuffer" type="number" min="0" max="100" value="10" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Keep this many PestPac licenses free (never consumed by workers)">
+    </div>
+    <label style="font-size:11px;color:var(--t3);display:flex;align-items:center;gap:5px" title="While running, periodically re-check free licenses and scale workers up or down automatically"><input id="poolElastic" type="checkbox" style="margin:0" onchange="poolToggleAutoScale()">Auto-scale</label>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <span id="poolIntervalLbl" style="font-size:11px;color:var(--t3);opacity:.4" title="How often Auto-scale re-checks licenses (minutes)">Every (min)</span>
+      <input id="poolLicInterval" type="number" min="1" max="120" value="5" disabled style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px;opacity:.4" title="Auto-scale re-check interval (minutes)">
+      <span id="poolIntervalUnit" style="display:none">min</span>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:2px">
+      <button class="tbtn" id="poolAutoBtn" onclick="poolFillAuto()" style="flex:1" title="Suggest a worker count from the smaller of hardware cap and (free licenses minus buffer)">Auto</button>
+      <button class="tbtn" id="poolAddJobBtn" onclick="poolAddJob()" style="flex:1" title="Stage the current flow+sheet as a job (for multi-flow runs)">+ Job</button>
+    </div>
+    <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" style="width:100%" title="Start the worker pool">Run pool</button>
   </div>
 
   <div class="sb-sep"></div>
@@ -1200,6 +1215,11 @@ let isRunning = false;
 let currentLogPath = null, runStartTime = null, runRowsDone = 0, runTotal = 0;
 let currentRunId = null;
 let currentRunMode = 'run-all'; // tracks runner's current mode for UI; updated by 'mode' / 'pause-*' events
+// v2.1.0 (#5) step-by-step -> pool handoff: tracks the NEXT row to process while the user is
+// stepping manually in the single-runner. When they switch to the pool, poolStageCurrent passes
+// this as resumeFromRow so the pool picks up where the stepping left off. null = no handoff (pool
+// starts at row 1, the normal case).
+let manualRowCursor = null;
 let logEntries = [], runOk = 0, runErr = 0, runSkip = 0;
 // v1.2.5 item 2.12: track failed source-row indexes for the in-progress / just-completed run.
 // Uncapped (unlike logEntries which is sliced to last 500) - we need every failed row to
@@ -2077,6 +2097,9 @@ async function startRun(){
   if(!confirmed)return;
   const flowJson=JSON.stringify({allSteps:allSteps(),config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value}});
   runOk=0;runErr=0;runSkip=0;runRowsDone=0;runTotal=ssRowCount||0;runStartTime=Date.now();
+  // v2.1.0 (#5): fresh manual run — clear any handoff cursor from a previous session. It is
+  // repopulated as the user steps (pause-step / pause-row) and consumed by poolStageCurrent.
+  manualRowCursor = null;
   // v1.2.5 item 2.12: reset failed-row tracker for this run + hide any retry button from a prior run.
   _failedRowIndexesThisRun=[];
   const _retryBtn=document.getElementById('retryFailedBtn');if(_retryBtn)_retryBtn.style.display='none';
@@ -2590,6 +2613,9 @@ function handleRunEvent(evt){
   }
   else if(evt.type==='pause-step'){
     currentRunMode='step';
+    // v2.1.0 (#5): paused BEFORE a step on this row — the row isn't finished, so a pool handoff
+    // should resume AT this row. Only data rows carry a cursor (setup/teardown have none).
+    if(evt.phase!=='setup' && evt.phase!=='teardown' && evt.rowIndex>0) manualRowCursor = evt.rowIndex;
     showPause('step', evt);
     // v1.3.0 Item 9: phase-aware live-log line (setup/teardown have no row).
     if(evt.phase==='setup' || evt.phase==='teardown'){
@@ -2600,6 +2626,8 @@ function handleRunEvent(evt){
   }
   else if(evt.type==='pause-row'){
     currentRunMode='step-row';
+    // v2.1.0 (#5): paused AFTER finishing this row — a pool handoff should resume at the NEXT row.
+    if(evt.rowIndex>0) manualRowCursor = evt.rowIndex + 1;
     showPause('step-row', evt);
     addLiveLog('Paused after row '+evt.rowIndex+'/'+evt.totalRows,'warn');
   }
@@ -2686,6 +2714,9 @@ function handleRunEvent(evt){
       updatePhaseIndicator('main','done');
     }
     const processed=evt.ok+evt.errs+evt.skipped;const msg='Complete — '+processed+' rows ('+evt.ok+' ok, '+evt.errs+' errors, '+evt.skipped+' skipped)';addLiveLog(msg,'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color='var(--green)';document.getElementById('runProgBar').style.width='100%';document.getElementById('rs-pct').textContent='100%';hidePause();runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log: '+evt.logPath,'info');}
+    // v2.1.0 (#5): run reached the end — nothing left to hand off, so clear the cursor. (A user
+    // STOP mid-run preserves it, so they can hand the remaining rows to the pool.)
+    manualRowCursor = null;
     // v1.2.5 item 2.12: surface a Retry-failed-rows button if any rows failed.
     if(_failedRowIndexesThisRun.length > 0 && _lastRunSnapshot){
       const btn=document.getElementById('retryFailedBtn');
@@ -3003,6 +3034,9 @@ async function poolStageCurrent(){
   if(!ssPath){ alert('Load a spreadsheet first.'); go('import'); return false; }
   const _setupFlowId = (typeof setupFlowId!=='undefined') ? setupFlowId : null;
   const _teardownFlowId = (typeof teardownFlowId!=='undefined') ? teardownFlowId : null;
+  // v2.1.0 (#5): if the user was stepping this sheet manually and stopped partway, hand the
+  // row cursor to the pool so it resumes where stepping left off instead of restarting at row 1.
+  const _resumeFromRow = (Number.isFinite(manualRowCursor) && manualRowCursor > 1) ? manualRowCursor : 0;
   const res = await API.poolSubmitJob({
     label: (flowName||'flow')+' · '+ssName,
     flowSteps: allSteps(),
@@ -3010,8 +3044,12 @@ async function poolStageCurrent(){
     profileId: activeProfileId,
     setupFlowId: _setupFlowId, teardownFlowId: _teardownFlowId,
     errHandle: (document.getElementById('errHandle')||{}).value || 'retry',
+    resumeFromRow: _resumeFromRow,
   });
   if(res && res.ok===false){ alert('Could not stage job: '+(res.error||'unknown')); return false; }
+  if(res && res.startRow && res.startRow > 1){
+    addLiveLog('Staged "'+((flowName||'flow')+' · '+ssName)+'" — pool will resume at row '+res.startRow+' (carried over from step-by-step).','info');
+  }
   return true;
 }
 

@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.0.2';
+const CURRENT_VERSION = '2.1.0';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -26,17 +26,21 @@ let mainWindow;
 const automationProcesses = new Map();
 // Absolute safety ceiling regardless of config/hardware — prevents a typo'd config from
 // trying to launch 10000 Chromiums. The hardware cap will almost always be lower.
-const MAX_WORKERS_HARD_CEILING = 100;
+// v2.1.0: raised 100->150. Stress test (#6) held 150 headless workers @ ~103MB each with
+// 24GB free; the real binding limit is PestPac licenses (~131), not this machine.
+const MAX_WORKERS_HARD_CEILING = 150;
 // v1.3.4 Phase 3: estimate how many headless Chromium workers this machine can run.
-// Heuristic: each headless worker ~600MB working set under PestPac; also bounded by CPU.
-// We leave headroom (use ~70% of free RAM) so the machine stays responsive. Returns >=1.
+// v2.1.0: re-derived from the stress test. Each headless worker measured ~103MB resident
+// (not the old 600MB guess — that was 6x too conservative and capped us near 30). We budget
+// ~150MB/worker for safety margin and use ~70% of free RAM so the machine stays responsive.
+// Workers are IO-bound (waiting on PestPac network), so the CPU factor is generous. Returns >=1.
 function computeHardwareCap() {
   try {
     const freeBytes = os.freemem();
     const cpus = (os.cpus() || []).length || 2;
-    const perWorkerBytes = 600 * 1024 * 1024; // ~600MB per headless worker, conservative
+    const perWorkerBytes = 150 * 1024 * 1024; // ~150MB per headless worker (measured ~103MB + margin)
     const byRam = Math.floor((freeBytes * 0.70) / perWorkerBytes);
-    const byCpu = Math.max(1, Math.round(cpus * 1.5)); // ~1.5 workers/core for IO-bound browser work
+    const byCpu = Math.max(1, Math.round(cpus * 6)); // ~6 workers/core; browser work is IO-bound, not CPU-bound
     const cap = Math.max(1, Math.min(byRam, byCpu, MAX_WORKERS_HARD_CEILING));
     return cap;
   } catch (e) {
@@ -637,21 +641,28 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
 
 // Submit a job into the (not-yet-started) pool. Returns the jobId. Jobs are staged, then
 // 'pool-start' spawns workers to drain them. flowSteps is the full allSteps array.
-ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle }) => {
+ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, resumeFromRow }) => {
   if (COORD.active) return { ok: false, error: 'Pool is already running. Stop it before staging new jobs.' };
   const total = countRowsSync(spreadsheetPath);
   if (total <= 0) return { ok: false, error: 'Could not read rows from ' + spreadsheetPath };
   const jobId = 'job' + Date.now() + '-' + Math.floor(Math.random()*1000);
+  // v2.1.0 (#5) step-by-step -> pool handoff: if the user was stepping through this sheet in
+  // the single-runner (manual) mode and switches to the pool, resumeFromRow carries the row
+  // cursor over so the pool starts where the manual stepping left off instead of restarting
+  // at row 1. Clamp to [1, total+1]; total+1 means "already past the end" (nothing to do).
+  let startRow = parseInt(resumeFromRow);
+  if (!Number.isFinite(startRow) || startRow < 1) startRow = 1;
+  if (startRow > total + 1) startRow = total + 1;
   COORD.jobs.set(jobId, {
     jobId, label: label || path.basename(spreadsheetPath),
     flowSteps, spreadsheetPath, profileId,
     setupFlowId: setupFlowId || null, teardownFlowId: teardownFlowId || null,
     errHandle: errHandle || 'retry',
-    totalRows: total, nextRow: 1,
+    totalRows: total, nextRow: startRow, startRow,
     done: 0, ok: 0, err: 0, skip: 0, finished: false,
   });
   coordEmitStatus();
-  return { ok: true, jobId, totalRows: total };
+  return { ok: true, jobId, totalRows: total, startRow };
 });
 
 // Remove a staged job (only when pool not running).
@@ -677,7 +688,10 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || 10));
   // Reset per-run job counters in case jobs were staged then this is a restart.
-  for (const job of COORD.jobs.values()) { job.nextRow = 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; if(!job.completedRows) job.completedRows = new Set(); }
+  // v2.1.0 (#5): reset nextRow to the job's startRow (the step-by-step handoff cursor), not a
+  // hard 1 — otherwise switching from manual stepping to the pool would re-run completed rows.
+  // startRow defaults to 1 for normal jobs, so existing behavior is unchanged.
+  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; if(!job.completedRows) job.completedRows = new Set(); }
   COORD.active = true;
   coordOpenJournal();  // v2.0.0 resume: start the append-only journal for this run
 
@@ -686,7 +700,8 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   COORD.desiredWorkers = target;
 
   // Spawn initial workers (bounded by total rows available — no point spawning idle workers).
-  let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += j.totalRows;
+  // v2.1.0 (#5): "available" accounts for the startRow handoff cursor and any pre-completed rows.
+  let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, (j.totalRows - (j.nextRow - 1)) - (j.completedRows ? j.completedRows.size : 0));
   target = Math.min(target, Math.max(1, totalRemaining));
   for (let i = 0; i < target; i++) { await coordSpawnWorker(); }
 
@@ -3344,6 +3359,103 @@ ipcMain.handle('open-file', (_, p) => shell.openPath(p));
 ipcMain.handle('get-version', () => CURRENT_VERSION);
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 
+// ── TASKBAR PIN (v2.1.0 #1) ───────────────────────────────────────────────────
+// On first packaged launch, offer to pin BUU 2.0 to the taskbar. Windows has no official
+// pin API, so we use the classic Shell.Application verb on the Start-Menu shortcut. That verb
+// is localized and was removed/blocked on many Windows 11 builds (22H2+), so this is strictly
+// best-effort: it must NEVER block startup, throw, or nag. We ask at most once and persist the
+// outcome in config (pinPromptDone), so a "No" — or a build where pinning is impossible — is
+// remembered and never asked again. Detection: scan the User Pinned\TaskBar folder for a .lnk
+// whose target resolves to our exe.
+
+// The actual helper script. It prints a single status token on the last line:
+function buildPinHelperScript(exePath, appName) {
+  const esc = s => String(s).replace(/'/g, "''");
+  return [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    `$exe = '${esc(exePath)}'`,
+    `$appName = '${esc(appName)}'`,
+    '$exeLeaf = Split-Path $exe -Leaf',
+    '$pinDir = Join-Path $env:APPDATA "Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar"',
+    '$sh = New-Object -ComObject WScript.Shell',
+    '# 1) Detection: is a shortcut targeting our exe already pinned?',
+    'if (Test-Path $pinDir) {',
+    '  $existing = Get-ChildItem -Path $pinDir -Filter *.lnk -ErrorAction SilentlyContinue',
+    '  foreach ($lnk in $existing) {',
+    '    $t = $sh.CreateShortcut($lnk.FullName).TargetPath',
+    '    if ($t -and ($t -ieq $exe -or (Split-Path $t -Leaf) -ieq $exeLeaf)) { Write-Output "already-pinned"; exit 0 }',
+    '  }',
+    '}',
+    '# 2) Find the Start-Menu shortcut to pin (pinning a .lnk is more reliable than the raw exe).',
+    '$startMenu = [Environment]::GetFolderPath("Programs")',
+    '$lnkPath = $null',
+    'if (Test-Path $startMenu) {',
+    '  $cand = Get-ChildItem -Path $startMenu -Recurse -Filter *.lnk -ErrorAction SilentlyContinue |',
+    '    Where-Object { $t = $sh.CreateShortcut($_.FullName).TargetPath; $t -and ((Split-Path $t -Leaf) -ieq $exeLeaf) } |',
+    '    Select-Object -First 1',
+    '  if ($cand) { $lnkPath = $cand.FullName }',
+    '}',
+    '$target = if ($lnkPath) { $lnkPath } else { $exe }',
+    '# 3) Invoke the localized "Pin to taskbar" shell verb via Shell.Application.',
+    '$shell = New-Object -ComObject Shell.Application',
+    '$folder = $shell.Namespace((Split-Path $target -Parent))',
+    '$item = $folder.ParseName((Split-Path $target -Leaf))',
+    '$verb = $null',
+    'foreach ($v in $item.Verbs()) {',
+    '  $n = $v.Name -replace "&",""',
+    '  if ($n -match "taskbar" -or $n -match "Taskbar") { $verb = $v; break }',
+    '}',
+    'if ($verb) { $verb.DoIt(); Start-Sleep -Milliseconds 600; Write-Output "pinned"; exit 0 }',
+    'Write-Output "cannot-pin"; exit 0',
+  ].join("\r\n");
+}
+
+function recordPinOutcome(outcome) {
+  try { writeConfig({ pinPromptDone: true, pinOutcome: outcome, pinPromptAt: new Date().toISOString() }); } catch {}
+}
+
+async function maybePinToTaskbar() {
+  try {
+    // Dev runs have no installed exe/Start-Menu shortcut — skip entirely.
+    if (!app.isPackaged || process.platform !== 'win32') return;
+    const cfg = readConfig();
+    if (cfg && cfg.pinPromptDone) return; // already asked once (Yes, No, or impossible) — never nag.
+
+    const exePath = process.execPath; // the installed BUU 2.0 .exe
+    // Ask permission (non-blocking to the app — we await the dialog, but the window is already shown).
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      buttons: ['Pin to taskbar', 'Not now'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Pin BUU 2.0?',
+      message: 'Pin BUU 2.0 to your taskbar?',
+      detail: 'This adds a one-click shortcut on your Windows taskbar. You can unpin it any time by right-clicking the icon.',
+      noLink: true,
+    });
+    if (response !== 0) { recordPinOutcome('declined'); return; } // remembered — won't ask again.
+
+    // Write the helper to a temp .ps1 and run it detached. -File avoids -Command quoting issues.
+    const ps1 = path.join(os.tmpdir(), `buu-pin-${Date.now()}.ps1`);
+    try { fs.writeFileSync(ps1, buildPinHelperScript(exePath, 'BUU 2.0'), 'utf8'); }
+    catch (e) { recordPinOutcome('error'); return; }
+
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1],
+      { windowsHide: true, timeout: 20000 },
+      (err, stdout) => {
+        const out = String(stdout || '').trim().split(/\r?\n/).pop() || '';
+        const outcome = err ? 'error' : (out || 'unknown');
+        recordPinOutcome(outcome);
+        try { fs.unlinkSync(ps1); } catch {}
+        try { console.log('[main] taskbar pin outcome: ' + outcome); } catch {}
+      }
+    );
+  } catch (e) {
+    // Absolutely never let pinning break startup.
+    try { recordPinOutcome('error'); } catch {}
+  }
+}
+
 // ── WINDOW ────────────────────────────────────────────────────────────────────
 function getIconPath() {
   if (app.isPackaged) return path.join(process.resourcesPath, 'assets', 'icon.ico');
@@ -3376,7 +3488,13 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     try { mainWindow.webContents.setZoomFactor(1.35); } catch (e) {}
   });
-  mainWindow.once('ready-to-show', () => { mainWindow.show(); checkForUpdates(false); });
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+    checkForUpdates(false);
+    // v2.1.0 (#1): offer to pin to the taskbar on first packaged launch. Delayed so the window
+    // is settled and we don't stack a dialog on top of the update banner. Best-effort, never blocks.
+    setTimeout(() => { maybePinToTaskbar(); }, 1500);
+  });
   mainWindow.setMenuBarVisibility(false);
 }
 // Single instance lock — prevent opening a second window
