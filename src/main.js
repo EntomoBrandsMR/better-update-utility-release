@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.1.0';
+const CURRENT_VERSION = '2.1.1';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -76,6 +76,9 @@ const COORD = {
   licenseTimer: null,
   poolId: null,         // v2.0.0 resume: id for this pool run's journal file
   journalStream: null,  // append-only results journal (one line per completed row)
+  usedProfileIds: new Set(), // v2.1.1: profiles used this run — the logout sweep logs in with one
+  sweepRunning: false,  // v2.1.1: guards against double-spawning the logout sweeper
+  setupScope: 'per-worker', // v2.1.1 (#8): 'per-worker' | 'per-job' | 'global'
 };
 
 // v2.0.0 resume: append-only journal. Path is per-pool-run so a fresh run never appends to
@@ -183,10 +186,20 @@ function countRowsSync(spreadsheetPath){
 
 // Hand out the next batch of row indexes (1-based) for a job. Returns [] when drained.
 // v2.0.0 resume: skips rows already in job.completedRows so a resumed pool doesn't redo them.
+// v2.1.1: a per-job requeue (rows reclaimed from a gracefully-stopped worker) is drained FIRST,
+// so rows a stopped worker never finished are picked up by another worker instead of being lost.
 function coordNextBatch(jobId){
   const job = COORD.jobs.get(jobId);
   if(!job) return [];
   const batch = [];
+  // Drain reclaimed rows first (skip any that have since completed).
+  if(job.requeue && job.requeue.length){
+    while(batch.length < COORD.batchSize && job.requeue.length){
+      const r = job.requeue.shift();
+      if(job.completedRows && job.completedRows.has(r)) continue;
+      batch.push(r);
+    }
+  }
   while(batch.length < COORD.batchSize && job.nextRow <= job.totalRows){
     const r = job.nextRow;
     job.nextRow++;
@@ -198,7 +211,7 @@ function coordNextBatch(jobId){
 
 // True when every job's queue is drained AND every worker has reported finished.
 function coordAllDrained(){
-  for(const job of COORD.jobs.values()){ if(job.nextRow <= job.totalRows) return false; }
+  for(const job of COORD.jobs.values()){ if(job.nextRow <= job.totalRows) return false; if(job.requeue && job.requeue.length) return false; }
   return true;
 }
 
@@ -238,14 +251,18 @@ async function coordSpawnWorker(){
   const jobId = coordPickJobForWorker();
   if(!jobId){ return null; } // nothing left to work on
   const job = COORD.jobs.get(jobId);
+  if(job && job.profileId) COORD.usedProfileIds.add(job.profileId); // v2.1.1: remember for the logout sweep
   const workerId = 'w' + Date.now() + '-' + Math.floor(Math.random()*1000);
 
   const chromiumExe = getBundledChromiumPath();
   if(!chromiumExe){ console.error('[coord] cannot spawn worker: chromium not found'); return null; }
 
   // Resolve setup/teardown step arrays for this job (same logic as single-run).
-  const setupSteps = job.setupFlowId ? ((resolveOnceFlowByName(job.setupFlowId)||{}).steps || []) : [];
-  const teardownSteps = job.teardownFlowId ? ((resolveOnceFlowByName(job.teardownFlowId)||{}).steps || []) : [];
+  // v2.1.1 (#8): only the per-worker scope has each worker run the once-flows. For 'per-job' and
+  // 'global', the coordinator runs them ONCE (coordRunOnceFlows), so workers get empty arrays.
+  const _runOwnOnce = (COORD.setupScope === 'per-worker');
+  const setupSteps = (_runOwnOnce && job.setupFlowId) ? ((resolveOnceFlowByName(job.setupFlowId)||{}).steps || []) : [];
+  const teardownSteps = (_runOwnOnce && job.teardownFlowId) ? ((resolveOnceFlowByName(job.teardownFlowId)||{}).steps || []) : [];
 
   // Credentials for this job's profile.
   const all = readAllProfiles();
@@ -395,6 +412,83 @@ function coordCheckComplete(){
     if(mainWindow) mainWindow.webContents.send('pool-complete', {
       jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err, skip:j.skip })),
     });
+    // v2.1.1 (#8): for per-job/global scope, run teardown ONCE now (coordinator-driven), THEN
+    // sweep. v2.1.1 logout sweep is the authoritative backstop and runs regardless of scope.
+    (async () => {
+      if(COORD.setupScope !== 'per-worker'){
+        if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase:'teardown', state:'phase-start', scope:COORD.setupScope });
+        try { await coordRunOnceFlows('teardown'); } catch(e) { console.error('[coord] teardown once-flows error:', e.message); }
+      }
+      coordRunLogoutSweep('auto-complete');
+    })();
+  }
+}
+
+// v2.1.1: spawn the headless logout sweeper. Logs in with a profile used this run, opens the
+// License Manager, and logs out every remaining BUU session. This is the backstop that makes
+// "no failure to log out" hold even for workers that died without logging out.
+async function coordRunLogoutSweep(reason){
+  if(COORD.sweepRunning) return;
+  COORD.sweepRunning = true;
+  try{
+    const chromiumExe = getBundledChromiumPath();
+    if(!chromiumExe){ if(mainWindow) mainWindow.webContents.send('pool-sweep-result',{ok:false,error:'chromium not found'}); COORD.sweepRunning=false; return; }
+    // Pick a profile used this run (fall back to any job's profile).
+    let profileId = Array.from(COORD.usedProfileIds)[0];
+    if(!profileId){ const firstJob = Array.from(COORD.jobs.values())[0]; profileId = firstJob && firstJob.profileId; }
+    if(!profileId){ if(mainWindow) mainWindow.webContents.send('pool-sweep-result',{ok:false,error:'no profile available for sweep'}); COORD.sweepRunning=false; return; }
+
+    // Login steps: reuse the locked login portion of any job's flow (same as workers use).
+    const anyJob = Array.from(COORD.jobs.values()).find(j => Array.isArray(j.flowSteps) && j.flowSteps.length) || {};
+    const loginSteps = (anyJob.flowSteps || []).filter(s => s.locked || s.type === 'pestpac-login');
+
+    // Resolve creds for that profile (keytar with profile fallback), mirror of coordSpawnWorker.
+    const all = readAllProfiles();
+    const prof = all.find(p => p.id === profileId) || {};
+    if (keytar) {
+      prof.companyKey = await keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
+      prof.username   = await keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
+      prof.password   = await keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
+    }
+    const sweepId = 'sweep' + Date.now();
+    const credPath = path.join(os.tmpdir(), `buu2-sweep-${sweepId}.enc`);
+    fs.writeFileSync(credPath, encStore([prof]));
+    const runnerPath = path.join(os.tmpdir(), `buu2-sweep-${sweepId}.js`);
+    fs.writeFileSync(runnerPath, buildLogoutSweeper({ chromiumExePath: chromiumExe, loginSteps, runContext: { runId: sweepId } }));
+
+    const env = { ...process.env };
+    const nodeModulesPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+      : path.join(__dirname, '..', 'node_modules');
+    env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
+
+    const sweepLogPath = path.join(getLogsDir(), `buu2-sweep-${sweepId}.log`);
+    const sweepLog = fs.createWriteStream(sweepLogPath, { flags: 'a' });
+    sweepLog.write(`[${new Date().toISOString()}] logout sweep start (reason=${reason}, profile=${profileId})\n`);
+    if(mainWindow) mainWindow.webContents.send('pool-sweep-start', { reason });
+
+    const proc = spawn(process.execPath, [runnerPath, credPath], { stdio:['ignore','pipe','pipe'], env });
+    let lastResult = null;
+    proc.stdout.on('data', d => {
+      String(d).split('\n').filter(Boolean).forEach(line => {
+        sweepLog.write(`[OUT] ${line}\n`);
+        let msg; try{ msg = JSON.parse(line); }catch{ return; }
+        if(msg.type === 'sweep-pass' || msg.type === 'sweep-done') lastResult = msg;
+        if(mainWindow) mainWindow.webContents.send('pool-sweep-progress', msg);
+      });
+    });
+    proc.stderr.on('data', d => sweepLog.write(`[ERR] ${String(d)}\n`));
+    proc.on('close', code => {
+      sweepLog.write(`[${new Date().toISOString()}] sweep exited code=${code}\n`); sweepLog.end();
+      try { fs.unlinkSync(runnerPath); } catch {}
+      try { fs.unlinkSync(credPath); } catch {}
+      COORD.sweepRunning = false;
+      const remaining = lastResult && lastResult.remaining != null ? lastResult.remaining : (code===0?0:null);
+      if(mainWindow) mainWindow.webContents.send('pool-sweep-result', { ok: code===0, remaining, loggedOut: lastResult && lastResult.loggedOut });
+    });
+  }catch(e){
+    COORD.sweepRunning = false;
+    if(mainWindow) mainWindow.webContents.send('pool-sweep-result',{ ok:false, error:e.message });
   }
 }
 
@@ -683,17 +777,33 @@ ipcMain.handle('pool-clear-jobs', async () => {
 
 // Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
-ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin }) => {
+ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
+  // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
+  // each worker runs the once-flows for its own session. 'per-job' / 'global' run them ONCE,
+  // executed by the coordinator via a dedicated headless session, with workers skipping them.
+  COORD.setupScope = (setupScope === 'per-job' || setupScope === 'global') ? setupScope : 'per-worker';
   COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || 10));
   // Reset per-run job counters in case jobs were staged then this is a restart.
   // v2.1.0 (#5): reset nextRow to the job's startRow (the step-by-step handoff cursor), not a
   // hard 1 — otherwise switching from manual stepping to the pool would re-run completed rows.
   // startRow defaults to 1 for normal jobs, so existing behavior is unchanged.
-  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; if(!job.completedRows) job.completedRows = new Set(); }
+  // v2.1.1 FIX: a fresh pool-start must CLEAR completedRows. Previously it preserved any existing
+  // set (if(!completedRows)...), so a second run in the same app session — especially after a run
+  // where every row skipped — saw all rows as "already done", handed out empty batches, and every
+  // worker retired instantly ("workers appear then vanish, run stops"). Resume has its own path
+  // (coordResumeFromJournal) that seeds completedRows deliberately; pool-start is always a fresh run.
+  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; job.completedRows = new Set(); }
   COORD.active = true;
   coordOpenJournal();  // v2.0.0 resume: start the append-only journal for this run
+
+  // v2.1.1 (#8): for 'per-job' / 'global' scope, run setup ONCE (coordinator-driven) before any
+  // workers spawn. Awaited so workers never start processing rows before setup has completed.
+  if(COORD.setupScope !== 'per-worker'){
+    if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase:'setup', state:'phase-start', scope:COORD.setupScope });
+    try { await coordRunOnceFlows('setup'); } catch(e) { console.error('[coord] setup once-flows error:', e.message); }
+  }
 
   const hwCap = computeHardwareCap();
   let target = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING, hwCap));
@@ -734,9 +844,20 @@ ipcMain.handle('pool-stop', async () => {
       const w = COORD.workers.get(id);
       if (w && w.process) { try { w.process.kill(); } catch {} }
     }
+    // v2.1.1: after the force-kill window, sweep the License Manager for any BUU sessions left
+    // behind by workers that were killed mid-logout (or had already crashed). This is the
+    // guarantee layer — a killed process can't log itself out, so the coordinator does it.
+    setTimeout(() => coordRunLogoutSweep('pool-stop'), 4000);
   }, 180000);
   coordEmitStatus();
   return { ok: true, stopped: COORD.workers.size };
+});
+
+// v2.1.1: manual logout sweep — lets the user force a License-Manager cleanup at any time
+// (e.g. they see stuck BUU sessions). Safe to call even when no pool is running.
+ipcMain.handle('pool-logout-sweep', async () => {
+  coordRunLogoutSweep('manual');
+  return { ok: true, started: true };
 });
 
 // Set the worker target while running: spawn more, or mark surplus for retirement.
@@ -747,6 +868,34 @@ ipcMain.handle('pool-set-workers', async (_, { workerCount }) => {
   COORD.desiredWorkers = target;
   await coordScaleTo(target);
   return { ok: true, desiredWorkers: target, liveWorkers: COORD.workers.size };
+});
+
+// v2.1.1 (#6): gracefully stop ONE worker. The worker finishes its current row, runs teardown,
+// VERIFIES logout, then exits — it is never force-killed here (that risks a stuck session, the
+// exact thing the logout work prevents). Rows in its batch that it never reported are reclaimed
+// into the job's requeue so another worker picks them up — nothing is lost. We also lower the
+// desired-worker target by one so the elastic loop doesn't immediately respawn a replacement.
+ipcMain.handle('pool-stop-worker', async (_, { workerId }) => {
+  const w = COORD.workers.get(workerId);
+  if (!w) return { ok: false, error: 'Worker not found (it may have already finished).' };
+  if (w.stopping) return { ok: true, alreadyStopping: true };
+  w.stopping = true;
+  // Reclaim un-reported rows from this worker's current batch into the job's requeue.
+  const job = COORD.jobs.get(w.jobId);
+  if (job && Array.isArray(w.batch) && w.batch.length) {
+    if (!job.requeue) job.requeue = [];
+    for (const r of w.batch) {
+      if (!(job.completedRows && job.completedRows.has(r))) job.requeue.push(r);
+    }
+    job.finished = false; // there is work to redo, so the job isn't finished
+  }
+  // Lower the target so a replacement isn't auto-spawned for this intentional stop.
+  COORD.desiredWorkers = Math.max(0, COORD.desiredWorkers - 1);
+  // Tell the worker to drain (finish current row -> teardown -> verified logout -> exit).
+  try { w.process.stdin.write(JSON.stringify({ cmd: 'drain' }) + '\n'); } catch {}
+  w.status = 'draining';
+  coordEmitStatus();
+  return { ok: true, workerId, requeued: (job && job.requeue ? job.requeue.length : 0) };
 });
 
 ipcMain.handle('pool-get-status', async () => {
@@ -3085,15 +3234,44 @@ async function main(){
   emit({type:'shutting-down'});
   if(TEARDOWN_STEPS.length){ try{ await runOnceFlow(page,TEARDOWN_STEPS,creds); }catch(e){} }
   emit({type:'logging-out'});
+  // v2.1.1: VERIFIED logout. A single click is not trusted — after attempting logout we navigate
+  // to a PestPac page and check whether we land on the login page (input[name="uid"] present).
+  // If still logged in, we retry. The worker does NOT exit until logout is VERIFIED or the budget
+  // is exhausted. A stuck session is a consumed PestPac license, so this must be near-bulletproof;
+  // anything that still leaks is caught by the coordinator's license-manager sweep.
   let _loggedOut=false;
-  try{
-    // Hard cap the logout so a hung page can't block it forever.
-    await Promise.race([
-      runStep(page, LOGOUT_STEP, {}, creds).then(()=>{ _loggedOut=true; }),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error('logout timeout')), 30000)),
-    ]);
-  }catch(e){ _loggedOut=false; }
-  emit({type:'logged-out', ok:_loggedOut});
+  async function _isLoggedOut(){
+    // Land anywhere in the app; if redirected to the login page, the session is gone.
+    try{
+      await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'domcontentloaded',timeout:20000});
+    }catch(e){ /* navigation hiccup — fall through and probe the DOM */ }
+    try{
+      // Login page (login.pestpac.com) shows the company-key field input[name="uid"].
+      if(/login\\.pestpac\\.com/i.test(page.url())) return true;
+      const uid = await page.$('input[name="uid"]');
+      if(uid) return true;
+      const user = await page.$('input[name="username"]');
+      if(user) return true;
+    }catch(e){}
+    return false;
+  }
+  const _logoutDeadline = Date.now() + 150000; // 150s total budget across all attempts
+  let _attempt=0;
+  while(!_loggedOut && Date.now() < _logoutDeadline){
+    _attempt++;
+    try{
+      await Promise.race([
+        runStep(page, LOGOUT_STEP, {}, creds),
+        new Promise((_,rej)=>setTimeout(()=>rej(new Error('logout step timeout')), 30000)),
+      ]);
+    }catch(e){ /* logout click/nav failed this attempt — verification below decides */ }
+    try{ _loggedOut = await _isLoggedOut(); }catch(e){ _loggedOut=false; }
+    emit({type:'logout-attempt', attempt:_attempt, ok:_loggedOut});
+    if(_loggedOut) break;
+    // Brief backoff, then re-attempt (a fresh login may have happened, or the menu wasn't ready).
+    await page.waitForTimeout(2000).catch(()=>{});
+  }
+  emit({type:'logged-out', ok:_loggedOut, attempts:_attempt});
   flush();
   try{ await browser.close(); }catch(e){}
   emit({type:'retired', loggedOut:_loggedOut});
@@ -3101,6 +3279,270 @@ async function main(){
 }
 main().catch(e=>{ emit({type:'fatal',error:e.message}); try{flush();}catch{} process.exit(1); });
 `;
+}
+
+// ── LOGOUT SWEEPER (v2.1.1) ───────────────────────────────────────────────────
+// The second, authoritative logout layer. After the pool finishes (or is stopped), the
+// coordinator spawns this headless sweeper. It logs in, opens PestPac's License Manager
+// (license.asp?Mode=View) which lists EVERY logged-in session, finds every row whose user is
+// EXACTLY "BUU" (never a substring — real employees must never be logged out), ticks their
+// LogOutUser{N} checkbox, clicks #butLogOut, and verifies the BUU count dropped to zero.
+// This reclaims licenses even from workers that hard-crashed and never logged themselves out,
+// which is what makes "there cannot be failure to log out" actually deliverable.
+function buildLogoutSweeper({ chromiumExePath, loginSteps, runContext }) {
+  return `
+const { chromium } = require('playwright-core');
+const fs = require('fs');
+const crypto = require('crypto');
+const path = require('path');
+const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
+const LOGIN_STEPS = ${JSON.stringify(loginSteps)};
+const RUN_CONTEXT = ${JSON.stringify(runContext || {})};
+const CRED_PATH = process.argv[2];
+const BUU_USER = 'BUU'; // exact-match key for our sessions
+const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32);
+function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
+function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
+function ms(s){return Math.round(parseFloat(s||1)*1000);}
+
+async function findLocator(page, selector, opts){
+  if(selector && selector.startsWith('xpath=')) return page.locator(selector);
+  return page.locator(selector);
+}
+// Minimal step engine — only the step types login uses (navigate/type/click/select/wait).
+async function runStep(page, step, creds){
+  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||''); };
+  switch(step.type){
+    case 'navigate':{const u=r(step.url); if(u){ await page.goto(u,{waitUntil:'domcontentloaded',timeout:30000}); } break;}
+    case 'type':{ const loc=await findLocator(page,step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().fill(''); await loc.first().fill(r(step.value)); break; }
+    case 'click':{ const loc=await findLocator(page,step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().click(); break; }
+    case 'select':{ const loc=await findLocator(page,step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().selectOption({label:r(step.value)}); break; }
+    case 'wait':{ await page.waitForTimeout(ms(step.waitSec||1)); break; }
+    case 'pestpac-login':{ await loginToPestPac(page,creds); break; }
+  }
+}
+async function loginToPestPac(page, creds){
+  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  await page.waitForSelector('input[name="uid"]',{timeout:15000});
+  await page.fill('input[name="uid"]',creds.companyKey||'');
+  await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+  await page.waitForSelector('input[name="username"]',{timeout:15000});
+  await page.fill('input[name="username"]',creds.username||'');
+  await page.fill('input[name="password"]',creds.password||'');
+  await page.click('button[data-testid="LoginForm-loginBtn"]');
+  await page.waitForLoadState('load',{timeout:30000});
+}
+
+// Count + log out every BUU session on the License Manager page. Returns {before, after, loggedOut}.
+async function sweepOnce(page){
+  await page.goto('https://app.pestpac.com/license.asp?Mode=View',{waitUntil:'domcontentloaded',timeout:30000});
+  // Each session row: first <td sortdata="USER"> contains the username; a checkbox input[name="LogOutUserN"].
+  // Tick only rows whose username cell text is EXACTLY "BUU".
+  const before = await page.evaluate((BUU)=>{
+    let n=0; const rows=document.querySelectorAll('tr.records-table-data');
+    rows.forEach(tr=>{ const td=tr.querySelector('td[sortdata]'); if(!td)return; const user=(td.getAttribute('sortdata')||td.textContent||'').trim(); if(user===BUU){ n++; const cb=tr.querySelector('input[type=checkbox][name^="LogOutUser"]'); if(cb && !cb.checked) cb.click(); } });
+    return n;
+  }, BUU_USER);
+  if(before===0) return { before:0, after:0, loggedOut:0 };
+  // Click the master Log Out button.
+  try{ await page.click('#butLogOut',{timeout:10000}); }catch(e){ try{ await page.evaluate(()=>{ if(typeof butLogOut_OnClick==='function') butLogOut_OnClick(); }); }catch(_){} }
+  // butLogOut may raise a confirm() dialog — auto-accept.
+  page.on('dialog', async d=>{ try{ await d.accept(); }catch(_){} });
+  await page.waitForTimeout(3000);
+  // Re-read the page to confirm BUU sessions are gone.
+  await page.goto('https://app.pestpac.com/license.asp?Mode=View',{waitUntil:'domcontentloaded',timeout:30000});
+  const after = await page.evaluate((BUU)=>{
+    let n=0; document.querySelectorAll('tr.records-table-data').forEach(tr=>{ const td=tr.querySelector('td[sortdata]'); if(!td)return; const user=(td.getAttribute('sortdata')||td.textContent||'').trim(); if(user===BUU) n++; });
+    return n;
+  }, BUU_USER);
+  return { before, after, loggedOut: Math.max(0, before-after) };
+}
+
+async function main(){
+  const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
+  const browser = await chromium.launch({ headless:true, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage'] });
+  const page = await (await browser.newContext()).newPage();
+  page.on('dialog', async d=>{ try{ await d.accept(); }catch(_){} });
+  emit({type:'sweep-login'});
+  try{
+    if(LOGIN_STEPS && LOGIN_STEPS.length){ for(const s of LOGIN_STEPS){ await runStep(page,s,creds); } }
+    else { await loginToPestPac(page,creds); }
+  }catch(e){ emit({type:'sweep-fatal',error:'sweep login failed: '+e.message}); try{await browser.close();}catch(_){} process.exit(1); }
+  // Sweep up to 3 passes (a session can take a moment to release).
+  let result={before:0,after:0,loggedOut:0};
+  for(let pass=1; pass<=3; pass++){
+    try{ result = await sweepOnce(page); }catch(e){ emit({type:'sweep-error',pass,error:e.message}); }
+    emit({type:'sweep-pass', pass, before:result.before, after:result.after, loggedOut:result.loggedOut});
+    if(result.after===0) break;
+    await page.waitForTimeout(2000);
+  }
+  // Log THIS sweeper's own session out too, so it doesn't leave a license consumed.
+  let _selfOut=false;
+  try{
+    await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});
+    await page.waitForSelector('div.select',{timeout:10000}); await page.click('div.select');
+    await page.waitForSelector('a.logout',{timeout:5000}); await page.click('a.logout');
+    await page.waitForTimeout(1500);
+    await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'domcontentloaded',timeout:15000});
+    _selfOut = /login\\.pestpac\\.com/i.test(page.url()) || !!(await page.$('input[name="uid"]'));
+  }catch(e){}
+  emit({type:'sweep-done', remaining:result.after, loggedOut:result.loggedOut, selfLoggedOut:_selfOut});
+  try{ await browser.close(); }catch(e){}
+  process.exit(result.after===0 ? 0 : 2);
+}
+main().catch(e=>{ emit({type:'sweep-fatal',error:e.message}); process.exit(1); });
+`;
+}
+
+// ── ONCE-FLOW RUNNER (v2.1.1 #8) ──────────────────────────────────────────────
+// Runs a setup OR teardown once-flow a single time in its own headless session, for the
+// 'per-job' / 'global' setup-scope modes (where workers do NOT run the once-flows themselves).
+// Logs in, runs the steps with the given RUN_CONTEXT, then VERIFIES logout (same as workers).
+function buildOnceFlowRunner({ chromiumExePath, loginSteps, onceSteps, runContext }) {
+  return `
+const { chromium } = require('playwright-core');
+const fs = require('fs');
+const crypto = require('crypto');
+const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
+const LOGIN_STEPS = ${JSON.stringify(loginSteps || [])};
+const ONCE_STEPS = ${JSON.stringify(onceSteps || [])};
+const RUN_CONTEXT = ${JSON.stringify(runContext || {})};
+const CRED_PATH = process.argv[2];
+const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32);
+function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
+function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
+function ms(s){return Math.round(parseFloat(s||1)*1000);}
+async function loginToPestPac(page, creds){
+  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  await page.waitForSelector('input[name="uid"]',{timeout:15000});
+  await page.fill('input[name="uid"]',creds.companyKey||'');
+  await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+  await page.waitForSelector('input[name="username"]',{timeout:15000});
+  await page.fill('input[name="username"]',creds.username||'');
+  await page.fill('input[name="password"]',creds.password||'');
+  await page.click('button[data-testid="LoginForm-loginBtn"]');
+  await page.waitForLoadState('load',{timeout:30000});
+}
+async function runStep(page, step, creds){
+  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return ''; }); };
+  switch(step.type){
+    case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:'domcontentloaded',timeout:60000}); break;}
+    case 'click':{ const loc=page.locator(step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().click(); break; }
+    case 'type':{ const loc=page.locator(step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().fill(''); await loc.first().fill(r(step.value)); break; }
+    case 'select':{ const loc=page.locator(step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().selectOption({label:r(step.value)}); break; }
+    case 'checkbox':{ const loc=page.locator(step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); if(step.checkAction==='uncheck')await loc.first().uncheck(); else await loc.first().check(); break; }
+    case 'wait':{ if(step.waitType==='element'){ await page.locator(step.waitSel||'').first().waitFor({state:'visible',timeout:30000}); } else { await page.waitForTimeout(ms(step.waitSec||1)); } break; }
+    case 'pestpac-login':{ await loginToPestPac(page,creds); break; }
+    case 'pestpac-logout':{ break; } // logout handled centrally below
+  }
+}
+async function main(){
+  const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
+  const browser = await chromium.launch({ headless:true, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage'] });
+  const page = await (await browser.newContext()).newPage();
+  page.on('dialog', async d=>{ try{ await d.accept(); }catch(_){} });
+  emit({type:'once-login', phase:RUN_CONTEXT.phase});
+  try{
+    if(LOGIN_STEPS && LOGIN_STEPS.length){ for(const s of LOGIN_STEPS){ await runStep(page,s,creds); } }
+    else { await loginToPestPac(page,creds); }
+  }catch(e){ emit({type:'once-fatal',error:'login failed: '+e.message}); try{await browser.close();}catch(_){} process.exit(1); }
+  let _ok=true, _err='';
+  for(let i=0;i<ONCE_STEPS.length;i++){ try{ await runStep(page,ONCE_STEPS[i],creds); }catch(e){ _ok=false; _err='step '+(i+1)+': '+e.message; break; } }
+  emit({type:'once-steps-done', ok:_ok, error:_err, phase:RUN_CONTEXT.phase});
+  // Verified logout (mirror of the worker): attempt -> probe login page -> retry within budget.
+  let _out=false; const _deadline=Date.now()+90000;
+  while(!_out && Date.now()<_deadline){
+    try{
+      await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});
+      await page.waitForSelector('div.select',{timeout:10000}); await page.click('div.select');
+      await page.waitForSelector('a.logout',{timeout:5000}); await page.click('a.logout');
+      await page.waitForTimeout(1500);
+    }catch(e){}
+    try{ await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'domcontentloaded',timeout:15000}); _out = /login\\.pestpac\\.com/i.test(page.url()) || !!(await page.$('input[name="uid"]')); }catch(e){ _out=false; }
+    if(_out) break; await page.waitForTimeout(2000).catch(()=>{});
+  }
+  emit({type:'once-done', ok:_ok, loggedOut:_out, phase:RUN_CONTEXT.phase});
+  try{ await browser.close(); }catch(e){}
+  process.exit(_ok?0:2);
+}
+main().catch(e=>{ emit({type:'once-fatal',error:e.message}); process.exit(1); });
+`;
+}
+
+// Run a once-flow (setup or teardown) ONCE for the given job, in the coordinator (per-job/global
+// scope). Returns a promise that resolves when the spawned session exits. Best-effort: failures
+// are logged and surfaced but do not crash the pool.
+function coordRunOnceFlow(job, phase){
+  return new Promise((resolve) => {
+    try{
+      const flowId = phase === 'setup' ? job.setupFlowId : job.teardownFlowId;
+      if(!flowId){ return resolve({ ok:true, skipped:true }); }
+      const onceSteps = (resolveOnceFlowByName(flowId)||{}).steps || [];
+      if(!onceSteps.length){ return resolve({ ok:true, skipped:true }); }
+      const chromiumExe = getBundledChromiumPath();
+      if(!chromiumExe){ return resolve({ ok:false, error:'chromium not found' }); }
+      const anyJob = job;
+      const loginSteps = (anyJob.flowSteps || []).filter(s => s.locked || s.type === 'pestpac-login');
+      const profileId = job.profileId;
+      const all = readAllProfiles();
+      const prof = all.find(p => p.id === profileId) || {};
+      const finish = async () => {
+        if (keytar) {
+          prof.companyKey = await keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
+          prof.username   = await keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
+          prof.password   = await keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
+        }
+        const onceId = 'once' + Date.now() + '-' + Math.floor(Math.random()*1000);
+        const credPath = path.join(os.tmpdir(), `buu2-once-${onceId}.enc`);
+        fs.writeFileSync(credPath, encStore([prof]));
+        const runnerPath = path.join(os.tmpdir(), `buu2-once-${onceId}.js`);
+        fs.writeFileSync(runnerPath, buildOnceFlowRunner({
+          chromiumExePath: chromiumExe, loginSteps, onceSteps,
+          runContext: { runId: onceId, phase, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
+        }));
+        const env = { ...process.env };
+        const nodeModulesPath = app.isPackaged
+          ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+          : path.join(__dirname, '..', 'node_modules');
+        env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
+        const logPath = path.join(getLogsDir(), `buu2-once-${onceId}.log`);
+        const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+        logStream.write(`[${new Date().toISOString()}] ${phase} once-flow start (job=${job.label})\n`);
+        if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase, job: job.label, state: 'start' });
+        const proc = spawn(process.execPath, [runnerPath, credPath], { stdio:['ignore','pipe','pipe'], env });
+        proc.stdout.on('data', d => logStream.write(`[OUT] ${String(d)}`));
+        proc.stderr.on('data', d => logStream.write(`[ERR] ${String(d)}`));
+        proc.on('close', code => {
+          logStream.write(`[${new Date().toISOString()}] ${phase} once-flow exit code=${code}\n`); logStream.end();
+          try { fs.unlinkSync(runnerPath); } catch {}
+          try { fs.unlinkSync(credPath); } catch {}
+          if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase, job: job.label, state: 'done', ok: code===0 });
+          resolve({ ok: code===0 });
+        });
+      };
+      finish();
+    }catch(e){ resolve({ ok:false, error:e.message }); }
+  });
+}
+
+// Run all once-flows for a phase per the active scope. 'global' runs each DISTINCT flow once
+// across the pool; 'per-job' runs each job's flow once. Returns when all have completed.
+async function coordRunOnceFlows(phase){
+  if(COORD.setupScope === 'per-worker') return; // workers handle it
+  const jobs = Array.from(COORD.jobs.values());
+  if(COORD.setupScope === 'global'){
+    // De-dupe by (flowId + profileId) so a shared setup runs only once.
+    const seen = new Set(); const targets = [];
+    for(const job of jobs){
+      const flowId = phase === 'setup' ? job.setupFlowId : job.teardownFlowId;
+      if(!flowId) continue;
+      const key = flowId + '|' + job.profileId;
+      if(seen.has(key)) continue; seen.add(key); targets.push(job);
+    }
+    for(const job of targets){ await coordRunOnceFlow(job, phase); }
+  } else { // per-job
+    for(const job of jobs){ await coordRunOnceFlow(job, phase); }
+  }
 }
 
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────

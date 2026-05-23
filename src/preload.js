@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('api', {
   poolStart:           (d)     => ipcRenderer.invoke('pool-start', d),
   poolStop:            ()      => ipcRenderer.invoke('pool-stop'),
   poolSetWorkers:      (d)     => ipcRenderer.invoke('pool-set-workers', d),
+  poolStopWorker:      (d)     => ipcRenderer.invoke('pool-stop-worker', d),
+  poolLogoutSweep:     ()      => ipcRenderer.invoke('pool-logout-sweep'),
   poolGetStatus:       ()      => ipcRenderer.invoke('pool-get-status'),
   poolFindOrphans:     ()      => ipcRenderer.invoke('pool-find-orphans'),
   poolResume:          (d)     => ipcRenderer.invoke('pool-resume', d),
@@ -51,5 +53,9 @@ contextBridge.exposeInMainWorld('api', {
   poolReadJournal:     (d)     => ipcRenderer.invoke('pool-read-journal', d),
   onPoolStatus:        (cb)    => ipcRenderer.on('pool-status', (_, d) => cb(d)),
   onPoolComplete:      (cb)    => ipcRenderer.on('pool-complete', (_, d) => cb(d)),
+  onPoolSweepStart:    (cb)    => ipcRenderer.on('pool-sweep-start', (_, d) => cb(d)),
+  onPoolSweepProgress: (cb)    => ipcRenderer.on('pool-sweep-progress', (_, d) => cb(d)),
+  onPoolSweepResult:   (cb)    => ipcRenderer.on('pool-sweep-result', (_, d) => cb(d)),
+  onPoolOnceFlow:      (cb)    => ipcRenderer.on('pool-once-flow', (_, d) => cb(d)),
   onPoolLicenseUpdate: (cb)    => ipcRenderer.on('pool-license-update', (_, d) => cb(d)),
 });

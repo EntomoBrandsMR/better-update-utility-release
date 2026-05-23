@@ -782,7 +782,16 @@ textarea { resize: vertical; min-height: 60px; }
       <button class="tbtn" id="poolAutoBtn" onclick="poolFillAuto()" style="flex:1" title="Suggest a worker count from the smaller of hardware cap and (free licenses minus buffer)">Auto</button>
       <button class="tbtn" id="poolAddJobBtn" onclick="poolAddJob()" style="flex:1" title="Stage the current flow+sheet as a job (for multi-flow runs)">+ Job</button>
     </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px" title="When a flow has a setup/teardown attached, choose how often they run across the pool. Per worker (default): each worker runs them for its own session. Per job: once per staged job. Global: once for the whole pool run.">
+      <span style="font-size:11px;color:var(--t3)">Setup/teardown</span>
+      <select id="poolSetupScope" style="width:104px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:11px">
+        <option value="per-worker">Per worker</option>
+        <option value="per-job">Per job (once)</option>
+        <option value="global">Global (once)</option>
+      </select>
+    </div>
     <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" style="width:100%" title="Start the worker pool">Run pool</button>
+    <button class="tbtn" id="poolSweepBtn" onclick="poolLogoutSweepClick()" style="width:100%;margin-top:2px" title="Log out any BUU sessions still logged in on PestPac (License Manager). Use if you see stuck sessions.">Log out stuck sessions</button>
   </div>
 
   <div class="sb-sep"></div>
@@ -1082,7 +1091,7 @@ textarea { resize: vertical; min-height: 60px; }
          is the whole story then). Live-output console removed per design — overall numbers
          are enough at pool scale. -->
     <div id="workerGridHd" style="display:none;font-size:11px;font-weight:600;color:var(--t3);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em">Workers</div>
-    <div id="workerGrid" style="display:none;grid-template-columns:repeat(auto-fill,minmax(300px,360px));gap:8px"></div>
+    <div id="workerGrid" style="display:none;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px"></div>
   </div>
 </div>
 
@@ -1562,46 +1571,80 @@ function initDragDrop() {
       dragSrcId = parseInt(card.dataset.stepId);
       card.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', 'step:' + dragSrcId); } catch {}
     });
     handle.addEventListener('dragend', () => {
       card.classList.remove('dragging');
-      list.querySelectorAll('.drop-indicator').forEach(el => el.remove());
+      removeIndicator();
+      stopAutoScroll();
     });
   });
 
-  // Drop targets stay on the card so the indicator-line above/below behavior works.
-  list.querySelectorAll('.step-card[data-step-id]').forEach(card => {
-    card.addEventListener('dragover', e => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      list.querySelectorAll('.drop-indicator').forEach(el => el.remove());
-      const rect = card.getBoundingClientRect();
-      const midY = rect.top + rect.height / 2;
-      const indicator = document.createElement('div');
-      indicator.className = 'drop-indicator';
-      if (e.clientY < midY) {
-        card.parentNode.insertBefore(indicator, card);
-      } else {
-        card.parentNode.insertBefore(indicator, card.nextSibling);
-      }
-      card.dataset.dropPos = e.clientY < midY ? 'before' : 'after';
-    });
-    card.addEventListener('drop', e => {
-      e.preventDefault();
-      list.querySelectorAll('.drop-indicator').forEach(el => el.remove());
-      const targetId = parseInt(card.dataset.stepId);
-      const dropPos = card.dataset.dropPos || 'after';
-      if (dragSrcId === null || dragSrcId === targetId) return;
-      const fromIdx = steps.findIndex(s => s.id === dragSrcId);
-      let toIdx = steps.findIndex(s => s.id === targetId);
-      if (fromIdx < 0 || toIdx < 0) return;
-      const [moved] = steps.splice(fromIdx, 1);
-      toIdx = steps.findIndex(s => s.id === targetId);
-      const insertAt = dropPos === 'before' ? toIdx : toIdx + 1;
-      steps.splice(insertAt, 0, moved);
-      dragSrcId = null;
-      renderSteps();
-    });
+  // v2.1.1 (bugs K + J): ONE delegated dragover handler on the list — not one per card. The old
+  // per-card handlers could each insert their own .drop-indicator, producing TWO drop lines with
+  // only one of them honored. A single shared indicator + a single insertion decision fixes that.
+  // We also auto-scroll the list when the cursor nears the top/bottom edge during a drag (J).
+  let _indicator = null;
+  function removeIndicator(){ list.querySelectorAll('.drop-indicator').forEach(el => el.remove()); _indicator = null; }
+  function getIndicator(){
+    if(!_indicator || !_indicator.isConnected){ _indicator = document.createElement('div'); _indicator.className = 'drop-indicator'; }
+    return _indicator;
+  }
+  // The card the cursor is currently over (only step cards are valid drop targets).
+  function cardFromPoint(y){
+    const cards = [...list.querySelectorAll('.step-card[data-step-id]')];
+    for(const c of cards){ const r = c.getBoundingClientRect(); if(y >= r.top && y <= r.bottom) return c; }
+    return null;
+  }
+  let _scrollRAF = null, _scrollDir = 0;
+  function autoScrollTick(){
+    if(_scrollDir === 0){ _scrollRAF = null; return; }
+    list.scrollTop += _scrollDir * 12;
+    _scrollRAF = requestAnimationFrame(autoScrollTick);
+  }
+  function stopAutoScroll(){ _scrollDir = 0; if(_scrollRAF){ cancelAnimationFrame(_scrollRAF); _scrollRAF = null; } }
+  function maybeAutoScroll(y){
+    const r = list.getBoundingClientRect();
+    const edge = 48; // px from top/bottom that triggers scroll
+    if(y < r.top + edge) _scrollDir = -1;
+    else if(y > r.bottom - edge) _scrollDir = 1;
+    else _scrollDir = 0;
+    if(_scrollDir !== 0 && !_scrollRAF) _scrollRAF = requestAnimationFrame(autoScrollTick);
+    else if(_scrollDir === 0) stopAutoScroll();
+  }
+  list.addEventListener('dragover', e => {
+    if(dragSrcId === null) return; // not a step reorder (could be a chip drag)
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    maybeAutoScroll(e.clientY);
+    const card = cardFromPoint(e.clientY);
+    if(!card){ return; } // between/outside cards — keep last indicator
+    const rect = card.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    const ind = getIndicator();
+    // Place the single indicator; insertBefore is a move if it's already in the DOM, so no dupes.
+    if(before) card.parentNode.insertBefore(ind, card);
+    else card.parentNode.insertBefore(ind, card.nextSibling);
+    list.dataset.dropBefore = before ? '1' : '0';
+    list.dataset.dropTarget = card.dataset.stepId;
+  });
+  list.addEventListener('drop', e => {
+    if(dragSrcId === null) return;
+    e.preventDefault();
+    stopAutoScroll();
+    removeIndicator();
+    const targetId = parseInt(list.dataset.dropTarget);
+    const before = list.dataset.dropBefore === '1';
+    if(isNaN(targetId) || dragSrcId === targetId){ dragSrcId = null; return; }
+    const fromIdx = steps.findIndex(s => s.id === dragSrcId);
+    if(fromIdx < 0){ dragSrcId = null; return; }
+    const [moved] = steps.splice(fromIdx, 1);
+    let toIdx = steps.findIndex(s => s.id === targetId);
+    if(toIdx < 0){ steps.splice(fromIdx, 0, moved); dragSrcId = null; return; }
+    const insertAt = before ? toIdx : toIdx + 1;
+    steps.splice(insertAt, 0, moved);
+    dragSrcId = null;
+    renderSteps();
   });
 
   // v1.2.5 item 2.5 (Build-side): chip drag onto step-body text inputs.
@@ -1613,7 +1656,7 @@ function initDragDrop() {
       chipDragToken = chip.dataset.token || '';
       chip.classList.add('chip-dragging');
       e.dataTransfer.effectAllowed = 'copy';
-      try { e.dataTransfer.setData('text/plain', chipDragToken); } catch {}
+      try { e.dataTransfer.setData('text/plain', chipDragToken); e.dataTransfer.setData('application/x-buu-token', chipDragToken); } catch {}
       // Mark valid drop targets so they pulse subtly during the drag.
       list.querySelectorAll('.step-body input[type="text"]').forEach(inp => {
         inp.classList.add('field-droppable');
@@ -1634,7 +1677,11 @@ function initDragDrop() {
       inp.classList.add('field-droppable-hover');
     });
     inp.addEventListener('dragover', e => {
-      if (chipDragToken === null) return;
+      // v2.1.1 (bug D): accept the drop if EITHER the JS flag is set OR the drag carries a chip
+      // token payload. Relying only on chipDragToken made drops silently fail if the flag was
+      // stale/cleared; preventDefault must run on dragover or the browser rejects the drop.
+      const hasChip = chipDragToken !== null || (e.dataTransfer && (e.dataTransfer.types||[]).includes('application/x-buu-token'));
+      if (!hasChip) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     });
@@ -1645,9 +1692,13 @@ function initDragDrop() {
       inp.classList.remove('field-droppable-hover');
     });
     inp.addEventListener('drop', e => {
-      if (chipDragToken === null) return;
+      // Source of truth for the token: prefer the live flag, fall back to the dataTransfer payload.
+      let token = chipDragToken;
+      if((token === null || token === '') && e.dataTransfer){
+        try { token = e.dataTransfer.getData('application/x-buu-token') || e.dataTransfer.getData('text/plain') || ''; } catch { token = ''; }
+      }
+      if (token === null || token === undefined || token === '') return;
       e.preventDefault();
-      const token = chipDragToken;
       // Insert at cursor position; fall back to end if no selection state.
       inp.focus();
       const pos = (typeof inp.selectionStart === 'number') ? inp.selectionStart : inp.value.length;
@@ -2083,6 +2134,14 @@ function updateStartModeHint(){
 async function startRun(){
   // v1.3.0 Item 3: log entry state so a stuck-second-start reproduction shows what was true on click.
   console.log('[run] startRun: called, isRunning=' + isRunning + ', currentRunId=' + currentRunId + ', _stopInProgress=' + _stopInProgress);
+  // v2.1.1 (#7): distinguish "pool is running" from "a single run is running". Building and
+  // saving flows while the worker pool runs is fully supported (the pool captured its own copy
+  // of the flow at submit time, so editing the builder doesn't affect running workers). Only the
+  // single-runner can't start a second concurrent run. Give a clear, specific message.
+  if(typeof coordActive!=='undefined' && coordActive){
+    alert('The worker pool is running.\n\nYou can keep building and saving flows while it runs — your edits won\u2019t affect the running workers. But the single-run mode can\u2019t start while the pool is active. Stop the pool first if you want to do a single manual run.');
+    return;
+  }
   if(isRunning){alert('An automation is already running. Stop it first or wait for it to finish.');return;}
   if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
   if(!steps.length){alert('No steps defined. Build your flow first.');go('builder');return;}
@@ -3020,11 +3079,40 @@ async function poolRunClick(){
   const elastic = !!(document.getElementById('poolElastic')||{}).checked;
   const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
   const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
-  if(!confirm('Start worker pool?\n\n• '+n+' workers (headless, batch size '+batchSize+')\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n\nWorkers pull batches until all jobs drain. Continue?')) return;
-  const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
+  const setupScope = (document.getElementById('poolSetupScope')||{}).value || 'per-worker';
+  if(!confirm('Start worker pool?\n\n• '+n+' workers (headless, batch size '+batchSize+')\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull batches until all jobs drain. Continue?')) return;
+  const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope });
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
   poolUIActive(true);
   go('run');
+}
+
+// v2.1.1: extract every {{column}} token the flow references and check them against the loaded
+// sheet's headers. Built-in run-context tokens are NOT columns and are excluded. Matching is
+// case-sensitive to mirror the runner's row[ref] lookup. Returns {referenced, missing, allMissing}.
+function checkFlowColumnsAgainstSheet(){
+  const BUILTINS = new Set(['TODAY','RUNID','PROFILE_USERNAME']);
+  const refs = new Set();
+  const scan = v => {
+    if(!v || typeof v !== 'string') return;
+    let m; const re=/{{\s*([^}]+?)\s*}}/g;
+    while((m=re.exec(v))){
+      let t = m[1].trim();
+      if(t.startsWith('CRED:')) continue;     // credential tokens, not columns
+      if(BUILTINS.has(t)) continue;           // run-context tokens, not columns
+      refs.add(t);
+    }
+  };
+  // Scan every field of every step that can carry a token.
+  (steps||[]).forEach(s => {
+    scan(s.url); scan(s.value); scan(s.selector); scan(s.matchText);
+    scan(s.containerSel); scan(s.waitFor); scan(s.waitSel); scan(s.condCol);
+    scan(s.expected); scan(s.pathColumn); scan(s.fileNameColumn); scan(s.baseFolder);
+  });
+  const referenced = Array.from(refs);
+  const have = new Set((ssHeaders||[]).map(h => String(h)));
+  const missing = referenced.filter(r => !have.has(r));
+  return { referenced, missing, allMissing: referenced.length > 0 && missing.length === referenced.length };
 }
 
 // Stage the currently loaded flow+sheet+profile as one pool job.
@@ -3032,6 +3120,28 @@ async function poolStageCurrent(){
   if(!activeProfileId){ alert('Select a login profile first.'); go('profiles'); return false; }
   if(!steps.length){ alert('Build your flow first.'); go('builder'); return false; }
   if(!ssPath){ alert('Load a spreadsheet first.'); go('import'); return false; }
+  // v2.1.1: pre-run column/token check. The #1 cause of "ran but skipped everything" is a sheet
+  // whose columns don't match the flow's {{tokens}} (e.g. flow needs {{URL}} but the sheet has
+  // 'url' or is the wrong file). Catch it HERE, loudly, before launching the pool — instead of
+  // silently skipping thousands of rows. Names are case-sensitive (the runner does row[ref]).
+  const colCheck = checkFlowColumnsAgainstSheet();
+  if(colCheck && colCheck.missing.length){
+    const have = ssHeaders && ssHeaders.length ? ssHeaders.join(', ') : '(none)';
+    const miss = colCheck.missing.join(', ');
+    if(colCheck.allMissing){
+      // Zero referenced columns exist — almost certainly the wrong sheet. Block hard.
+      alert('Stop — this sheet does not match the flow.\n\nThe flow uses these column tokens: '+colCheck.referenced.join(', ')+
+            '\nbut NONE of them exist in the loaded sheet.\n\nThe sheet\u2019s columns are:\n'+have+
+            '\n\nThis usually means the wrong file is loaded. Column names are case-sensitive. Fix the sheet (or the flow) and try again.');
+      return false;
+    }
+    // Some match, some don't — warn but let the user decide.
+    if(!confirm('Heads up: the flow references column(s) that are NOT in the loaded sheet:\n\n  '+miss+
+                '\n\nThe sheet has: '+have+
+                '\n\nRows will SKIP wherever a missing column is needed (names are case-sensitive). Stage anyway?')){
+      return false;
+    }
+  }
   const _setupFlowId = (typeof setupFlowId!=='undefined') ? setupFlowId : null;
   const _teardownFlowId = (typeof teardownFlowId!=='undefined') ? teardownFlowId : null;
   // v2.1.0 (#5): if the user was stepping this sheet manually and stopped partway, hand the
@@ -3102,6 +3212,13 @@ function renderCoordStatus(st){
       'error':      {label:'ERROR',        color:'var(--red)'},
     };
     const ph = PH[w.status] || {label:String(w.status||'').toUpperCase(), color:'var(--t3)'};
+    // v2.1.1 (#6): per-worker graceful stop. Only offered while the worker is still active
+    // (not already draining/shutting down/done). Clicking it drains JUST this worker — it
+    // finishes its current row, verifies logout, and exits; its unfinished rows are requeued.
+    const canStop = ['starting','logging-in','running'].includes(w.status);
+    const stopBtn = canStop
+      ? '<button title="Gracefully stop this worker (finishes its current row, logs out, returns its remaining rows to the queue)" onclick="poolStopWorkerClick(\''+w.workerId+'\')" style="border:none;background:var(--surf3);color:var(--t2);font-size:9px;font-weight:700;border-radius:4px;padding:2px 6px;cursor:pointer;text-transform:uppercase;letter-spacing:.04em">Stop</button>'
+      : '';
     // Live detail line: row N - 3/10 - step 7/8 (only while running with data).
     let detail = '';
     if(w.status==='running' && w.currentRow!=null){
@@ -3111,7 +3228,10 @@ function renderCoordStatus(st){
       detail = '<div style="font-size:10px;color:var(--t3);margin-bottom:4px">'+parts.join(' · ')+'</div>';
     }
     return '<div class="card" style="padding:10px 12px;border:1px solid var(--brd)">'
-      + '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><div style="font-size:12px;font-weight:700;color:var(--t2)">'+w.workerId.slice(-6)+'</div><div style="font-size:10px;font-weight:700;color:'+ph.color+';text-transform:uppercase">'+ph.label+'</div></div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">'
+        + '<div style="font-size:12px;font-weight:700;color:var(--t2)">'+w.workerId.slice(-6)+'</div>'
+        + '<div style="display:flex;align-items:center;gap:6px"><div style="font-size:10px;font-weight:700;color:'+ph.color+';text-transform:uppercase">'+ph.label+'</div>'+stopBtn+'</div>'
+      + '</div>'
       + detail
       + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+(w.done||0).toLocaleString()+'</b> done</span><span style="color:var(--green)">'+(w.ok||0).toLocaleString()+' ok</span><span style="color:var(--red)">'+(w.err||0).toLocaleString()+' err</span><span style="color:var(--amber)">'+(w.skip||0).toLocaleString()+' skip</span></div></div>';
   }).join('');
@@ -3157,6 +3277,29 @@ async function poolClearStaged(){
   if(API.poolClearJobs) await API.poolClearJobs();
   if(API.poolGetStatus) await API.poolGetStatus();
 }
+// v2.1.1: manual logout sweep — force a License-Manager cleanup of any stuck BUU sessions.
+async function poolLogoutSweepClick(){
+  if(!API.poolLogoutSweep){ alert('Logout sweep not available in this build.'); return; }
+  const btn=document.getElementById('poolSweepBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Sweeping…'; }
+  try{
+    await API.poolLogoutSweep();
+    go('run'); // so the sweep progress shows in the live log
+    addLiveLog('Manual logout sweep requested — logging out any BUU sessions on the License Manager.','info');
+  }catch(e){ alert('Could not start logout sweep: '+(e&&e.message||e)); }
+  setTimeout(()=>{ if(btn){ btn.disabled=false; btn.textContent='Log out stuck sessions'; } }, 8000);
+}
+
+// v2.1.1 (#6): gracefully stop a single worker from its card.
+async function poolStopWorkerClick(workerId){
+  if(!API.poolStopWorker) return;
+  if(!confirm('Gracefully stop this worker?\n\nIt will finish its current row, log out, and exit. Its remaining rows return to the queue for other workers. The pool keeps running.')) return;
+  try{
+    const res = await API.poolStopWorker({ workerId });
+    if(res && res.ok===false){ alert('Could not stop worker: '+(res.error||'unknown')); return; }
+    addLiveLog('Stopping worker '+String(workerId).slice(-6)+' — finishing its current row, then logging out. Remaining rows requeued.','info');
+  }catch(e){ alert('Could not stop worker: '+(e&&e.message||e)); }
+}
 
 // Wire coordinator events once.
 if(API.onPoolStatus) API.onPoolStatus(function(st){ renderCoordStatus(st); });
@@ -3165,9 +3308,38 @@ if(API.onPoolComplete) API.onPoolComplete(function(d){
   poolUIActive(false); stopElapsedTicker();
   const grid=document.getElementById('workerGrid'); if(grid) setTimeout(()=>{grid.style.display='none';document.getElementById('workerGridHd').style.display='none';},1500);
 });
+// v2.1.1: logout-sweep status. The sweep runs automatically at pool end and on stop; it logs
+// out any lingering BUU sessions on PestPac's License Manager. Surface it so the user can SEE
+// that logout was enforced (the whole point: no stuck sessions consuming licenses).
+if(API.onPoolSweepStart) API.onPoolSweepStart(function(d){
+  const el=document.getElementById('runStatusMsg'); if(el){ el.textContent='Verifying logout — sweeping License Manager…'; el.style.color='var(--t2)'; }
+  addLiveLog('Logout sweep started ('+(d&&d.reason||'')+') — checking for any BUU sessions still logged in.','info');
+});
+if(API.onPoolSweepProgress) API.onPoolSweepProgress(function(d){
+  if(!d||!d.type) return;
+  if(d.type==='sweep-pass') addLiveLog('Logout sweep pass '+d.pass+': '+d.before+' BUU session(s) found, '+d.loggedOut+' logged out, '+d.after+' remaining.', d.after>0?'warn':'ok');
+  else if(d.type==='sweep-error'||d.type==='sweep-fatal') addLiveLog('Logout sweep issue: '+(d.error||'unknown'),'warn');
+});
+if(API.onPoolSweepResult) API.onPoolSweepResult(function(d){
+  const el=document.getElementById('runStatusMsg');
+  if(d&&d.ok&&(d.remaining===0||d.remaining==null)){
+    if(el){ el.textContent='Pool complete — all sessions logged out ✓'; el.style.color='var(--green)'; }
+    addLiveLog('Logout verified: no BUU sessions remain logged in'+(d.loggedOut?(' ('+d.loggedOut+' cleaned up by the sweep)'):'')+'.','ok');
+  } else {
+    if(el){ el.textContent='Pool complete — '+(d&&d.remaining!=null?d.remaining:'some')+' session(s) may still be logged in'; el.style.color='var(--red)'; }
+    addLiveLog('WARNING: logout sweep could not confirm all sessions are out'+(d&&d.error?(' ('+d.error+')'):'')+'. Use "Log out stuck sessions" to retry, or check the License Manager.','err');
+  }
+});
 if(API.onPoolLicenseUpdate) API.onPoolLicenseUpdate(function(d){
   if(d.error){ console.warn('[pool] license recheck failed:',d.error); return; }
   console.log('[pool] license update: free='+d.freeLicenses+' newTarget='+d.newTarget);
+});
+// v2.1.1 (#8): surface coordinator-run setup/teardown once-flows (per-job / global scope).
+if(API.onPoolOnceFlow) API.onPoolOnceFlow(function(d){
+  if(!d) return;
+  if(d.state==='phase-start') addLiveLog('Running '+d.phase+' once ('+(d.scope||'')+' scope) before/after the pool…','info');
+  else if(d.state==='start') addLiveLog('  '+d.phase+' running for job "'+(d.job||'')+'"…','info');
+  else if(d.state==='done') addLiveLog('  '+d.phase+' for "'+(d.job||'')+'" '+(d.ok?'completed':'finished with errors')+'.', d.ok?'ok':'warn');
 });
 
 // ── legacy static-pool stubs (no longer used; kept as no-ops to avoid reference errors) ──
