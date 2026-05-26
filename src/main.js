@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.2.0';
+const CURRENT_VERSION = '2.2.1';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -238,8 +238,13 @@ function coordEmitStatus(){
 }
 
 // Pick a job that still has rows to hand out (round-robin-ish: first non-drained job).
+// v2.2.1: a job with reclaimed rows in its requeue still has work even when nextRow has passed
+// totalRows, so treat a non-empty requeue as "has rows" — otherwise reclaimed rows could strand
+// when the last forward-progress worker has already drained and no worker gets spawned for them.
 function coordPickJobForWorker(){
   for(const job of COORD.jobs.values()){
+    const hasRequeue = job.requeue && job.requeue.length > 0;
+    if(hasRequeue) return job.jobId;
     if(!job.finished && job.nextRow <= job.totalRows) return job.jobId;
   }
   return null;
@@ -317,10 +322,39 @@ async function coordSpawnWorker(){
     runnerLogStream.end();
     const w = COORD.workers.get(workerId);
     if(w){ w.status = (code===0?'done':'error'); }
+    // v2.2.1 LOSSLESS RECLAIM (coordinator side, catch-all): reclaim BEFORE removing the worker.
+    // This backstops the worker-side 'reclaim' message for cases where it never arrived — a crash,
+    // a force-kill, or stdout closing before the message flushed. w.batch holds the full last batch
+    // handed to this worker; any row in it not yet completed is pushed to the job's requeue so
+    // another worker drains it. Idempotent with the 'reclaim' message (coordNextBatch and this both
+    // skip completedRows; a row pushed twice is harmless — the second copy is skipped on drain).
+    // Must run before COORD.workers.delete and before coordCheckComplete so completion sees the
+    // requeue and stays blocked (coordAllDrained returns false while requeue is non-empty).
+    if(w && w.jobId){
+      const cjob = COORD.jobs.get(w.jobId);
+      if(cjob && Array.isArray(w.batch) && w.batch.length){
+        if(!cjob.requeue) cjob.requeue = [];
+        for(const r of w.batch){
+          if(cjob.completedRows && cjob.completedRows.has(r)) continue;
+          cjob.requeue.push(r);
+        }
+        if(cjob.requeue.length) cjob.finished = false;
+      }
+    }
     COORD.workers.delete(workerId);
     try { fs.unlinkSync(runnerPath); } catch {}
     try { fs.unlinkSync(credPath); } catch {}
     coordEmitStatus();
+    // v2.2.1 LOSSLESS RECLAIM (stall guard): lazy reclaim relies on a live worker eventually
+    // pulling the requeued rows. If THIS was the last worker and the pool is still active with
+    // work outstanding (forward queue OR reclaimed requeue), nothing would pull it — the elastic
+    // timer is minutes away and a non-elastic pool has no timer at all — so the pool would hang
+    // with rows unprocessed. Spawn exactly one worker to drain the remainder. coordPickJobForWorker
+    // is requeue-aware, so this also covers requeue-only-remaining. Not aggressive: only fires at
+    // zero live workers, and only while there is genuinely work left.
+    if(COORD.active && COORD.workers.size === 0 && coordPickJobForWorker()){
+      coordSpawnWorker().catch(e => { try{ console.error('[coord] stall-guard respawn failed:', e.message); }catch(_){} });
+    }
     coordCheckComplete();
   });
 
@@ -400,6 +434,23 @@ function coordHandleWorkerMessage(workerId, msg){
       w.status = 'shut-down';
       if(msg.loggedOut!=null) w.loggedOut = !!msg.loggedOut;
       break;
+    case 'reclaim': {
+      // v2.2.1 LOSSLESS RECLAIM (coordinator side, primary path): a draining worker handed back
+      // the unstarted tail of its batch. Push those rows into the job's requeue so another worker
+      // drains them (coordNextBatch drains requeue FIRST). Idempotent: skip any row already
+      // completed. Clearing job.finished and the rows still being in requeue blocks completion
+      // (coordAllDrained returns false while any requeue is non-empty), so the pool cannot report
+      // "done" with rows outstanding — the exact silent-loss bug this fixes.
+      if(job && Array.isArray(msg.rows) && msg.rows.length){
+        if(!job.requeue) job.requeue = [];
+        for(const r of msg.rows){
+          if(job.completedRows && job.completedRows.has(r)) continue;
+          job.requeue.push(r);
+        }
+        job.finished = false;
+      }
+      break;
+    }
   }
   coordEmitStatus();
 }
@@ -740,8 +791,31 @@ ipcMain.handle('get-worker-caps', async () => {
   };
 });
 
+// v2.2.1: log a coordinator-side license-reader session OUT before closing its browser.
+// RULE: any session that logs in counts as a consumed license for as long as it stays logged
+// in — there are NO exempt sessions. The elastic recheck (coordLicenseScale) and the Auto
+// button (check-license-cap) previously did browser.close() WITHOUT logging out, leaving a
+// live PestPac session each time (browser.close() ends local Chromium, NOT the server session).
+// The License Manager exposes logout as a plain link href="/default.asp?Mode=Logout", so the
+// most reliable logout is to navigate there directly (no fragile click), then verify we land
+// back on the login page. Best-effort + verified; never throws (callers still close the browser).
+async function licenseReaderLogout(page){
+  try{
+    await page.goto('https://app.pestpac.com/default.asp?Mode=Logout',{waitUntil:'load',timeout:15000});
+    // Confirm: a logged-out session lands on login (input[name="uid"]) or the login host.
+    let out=false;
+    try{ out = /login\.pestpac\.com/i.test(page.url()) || !!(await page.$('input[name="uid"]')); }catch(_){}
+    if(!out){
+      // Fallback: use the user-widget logout link in the masthead.
+      try{ await page.click('a.logout',{timeout:5000}); await page.waitForTimeout(1200); }catch(_){}
+      try{ await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'domcontentloaded',timeout:12000}); }catch(_){}
+      try{ out = /login\.pestpac\.com/i.test(page.url()) || !!(await page.$('input[name="uid"]')); }catch(_){}
+    }
+    return out;
+  }catch(e){ return false; }
+}
+
 // v1.3.4 Phase 3: license-aware cap. Launches a headless browser with the given profile,
-// logs in, reads PestPac's license page, parses "Number of free licenses:", and returns
 // (free - buffer) as a suggested cap. buffer defaults to 10 so some licenses stay open.
 // Returns { ok, freeLicenses, suggested, error }. Read-only — navigates and scrapes only.
 ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
@@ -779,18 +853,26 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
     await page.waitForSelector('a[href*="AutoLogin"]', { timeout: 30000 });
     // Navigate to the license page and read the free-licenses cell.
     await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
-    // The label cell is <td ...>Number of free licenses:</td>; the value is the NEXT cell.
+    // v2.2.1: read the PestPac FREE-licenses value robustly. The page has MULTIPLE license
+    // tables (PestPac, Mobile App, RouteOp), each with its own "Number of free ... licenses:"
+    // row, AND a "Number of licenses:" (total) and "Number of used licenses:" row. The old
+    // startsWith('number of free licenses') match was returning the wrong cell (used/total).
+    // Fix: scan ONLY the PestPac panel (#div_PestPac), require the label to match EXACTLY
+    // "number of free licenses:" (so it can't hit "used", the bare total, or Mobile/RouteOp),
+    // and read that row's value cell.
     const freeText = await page.evaluate(() => {
-      const tds = Array.from(document.querySelectorAll('td'));
+      const scope = document.querySelector('#div_PestPac') || document;
+      const tds = Array.from(scope.querySelectorAll('td'));
       for (const td of tds) {
-        if ((td.textContent || '').trim().toLowerCase().startsWith('number of free licenses')) {
-          // value is usually the adjacent sibling cell
+        const label = (td.textContent || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        if (label === 'number of free licenses:' || label === 'number of free licenses') {
           const sib = td.nextElementSibling;
           if (sib) return (sib.textContent || '').trim();
         }
       }
       return null;
     });
+    await licenseReaderLogout(page); // v2.2.1: a read session is still a consumed license — log out before closing.
     await browser.close();
     if (freeText == null) return { ok: false, error: 'Could not find "Number of free licenses" on the license page.' };
     const free = parseInt(String(freeText).replace(/[^0-9]/g, ''));
@@ -1096,7 +1178,9 @@ ipcMain.handle('pool-read-journal', async (_, args) => {
 async function coordScaleTo(target){
   const live = COORD.workers.size;
   if (target > live) {
-    let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, j.totalRows - (j.nextRow - 1));
+    // v2.2.1: count reclaimed rows (job.requeue) as remaining work so a worker can be spawned to
+    // drain them even after nextRow has passed totalRows — otherwise lazily-reclaimed rows strand.
+    let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, j.totalRows - (j.nextRow - 1)) + (j.requeue ? j.requeue.length : 0);
     const canSpawn = Math.min(target - live, Math.max(0, totalRemaining));
     for (let i = 0; i < canSpawn; i++) await coordSpawnWorker();
   } else if (target < live) {
@@ -1147,11 +1231,15 @@ async function coordLicenseScale(profileId, buffer, hwCap){
     catch { await page.click('button[data-testid="loginBtn"]', { force: true }); }
     await page.waitForSelector('a[href*="AutoLogin"]', { timeout: 30000 });
     await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
+    // v2.2.1: read the PestPac FREE value from the #div_PestPac panel with an EXACT label match
+    // (avoids the old startsWith bug that could read used/total or a Mobile/RouteOp table).
     const freeText = await page.evaluate(() => {
-      const tds = Array.from(document.querySelectorAll('td'));
-      for (const td of tds) { if ((td.textContent||'').trim().toLowerCase().startsWith('number of free licenses')) { const s = td.nextElementSibling; if (s) return (s.textContent||'').trim(); } }
+      const scope = document.querySelector('#div_PestPac') || document;
+      const tds = Array.from(scope.querySelectorAll('td'));
+      for (const td of tds) { const label=(td.textContent||'').trim().toLowerCase().replace(/\s+/g,' '); if (label==='number of free licenses:'||label==='number of free licenses') { const s = td.nextElementSibling; if (s) return (s.textContent||'').trim(); } }
       return null;
     });
+    await licenseReaderLogout(page); // v2.2.1: the elastic recheck session is a consumed license — log out before closing.
     await browser.close();
     if (freeText == null) return;
     const free = parseInt(String(freeText).replace(/[^0-9]/g, ''));
@@ -3323,13 +3411,22 @@ async function main(){
   // v2.1.0: _draining is set the instant a drain command arrives (even mid-batch). We check it
   // BETWEEN EVERY ROW so the worker stops promptly and reaches logout, instead of grinding the
   // whole batch of slow pages first (which let the force-kill fire before logout -> stuck sessions).
+  // v2.2.1: holds the unstarted tail of the current batch when a drain interrupts mid-batch, so
+  // we can hand those rows back to the coordinator (lossless reclaim) before shutting down.
+  let _reclaimRows = [];
   while(!_draining){
     const msg = await requestBatch();
     if(!msg || msg.cmd==='drain' || _draining){ break; }
     if(msg.cmd!=='batch' || !Array.isArray(msg.rows) || msg.rows.length===0){ continue; }
     for(let _bi=0; _bi<msg.rows.length; _bi++){
       const rowNum = msg.rows[_bi];
-      if(_draining){ break; }
+      // v2.2.1 LOSSLESS RECLAIM (worker side): a drain can arrive mid-batch (happens constantly
+      // during elastic scale-down). We stop at this ROW boundary (current row already finished),
+      // but the UNSTARTED tail of this batch was already handed out by the coordinator (removed
+      // from the queue) and is NOT yet in completedRows. Hand it back so another worker picks it
+      // up — otherwise these rows vanish silently. Capture the tail and break; the emit happens
+      // after the loop, before the shutdown/logout sequence.
+      if(_draining){ _reclaimRows = msg.rows.slice(_bi); break; }
       const row = ALL_ROWS[rowNum-1];
       if(!row){ emit({type:'row-result', row:rowNum, status:'skip', error:'row index out of range'}); continue; }
       // batchPos/batchSize = e.g. 3/10 (which row of this batch); totalSteps for the step counter.
@@ -3343,6 +3440,12 @@ async function main(){
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null});
     }
   }
+
+  // v2.2.1 LOSSLESS RECLAIM (worker side): before the shutdown/logout sequence, hand back any
+  // rows from the interrupted batch that we never started. The coordinator pushes these into
+  // job.requeue (skipping anything already completed) so another worker drains them. This MUST
+  // be emitted before logout so the message is flushed while stdout is still open.
+  if(_reclaimRows && _reclaimRows.length){ emit({type:'reclaim', rows:_reclaimRows}); }
 
   // v2.1.0: shutdown sequence on drain. Report each phase so the UI can show
 // 'shutting down' -> 'logging out' -> gone. Logout MUST happen (frees the PestPac license),
@@ -3447,8 +3550,10 @@ async function loginToPestPac(page, creds){
   await page.fill('input[name="username"]',creds.username||'');
   await page.fill('input[name="password"]',creds.password||'');
   try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true}); }
-  await page.waitForLoadState('load',{timeout:30000});
+  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }
+  catch(e){ try{ await page.click('button[data-testid="loginBtn"]',{force:true,timeout:8000}); }
+            catch(_){ try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true,timeout:8000}); }catch(__){} } }
+  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
 }
 
 // Count + log out every BUU session on the License Manager page. Returns {before, after, loggedOut}.
@@ -3540,8 +3645,10 @@ async function loginToPestPac(page, creds){
   await page.fill('input[name="username"]',creds.username||'');
   await page.fill('input[name="password"]',creds.password||'');
   try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true}); }
-  await page.waitForLoadState('load',{timeout:30000});
+  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }
+  catch(e){ try{ await page.click('button[data-testid="loginBtn"]',{force:true,timeout:8000}); }
+            catch(_){ try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true,timeout:8000}); }catch(__){} } }
+  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
 }
 async function runStep(page, step, creds){
   const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return ''; }); };
