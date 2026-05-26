@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.1.1';
+const CURRENT_VERSION = '2.1.2';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -697,11 +697,18 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
     await page.goto(prof.loginUrl || 'https://login.pestpac.com/', { waitUntil: 'load', timeout: 30000 });
     await page.waitForSelector('input[name="uid"]', { timeout: 15000 });
     await page.fill('input[name="uid"]', prof.companyKey || '');
-    await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+    try { await page.waitForSelector('.MuiBackdrop-root', { state: 'hidden', timeout: 12000 }); } catch {}
+    try { await page.click('button[data-testid="CompanyKeyForm-loginBtn"]', { timeout: 15000 }); }
+    catch { await page.click('button[data-testid="CompanyKeyForm-loginBtn"]', { force: true }); }
     await page.waitForSelector('input[name="username"]', { timeout: 15000 });
     await page.fill('input[name="username"]', prof.username || '');
     await page.fill('input[name="password"]', prof.password || '');
-    await page.click('button[data-testid="loginBtn"]');
+    // v2.1.1a: PestPac shows a MUI loading backdrop over the form that intercepts the login
+    // click (Playwright reports "<div class=MuiBackdrop-root> intercepts pointer events" and
+    // times out). Wait for any backdrop to clear before clicking; fall back to a forced click.
+    try { await page.waitForSelector('.MuiBackdrop-root', { state: 'hidden', timeout: 12000 }); } catch {}
+    try { await page.click('button[data-testid="loginBtn"]', { timeout: 15000 }); }
+    catch { await page.click('button[data-testid="loginBtn"]', { force: true }); }
     await page.waitForSelector('a[href*="AutoLogin"]', { timeout: 30000 });
     // Navigate to the license page and read the free-licenses cell.
     await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
@@ -1061,11 +1068,16 @@ async function coordLicenseScale(profileId, buffer, hwCap){
     await page.goto(prof.loginUrl || 'https://login.pestpac.com/', { waitUntil: 'load', timeout: 30000 });
     await page.waitForSelector('input[name="uid"]', { timeout: 15000 });
     await page.fill('input[name="uid"]', prof.companyKey || '');
-    await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+    try { await page.waitForSelector('.MuiBackdrop-root', { state: 'hidden', timeout: 12000 }); } catch {}
+    try { await page.click('button[data-testid="CompanyKeyForm-loginBtn"]', { timeout: 15000 }); }
+    catch { await page.click('button[data-testid="CompanyKeyForm-loginBtn"]', { force: true }); }
     await page.waitForSelector('input[name="username"]', { timeout: 15000 });
     await page.fill('input[name="username"]', prof.username || '');
     await page.fill('input[name="password"]', prof.password || '');
-    await page.click('button[data-testid="loginBtn"]');
+    // v2.1.1a: wait out the MUI loading backdrop before clicking login (see check-license-cap).
+    try { await page.waitForSelector('.MuiBackdrop-root', { state: 'hidden', timeout: 12000 }); } catch {}
+    try { await page.click('button[data-testid="loginBtn"]', { timeout: 15000 }); }
+    catch { await page.click('button[data-testid="loginBtn"]', { force: true }); }
     await page.waitForSelector('a[href*="AutoLogin"]', { timeout: 30000 });
     await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
     const freeText = await page.evaluate(() => {
@@ -1971,11 +1983,14 @@ async function loginToPestPac(page, creds){
   await page.waitForSelector('input[name="uid"]',{timeout:15000});
   await page.fill('input[name="uid"]','');
   await page.fill('input[name="uid"]',creds.companyKey||'');
-  await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
   await page.waitForSelector('input[name="username"]',{timeout:15000});
   await page.fill('input[name="username"]',creds.username||'');
   await page.fill('input[name="password"]',creds.password||'');
-  await page.click('button[data-testid="loginBtn"]');
+  // v2.1.1a: PestPac's MUI loading backdrop intercepts the login click; wait it out, then force.
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="loginBtn"]',{force:true}); }
   await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
 }
 
@@ -3105,11 +3120,13 @@ async function loginToPestPac(page, creds){
   await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
   await page.waitForSelector('input[name="uid"]',{timeout:15000});
   await page.fill('input[name="uid"]',creds.companyKey||'');
-  await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
   await page.waitForSelector('input[name="username"]',{timeout:15000});
   await page.fill('input[name="username"]',creds.username||'');
   await page.fill('input[name="password"]',creds.password||'');
-  await page.click('button[data-testid="loginBtn"]');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="loginBtn"]',{force:true}); }
   await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
 }
 
@@ -3325,11 +3342,13 @@ async function loginToPestPac(page, creds){
   await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
   await page.waitForSelector('input[name="uid"]',{timeout:15000});
   await page.fill('input[name="uid"]',creds.companyKey||'');
-  await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
   await page.waitForSelector('input[name="username"]',{timeout:15000});
   await page.fill('input[name="username"]',creds.username||'');
   await page.fill('input[name="password"]',creds.password||'');
-  await page.click('button[data-testid="LoginForm-loginBtn"]');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true}); }
   await page.waitForLoadState('load',{timeout:30000});
 }
 
@@ -3416,11 +3435,13 @@ async function loginToPestPac(page, creds){
   await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
   await page.waitForSelector('input[name="uid"]',{timeout:15000});
   await page.fill('input[name="uid"]',creds.companyKey||'');
-  await page.click('button[data-testid="CompanyKeyForm-loginBtn"]');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
   await page.waitForSelector('input[name="username"]',{timeout:15000});
   await page.fill('input[name="username"]',creds.username||'');
   await page.fill('input[name="password"]',creds.password||'');
-  await page.click('button[data-testid="LoginForm-loginBtn"]');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true}); }
   await page.waitForLoadState('load',{timeout:30000});
 }
 async function runStep(page, step, creds){
