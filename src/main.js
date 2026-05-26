@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.1.2';
+const CURRENT_VERSION = '2.2.0';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -385,6 +385,13 @@ function coordHandleWorkerMessage(workerId, msg){
       if(job && job.completedRows) job.completedRows.add(msg.row);
       w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else if(msg.status==='skip') w.skip++; else if(msg.status==='error') w.err++;
       if(job){ job.done++; if(msg.status==='ok'||msg.status==='ok (retry)') job.ok++; else if(msg.status==='skip') job.skip++; else if(msg.status==='error') job.err++; }
+      // v2.2.0: collect read-field values into a per-job buffer for the dedicated results workbook.
+      if(job && msg.reads && typeof msg.reads === 'object'){
+        if(!job.readResults) job.readResults = [];
+        if(!job.readColumns) job.readColumns = [];
+        for(const cn of Object.keys(msg.reads)){ if(!job.readColumns.includes(cn)) job.readColumns.push(cn); }
+        job.readResults.push({ row: msg.row, reads: msg.reads });
+      }
       break;
     }
     case 'retired':
@@ -415,6 +422,8 @@ function coordCheckComplete(){
     // v2.1.1 (#8): for per-job/global scope, run teardown ONCE now (coordinator-driven), THEN
     // sweep. v2.1.1 logout sweep is the authoritative backstop and runs regardless of scope.
     (async () => {
+      // v2.2.0: write any read-field results to dedicated per-job workbooks first.
+      try { coordWriteReadResults(); } catch(e){ console.error('[coord] read-results write failed:', e.message); }
       if(COORD.setupScope !== 'per-worker'){
         if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase:'teardown', state:'phase-start', scope:COORD.setupScope });
         try { await coordRunOnceFlows('teardown'); } catch(e) { console.error('[coord] teardown once-flows error:', e.message); }
@@ -424,9 +433,67 @@ function coordCheckComplete(){
   }
 }
 
-// v2.1.1: spawn the headless logout sweeper. Logs in with a profile used this run, opens the
-// License Manager, and logs out every remaining BUU session. This is the backstop that makes
-// "no failure to log out" hold even for workers that died without logging out.
+// v2.2.0: write read-field results to a dedicated workbook per job that captured any. Output goes
+// to <userDocs>/upcoming/results/mmddyyyy_HHmm_<flowname>.xlsx — SEPARATE from the run log. Each
+// row: the source row's key (OP ID / URL) plus one column per read-field name (label + raw code).
+function coordWriteReadResults(){
+  let XLSX; try { XLSX = require('xlsx'); } catch(e){ console.error('[coord] xlsx unavailable for read-results'); return; }
+  for(const job of COORD.jobs.values()){
+    if(!job.readResults || !job.readResults.length || !job.readColumns || !job.readColumns.length) continue;
+    // Results folder lives next to the job's source spreadsheet (e.g. upcoming/results/).
+    const RESULTS_DIR = path.join(path.dirname(job.spreadsheetPath || process.cwd()), 'results');
+    // Build a row-index -> source row map so we can emit the OP ID / URL alongside read values.
+    let srcRows = [];
+    try { srcRows = loadRowsForJob(job.spreadsheetPath); } catch(e){ srcRows = []; }
+    const cols = job.readColumns;
+    const header = ['Row', 'OP ID', 'URL'];
+    for(const c of cols){ header.push(c); header.push(c + ' (raw)'); }
+    const aoa = [header];
+    // Sort by row for a stable, readable sheet.
+    const sorted = job.readResults.slice().sort((a,b)=>a.row-b.row);
+    for(const rr of sorted){
+      const src = srcRows[rr.row - 1] || {};
+      const url = src.URL || src.url || '';
+      let opp = src['OP ID'] || src['OP Id'] || src['Op id'] || '';
+      if(!opp && url){ const m = String(url).match(/SalesOppID=(\d+)/i); if(m) opp = m[1]; }
+      const line = [rr.row, opp, url];
+      for(const c of cols){ const v = rr.reads[c] || {}; line.push(v.label!=null?v.label:(v.out||'')); line.push(v.value!=null?v.value:''); }
+      aoa.push(line);
+    }
+    try {
+      if(!fs.existsSync(RESULTS_DIR)) fs.mkdirSync(RESULTS_DIR, { recursive:true });
+      const now = new Date();
+      const mm = String(now.getMonth()+1).padStart(2,'0');
+      const dd = String(now.getDate()).padStart(2,'0');
+      const yyyy = now.getFullYear();
+      const hh = String(now.getHours()).padStart(2,'0');
+      const mi = String(now.getMinutes()).padStart(2,'0');
+      const safeFlow = String(job.label || 'flow').replace(/[\\/:*?"<>|]/g,'_').replace(/\.xlsx?$/i,'').slice(0,60);
+      const fname = `${mm}${dd}${yyyy}_${hh}${mi}_${safeFlow}.xlsx`;
+      const outPath = path.join(RESULTS_DIR, fname);
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      XLSX.utils.book_append_sheet(wb, ws, 'Read fields');
+      XLSX.writeFile(wb, outPath);
+      console.log('[coord] wrote read-field results:', outPath, '('+sorted.length+' rows)');
+      if(mainWindow) mainWindow.webContents.send('pool-read-results', { path: outPath, rows: sorted.length, columns: cols });
+    } catch(e){ console.error('[coord] failed writing read-results for job', job.label, e.message); }
+  }
+}
+
+// Helper: load a job's source spreadsheet rows as objects (coordinator-side, for read-results).
+function loadRowsForJob(spreadsheetPath){
+  const XLSX = require('xlsx');
+  const ext = path.extname(spreadsheetPath).toLowerCase();
+  if(ext === '.csv'){
+    const wb = XLSX.readFile(spreadsheetPath, { raw:false });
+    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' });
+  }
+  const wb = XLSX.readFile(spreadsheetPath);
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' });
+}
+
+// v1.3.4 Phase 3: license-aware cap. Launches a headless browser with the given profile,
 async function coordRunLogoutSweep(reason){
   if(COORD.sweepRunning) return;
   COORD.sweepRunning = true;
@@ -3182,6 +3249,36 @@ async function runStep(page, step, row, creds){
       if(!fs.existsSync(filePath)){ throw new Error('File upload: file not found: '+filePath); }
       const loc=await resolveStepLocator(page,step,r); await loc.first().setInputFiles(filePath); break;
     }
+    case 'readfield':{
+      // v2.2.0: read a field's current value/label and store it under step.colName so (a) later
+      // steps can use {{colName}} via the row resolver and (b) the coordinator can write it to the
+      // dedicated results workbook. value+label for <select>; text for inputs/spans.
+      const colName=(step.colName||'').trim(); if(!colName) break;
+      const mode=step.readMode||'both';
+      let value=null, label=null, found=false;
+      const sel=step.selector||'';
+      for(const f of page.frames()){
+        try{
+          const handle=await f.$(sel); if(!handle) continue;
+          const info=await f.evaluate(el=>{
+            const tag=(el.tagName||'').toLowerCase();
+            if(tag==='select'){ const o=el.options&&el.selectedIndex>=0?el.options[el.selectedIndex]:null; return {value:el.value, label:o?(o.textContent||'').trim():''}; }
+            if(tag==='input'||tag==='textarea'){ return {value:el.value, label:el.value}; }
+            const t=(el.textContent||'').trim(); return {value:t, label:t};
+          }, handle);
+          value=info.value; label=info.label; found=true; break;
+        }catch(e){ /* not in this frame */ }
+      }
+      if(!found){ if(step.readOnMissing==='error') throw new Error('Read field: selector not found: '+sel); value=''; label=''; }
+      const out = mode==='value' ? (value||'') : (mode==='text' ? (label||'') : (label||value||''));
+      // Store for later-step token use and for reporting.
+      row[colName]=out;
+      row[colName+'__raw']=(value||'');
+      row[colName+'__label']=(label||'');
+      if(!row.__reads) row.__reads={};
+      row.__reads[colName]={ value:(value||''), label:(label||''), out:out };
+      break;
+    }
     case 'dialog':{ const matchText=step.dialogMatch||''; const dialogAction=step.dialogAction||'accept'; if(page._buuDialogListener){ try{page.off('dialog',page._buuDialogListener);}catch(_){} page._buuDialogListener=null; } const handler=async dialog=>{ try{page.off('dialog',handler);}catch(_){} if(page._buuDialogListener===handler)page._buuDialogListener=null; const msg=dialog.message(); const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase()); try{ if(matches){ if(dialogAction==='dismiss')await dialog.dismiss(); else await dialog.accept(); } else { await dialog.dismiss(); } }catch(e){} }; page._buuDialogListener=handler; page.on('dialog',handler); break; }
   }
 }
@@ -3241,7 +3338,9 @@ async function main(){
       const res = await processRow(page, row, creds, rowNum);
       const entry={ row:rowNum, timestamp:new Date().toISOString(), url:row.URL||row.url||'', status:res.status, error:res.error||'', failedStep:res.failedStep||'', fieldsWritten:res.fieldsWritten||'', durationMs:Date.now()-t0 };
       addLog(entry);
-      emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0});
+      // v2.2.0: include any read-field values captured this row so the coordinator can write the
+      // dedicated results workbook. row.__reads is { colName: {value,label,out} }.
+      emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null});
     }
   }
 

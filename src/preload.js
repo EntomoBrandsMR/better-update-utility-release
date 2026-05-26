@@ -57,5 +57,6 @@ contextBridge.exposeInMainWorld('api', {
   onPoolSweepProgress: (cb)    => ipcRenderer.on('pool-sweep-progress', (_, d) => cb(d)),
   onPoolSweepResult:   (cb)    => ipcRenderer.on('pool-sweep-result', (_, d) => cb(d)),
   onPoolOnceFlow:      (cb)    => ipcRenderer.on('pool-once-flow', (_, d) => cb(d)),
+  onPoolReadResults:   (cb)    => ipcRenderer.on('pool-read-results', (_, d) => cb(d)),
   onPoolLicenseUpdate: (cb)    => ipcRenderer.on('pool-license-update', (_, d) => cb(d)),
 });

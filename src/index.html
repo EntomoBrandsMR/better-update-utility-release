@@ -922,6 +922,7 @@ textarea { resize: vertical; min-height: 60px; }
       <button class="add-opt" onclick="addStep('clear')">Clear field</button>
       <button class="add-opt" onclick="addStep('wait')">Wait</button>
       <button class="add-opt" onclick="addStep('assert')">Assert / verify</button>
+      <button class="add-opt" onclick="addStep('readfield')">Read field → column</button>
       <button class="add-opt" onclick="addStep('dialog')">Handle dialog</button>
       <button class="add-opt" onclick="addStep('fileupload')">Upload file</button>
       <button class="add-opt" onclick="addStep('textedit')">Text edit</button>
@@ -1510,6 +1511,11 @@ const SM = {
     const src = s.pathColumn ? ('path from {{'+s.pathColumn+'}}') : (s.filePath ? s.filePath : 'no path set');
     return 'Upload file → ' + (s.selector||'(no selector)') + ' · ' + src;
   }},
+  readfield: { label:'Read field', badge:'bd-asr', desc: s => {
+    const col = (s.colName||'').trim();
+    const mode = s.readMode==='value' ? 'value' : (s.readMode==='text' ? 'text' : 'value+label');
+    return 'Read ' + (s.selector||'(no selector)') + ' → ' + (col ? '{{'+col+'}}' : '(name the column)') + ' · ' + mode;
+  }},
 };
 
 function renderSteps() {
@@ -1791,6 +1797,35 @@ function tokenBar(sid, field) {
   // v1.2.5 item 2.5 (Build-side): chips are drag-only. The `field` arg is no longer
   // consulted - chips can drop onto any text input in this step's body. Kept on
   // the function signature so existing callers don't need to change.
+  // v2.2.0: token list = spreadsheet columns (always available) PLUS read-field tokens
+  // (s.type==='readfield' with a column name) DEFINED BY STEPS BEFORE THIS ONE. A read token
+  // only has a value after its read step runs, so it must not appear for earlier steps.
+  const readTokens = [];
+  const myIdx = steps.findIndex(x => x.id === sid);
+  if (myIdx > 0) {
+    for (let i = 0; i < myIdx; i++) {
+      const st = steps[i];
+      if (st.type === 'readfield' && st.colName && st.colName.trim()) {
+        const nm = st.colName.trim();
+        if (!readTokens.includes(nm) && !cols.includes(nm)) readTokens.push(nm);
+      }
+    }
+  }
+  const allTokens = cols.concat(readTokens);
+  if(!allTokens.length){
+    return '<div style="margin-bottom:10px">' +
+      '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert column token</div>' +
+      '<div class="chips" style="font-size:11px;color:var(--t3);font-style:italic;padding:4px 0">Load a spreadsheet to see column tokens you can drag.</div>' +
+      '</div>';
+  }
+  const chip = (c, isRead) => '<span class="chip" draggable="true" data-token="{{' + esc(c) + '}}" title="' + (isRead ? 'Read-field value from an earlier step — drag onto any field below' : 'Drag onto any field below') + '"><span class="tok"' + (isRead ? ' style="color:var(--purple)"' : '') + '>{{' + c + '}}</span></span>';
+  return '<div style="margin-bottom:10px">' +
+    '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert token <span style="font-weight:500;text-transform:none;letter-spacing:0;color:var(--t3)">— drag onto any field below' + (readTokens.length ? ' · purple = read from an earlier step' : '') + '</span></div>' +
+    '<div class="chips">' + cols.map(c => chip(c, false)).join('') + readTokens.map(c => chip(c, true)).join('') + '</div>' +
+    '</div>';
+}
+function _tokenBar_OLD(sid, field) {
+  // the function signature so existing callers don't need to change.
   if(!cols.length){
     return '<div style="margin-bottom:10px">' +
       '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert column token</div>' +
@@ -1833,6 +1868,10 @@ function bodyHTML(s) {
         ? (tokenBar(s.id,'pathColumn') + '<div class="row">' + valField(s.id,'pathColumn',s.pathColumn||'','{{FilePath}}','Column holding the full file path') + '</div>')
         : ('<div class="row"><div class="fg"><label>Folder (fixed)</label><input type="text" id="fi-' + s.id + '-baseFolder" value="' + esc(s.baseFolder) + '" placeholder="C:\\\\Docs\\\\Uploads" oninput="u(' + s.id + ',\'baseFolder\',this.value)"/><div class="hint">Base folder all files live in.</div></div>' + valField(s.id,'fileNameColumn',s.fileNameColumn||'','{{FileName}}','Column holding the file name') + '</div>'))
     + '<div class="row"><div class="fg"><label>If file missing</label><select onchange="u(' + s.id + ',\'onMissing\',this.value)"><option ' + (!s.onMissing||s.onMissing==='skip'?'selected':'') + ' value="skip">Skip row (count as skipped)</option><option ' + (s.onMissing==='error'?'selected':'') + ' value="error">Error the row</option></select><div class="hint">Files are resolved per row; a missing file won\'t crash the worker.</div></div></div>';
+  if(s.type==='readfield') return '<div class="row">' + selField(s.id,'selector',s.selector||'','#WonStatus','CSS selector of the field to read') + '</div>'
+    + '<div class="row"><div class="fg"><label>Save as column</label><input type="text" id="fi-' + s.id + '-colName" value="' + esc(s.colName) + '" placeholder="WonStatus" oninput="u(' + s.id + ',\'colName\',this.value);renderSteps()"/><div class="hint">Names the output column AND creates a <span class="tok">{{' + (esc(s.colName)||'token') + '}}</span> you can drag into steps <strong>below</strong> this one. Avoid reusing a spreadsheet column name.</div></div>'
+    + '<div class="fg"><label>Read what</label><select onchange="u(' + s.id + ',\'readMode\',this.value)"><option ' + (!s.readMode||s.readMode==='both'?'selected':'') + ' value="both">Value + visible label (best for dropdowns)</option><option ' + (s.readMode==='value'?'selected':'') + ' value="value">Value only (e.g. V)</option><option ' + (s.readMode==='text'?'selected':'') + ' value="text">Visible text only (e.g. Void)</option></select><div class="hint">For a &lt;select&gt; like WonStatus, "value+label" captures both the code (V) and the label (Void). For text/spans, use "Visible text".</div></div></div>'
+    + '<div class="row"><div class="fg"><label style="cursor:pointer;display:flex;align-items:center;gap:8px"><input type="checkbox" ' + (s.readOnMissing==='error'?'checked':'') + ' onchange="u(' + s.id + ',\'readOnMissing\',this.checked?\'error\':\'blank\')" style="width:16px;height:16px;cursor:pointer"/>Error the row if the field isn\'t found</label><div class="hint">Off (default): records a blank value and continues. On: the row is marked failed when the field is missing.</div></div></div>';
   if(s.type==='textedit') {
     const mode = s.editMode||'find-replace';
     const modeOpts = [
@@ -1891,7 +1930,7 @@ function toggleStep(id) { const s=steps.find(x=>x.id===id); if(s){s.open=!s.open
 function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s) s[f]=v; scheduleValidationRefresh(); }
 function delStep(e,id) { e.stopPropagation(); steps=steps.filter(s=>s.id!==id); renderSteps(); }
 function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id); const ni=i+d; if(ni<0||ni>=steps.length)return; [steps[i],steps[ni]]=[steps[ni],steps[i]]; renderSteps(); }
-function addStep(type) { steps.push({id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
+function addStep(type) { const st={id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}; if(type==='readfield'){ st.readMode='both'; st.readOnMissing='blank'; } steps.push(st); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
 function toggleAddMenu() { document.getElementById('addMenu').classList.toggle('open'); }
 function syncDelayMax() {
   const min = parseFloat(document.getElementById('rowDelayMin').value||0);
@@ -1981,6 +2020,28 @@ function runValidation() {
     if(s.type==='wait'&&s.waitType==='element'&&!s.waitSel){issues.push({t:'warn',msg:'No wait selector.'});warns++;}
     if(s.type==='wait'&&s.waitType==='random'&&parseFloat(s.waitMin||1)>=parseFloat(s.waitMax||3)){issues.push({t:'warn',msg:'Min must be less than max.'});warns++;}
     if(s.type==='assert'&&!s.selector){issues.push({t:'err',msg:'No selector to verify.'});errs++;}
+    if(s.type==='readfield'){
+      if(!s.selector){issues.push({t:'err',msg:'No CSS selector to read.'});errs++;}
+      const cn=(s.colName||'').trim();
+      if(!cn){issues.push({t:'err',msg:'Name the output column.'});errs++;}
+      else if(cols.some(c=>c===cn)){issues.push({t:'warn',msg:'Column "'+cn+'" matches a spreadsheet column — the read value will define a separate output column with the same name, which can be confusing.'});warns++;}
+      // duplicate read-field column name earlier in the flow
+      if(cn){ const dup=all.filter(x=>x.type==='readfield'&&(x.colName||'').trim()===cn); if(dup.length>1 && all.indexOf(dup[0])!==i){ issues.push({t:'warn',msg:'Another Read field step already defines "'+cn+'".'});warns++; } }
+    }
+    // v2.2.0: read-field token ORDERING backstop. A {{token}} that matches a read-field column
+    // name is only valid if that read step is positioned BEFORE this step. Catch hand-typed
+    // tokens that reference a read value defined at/after this point (or never).
+    (function(){
+      const readDefs = all.filter(x=>x.type==='readfield'&&(x.colName||'').trim()).map(x=>({name:(x.colName||'').trim(),idx:all.indexOf(x)}));
+      if(!readDefs.length) return;
+      const fields=[s.url,s.value,s.selector,s.matchText,s.containerSel,s.waitFor,s.waitSel,s.condCol,s.expected,s.pathColumn,s.fileNameColumn,s.baseFolder,s.searchVal,s.replaceVal];
+      const used=new Set();
+      fields.forEach(f=>{ if(typeof f!=='string')return; let m; const re=/{{\s*([^}]+?)\s*}}/g; while((m=re.exec(f))){ used.add(m[1].trim()); } });
+      used.forEach(tok=>{
+        const def=readDefs.find(d=>d.name===tok);
+        if(def && def.idx>=i){ issues.push({t:'err',msg:'Uses {{'+tok+'}} but that value is read at a later step (#'+(def.idx+1)+'). Move the Read field step above this one.'});errs++; }
+      });
+    })();
     if(s.type==='textedit'){
       if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
       const m=s.editMode||'find-replace';
@@ -2013,11 +2074,17 @@ function runValidation() {
     // v1.2.8: token validation branches on runMode.
     // Per-row flows: column names valid, CRED:* always valid, run-context tokens valid.
     // Once-flows: column names INVALID (no spreadsheet bound), CRED:* always valid, run-context tokens valid.
+    // v2.2.0: read-field tokens (column names created by an earlier readfield step) are valid
+    // references even though they aren't spreadsheet columns. The ordering backstop above already
+    // errors if one is referenced too early, so here we just treat any read-field column name as
+    // an allowed token to avoid a false "not in spreadsheet" error.
+    const readFieldNames = all.filter(x=>x.type==='readfield'&&(x.colName||'').trim()).map(x=>(x.colName||'').trim());
     [s.value,s.url,s.condCol,s.matchText].filter(Boolean).forEach(v=>{
       [...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{
         const ref = m[1];
         if(ref.startsWith('CRED:')) return;  // credential refs always allowed
         if(RUN_CONTEXT_TOKENS.includes(ref)) return;  // run-context tokens always allowed
+        if(readFieldNames.includes(ref.trim())) return; // read-field token (ordering checked above)
         if(runMode === 'once'){
           // Once-flows cannot reference spreadsheet columns.
           issues.push({t:'err',msg:'{{' + ref + '}} is a spreadsheet column reference, which is not allowed in once-flows. Use a static value or a run-context token (TODAY, RUNID, PROFILE_USERNAME).'});
@@ -3340,6 +3407,11 @@ if(API.onPoolOnceFlow) API.onPoolOnceFlow(function(d){
   if(d.state==='phase-start') addLiveLog('Running '+d.phase+' once ('+(d.scope||'')+' scope) before/after the pool…','info');
   else if(d.state==='start') addLiveLog('  '+d.phase+' running for job "'+(d.job||'')+'"…','info');
   else if(d.state==='done') addLiveLog('  '+d.phase+' for "'+(d.job||'')+'" '+(d.ok?'completed':'finished with errors')+'.', d.ok?'ok':'warn');
+});
+// v2.2.0: read-field results written to a dedicated spreadsheet.
+if(API.onPoolReadResults) API.onPoolReadResults(function(d){
+  if(!d||!d.path) return;
+  addLiveLog('Read-field results saved: '+d.path+' ('+d.rows+' rows · columns: '+(d.columns||[]).join(', ')+')','ok');
 });
 
 // ── legacy static-pool stubs (no longer used; kept as no-ops to avoid reference errors) ──
