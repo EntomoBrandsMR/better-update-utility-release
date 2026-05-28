@@ -1,7 +1,7 @@
 # BUU DESIGN INDEX
 
 **Purpose:** Single entry point for active design work. Read this first.
-**Last updated:** 2026-05-20 (v1.3.0 implementation complete; standing-context block added).
+**Last updated:** 2026-05-27 (v2.3.0 agenda locked after Void-debugging session; 2.x history captured).
 
 ---
 
@@ -17,47 +17,106 @@
   push rather than during the session, and prefers brutal honesty over softened status reports.
 - This block is intentionally redundant across design docs so any fresh session sees it.
 
-## CURRENT STATE (updated 2026-05-20) — READ THIS
+## CURRENT STATE (updated 2026-05-27) — READ THIS
 
-**SHIPPED:** v1.3.0 through v1.3.3 are all built, pushed, and published to GitHub.
-- v1.3.0 = the 11-item polish/bugfix release (find-by-text, step-mode setup/teardown, stop/restart
-  hardening, brace validation, Open-last-log, drag-handle text-selection, Pause-button removal, etc.).
-- v1.3.0 also tried `perMachine: true` (taskbar-pin experiment) — **Smart App Control hard-blocked it,
-  REVERTED to perMachine:false**, asset re-uploaded. Do not retry perMachine without a different approach.
-- v1.3.1 = diagnostic build (red bar) to prove the build pipeline reaches the screen.
-- v1.3.2 = real UI-size fix: native Chromium zoom (the CSS font bump never cascaded because elements pin
-  their own px). Removed red bar.
-- v1.3.3 = zoom raised to 1.35; window now sizes to 85% of the actual screen work area (screen-relative,
-  via electron `screen` module in main.js createWindow), not fixed pixels. **CURRENT SHIPPED VERSION.**
+**Two apps now, fully separate:** BUU Legacy (branch `v1.3.5-legacy`, `version.json` channel,
+productName "Better Update Utility") and **BUU 2.0** (branch `v2.0.0-elastic`,
+`version-buu2.json` channel, productName "BUU 2.0", appId `com.entomobands.buu-2`). Separate
+userData folders (`%APPDATA%\buu-2` for 2.0, `%APPDATA%\better-update-utility` for Legacy).
+Pushing one branch never affects the other; two separate version files so updaters never
+cross-wire. Legacy flows are copied into 2.0 once on first launch (then independent).
+**Active feature work is on BUU 2.0.** Legacy is in pure maintenance.
 
-**NEXT UP: v1.3.4 — full backlog is in `BUU-v1.3.4-DESIGN.md`.** Items captured 2026-05-20 from a long
-live-use session building a zip→salesperson reassignment flow against PestPac's TechnicianAutoFill lookup
-table. Summary (detail + where-to-look + effort in the 1.3.4 doc):
-- **A** — multi-condition match builder for find-by-text (+ button, per-line mode + AND/OR/NOT; replaces
-  single match field; includes regex-escaping fix). The big feature.
-- **B** — find-by-text container field's Paste HTML extracts the per-row `id`, not the stable class.
-- **C** — workbook load grabs sheet index 0 even when HIDDEN; should load first VISIBLE sheet.
-- **D** — drag-and-drop of column-token chips into fields not working (needs repro; suspect v1.3.0 Item 2).
-- **E** — validation shows error/warn COUNTS but not the messages; surface them + consolidated pre-run list.
-- **F** — pause/verification panel disappears on "Next Step" (paneNextStep calls hidePause; Item 3a variant).
-- **G** — "No URL column found" errors even when a hardcoded http URL is in a navigate step; relax the check.
-- **H** — can't right-click (context menu) into Paste HTML box; + audit ALL inputs for right-click/copy/paste.
-- **I** — run guard stuck after Stop ("Another automation is already running", 0 done); Stop doesn't clear
-  the main-process `automationProcesses` Map (v1.3.0 Item 3 only fixed renderer state, not the backend map).
-- **J** — step drag-reorder has no auto-scroll while dragging (worse now that UI is bigger).
-- **K** — step drag-reorder shows TWO drop lines, only one works, hit zone too narrow; make ONE smooth line.
-- **CF-1** — historical run-log scanning never built (oldest debt, from v1.2.4 / handoff bug 6.1).
-- **CF-2** — file-upload step (Item 13) never built; driver = ~20k docs to upload; scope depends on where
-  files live (4–5 hr local vs 20–30 hr cloud). BLOCKING QUESTION: where do the 20k files live?
-- **CF-3** — per-step on-fail flows (Item 12) never built; v1.2.8-magnitude; candidate for v1.4.0.
-- **CF-4** — BUUA hybrid backend parked on WorkWave API access (4 OAuth attempts 401'd; awaiting real
-  ClientId/ClientSecret from WorkWave support). Not missed — externally blocked.
+**SHIPPED on BUU 2.0** (current channel `version-buu2.json` → `v2.2.1`):
+- **v2.0.0** — Initial 2.0 release. Elastic worker pool with pull-queue coordinator, batch-
+  pulling workers, license-aware elastic scaling, zero-loss append-only resume journal,
+  multi-flow job staging, merged pool log, file-upload step. Forked from BUU Legacy v1.3.5.
+- **v2.0.1** — Auto worker-count accounts for hardware AND licenses; "Elastic" checkbox
+  renamed, toolbar inputs labeled, license-buffer and recheck-interval moved into the right
+  groups. See `BUU-v2.0.1-DESIGN.md`.
+- **v2.0.2** — Stability + UX patches (post-launch).
+- **v2.1.0** — Mid-2.x feature work.
+- **v2.1.1** — Patches.
+- **v2.1.2** — Bulletproof logout + PestPac login-overlay (MuiBackdrop) fix + per-worker stop
+  + setup/teardown scope. Critical reliability release.
+- **v2.2.0** — Read field step (scrape a value from the page into a column).
+- **v2.2.1 (CURRENT SHIPPED)** — **Lossless reclaim on elastic scale-down** (the big one — a
+  draining worker hands its unstarted batch tail back to the coordinator; no more silent row
+  drops). License-leak fixes (Auto check and elastic recheck now log out their PestPac
+  session). Free-license count scoped to `#div_PestPac` with exact label match (no more
+  reading the wrong row). Sweeper + once-flow login selector fix. Read-field colName focus
+  preserved on keystroke. Worker card border. Coordinator test suite at 49/49 (added TEST 9
+  for reclaim). See `BUU-v2.2.1-DESIGN.md` if it exists; otherwise see the git tag and the
+  v2.2.1 release notes.
 
-J/K/D all live in the same drag-reorder code — fix together. Suggested 1.3.4 order in the 1.3.4 doc.
+**NEXT UP: v2.3.0** — full agenda in `BUU-v2.3.0-DESIGN.md`. Agenda locked 2026-05-27 in a
+long live-debugging session against PestPac's Void Lead flow, then extended after a 9,854-row
+big run revealed concurrency/burn-time issues. **25 items**, anchored on **runtime unification** (item 1, must be done first by itself before anything else lands on
+top). Summary of buckets:
+- **Foundation:** unify the three-runtime structure (single-runner / pool-worker / sweeper)
+  into one step engine + one login + one logout + one dialog handler. The pay-for-itself item.
+- **Dialog handling:** auto-accept / auto-decline checkboxes on every action step; remove the
+  standalone Handle Dialog step type; dialog text always logged; skip↔error reclassification
+  (PestPac-blocked saves are errors, not skips).
+- **Diagnostic capture:** screenshot + DOM snapshot + URL + step trail + console buffer per
+  failed row, opt-in toggle on the pool launch screen, per-error-bucket sampling cap so a 3k-
+  skip run doesn't produce 900MB of artifacts. Plus log-retention policy.
+- **Wait/state primitives:** URL-change wait, navigation-complete wait, state-aware selectors
+  (`:enabled` / `:disabled` actually wait for state), generic Wait step type, per-step action
+  timeout setting.
+- **Flow ergonomics:** Run Pool is the only Run (kill single-runner), step move-up/down
+  buttons, hot-reload flow edits between runs, pool preview / verification mode.
+- **Reliability:** logout-attempt warnings surfaced, smarter logout retry strategy.
+- **New capabilities:** spreadsheet-free flow type, sequential flow queueing, scheduled flow
+  runs (one-shot / daily / weekly / monthly + cron for power users).
+- **Concurrency control + burn-time caps (added after the 9,854-row big run + the 119-worker
+  near-crash):** adaptive worker scaling that respects all three caps (license / PestPac
+  response / local machine) and three signals (duration p75, wall-clock-vs-Playwright-time
+  ratio, skip rate); ramped startup in waves to avoid cold-start storm and resource shock;
+  Auto recalculated as a ceiling, not a launch target; hardware formula includes RAM.
+  Per-row total-time timeout (abandon rows past N seconds without logging the worker out).
+  Dup-row-counter fix + reclaim double-record investigation.
+- **Verification (added 2026-05-28 after finding the journal under-reports successes):** a
+  verify pass that fresh-navigates to a failed row and reads back the fields the flow's
+  write steps intended to set, comparing actual-vs-intended; reclassifies false skips to ok
+  and names the specific field that failed on real failures. Default verify-on-failure; opt-in
+  verify-every-row mode. Evidence: a live check found 2,834 of 4,100 "skipped" rows were
+  actually already voided — the runner's success/failure call is wrong on a consistent fraction
+  of rows. Must be a fresh-navigate read (proves persistence), not a same-page inline read
+  (only proves the field accepted input pre-Save).
+
+**Deferred from v2.3:**
+- **v2.4** — Field Catalog (persistent observation store of every PestPac field BUU has seen;
+  the foundation for required-field auto-discovery without manual prep), parallel multi-flow
+  runs.
+- **v3.0 branch** — PestPac API integration / hybrid mode. The Void debugging session made
+  the case; the right place is its own branch, not a v2.x sub-release.
+
+**BUU Legacy (v1.x) — what shipped, frozen:**
+- v1.3.0 through v1.3.5 all built and published. v1.3.5 is the last Legacy release.
+- v1.3.0 = 11-item polish/bugfix release.
+- v1.3.1-v1.3.3 = UI sizing experiments (CSS bump didn't take, native Chromium zoom did, then
+  raised to 1.35 and window sized to 85% of screen work area).
+- v1.3.4 (if shipped) = the backlog captured in `BUU-v1.3.4-DESIGN.md` (multi-condition match,
+  paste-HTML id vs class, hidden-sheet workbook load, drag chip drop, validation message
+  surfacing, pause-panel persistence, hardcoded-URL navigate, right-click in Paste HTML,
+  Stop-clears-backend-map, drag-reorder auto-scroll, drag drop-line cleanup). Some items may
+  have been carried into 2.x instead.
+- v1.3.5 = final Legacy release. No further Legacy feature work planned.
+
+**BUUA — superseded.** The original "BUUA fork" plan from 2026-05-04 was absorbed into BUU 2.0
+itself (the elastic-pool architecture is what BUUA was meant to be). The remaining BUUA
+concerns (multi-runner concurrency, license-aware scaling, headless operation) all shipped in
+v2.0.0. The remaining piece (API integration) is now a v3.0 branch item, not BUUA.
+`BUUA-DESIGN.md` is historical context; not active.
 
 ---
 
-## SESSION PICKUP NOTE (2026-05-04)
+## SESSION PICKUP NOTE (2026-05-04, HISTORICAL — see CURRENT STATE above for live status)
+
+> Kept for institutional memory. The BUUA fork was absorbed into BUU 2.0 (now shipped through
+> v2.2.1) and the WorkWave API blocker is now a v3.0-branch concern, not an active blocker
+> for BUU 2.0 feature work. Don't act on this section — read CURRENT STATE for what to do.
 
 When you / a fresh Claude session resumes, here's where we left off:
 
@@ -93,24 +152,45 @@ All three live in `scripts/` (gitignored). They source `creds.ps1` (also gitigno
 
 ---
 
+## SKILLS — procedures to follow exactly
+
+> **`docs/skills/SKILL-pestpac-reconciliation.md`** — MANDATORY before building any rerun /
+> leftover / fix / cross-reference sheet, or answering "which leads still need X / why did
+> these end up wrong". Derive from ROOT sources (intent list + live scrape), never from an
+> intermediate output sheet; verify every sheet in memory and after read-back before handing
+> it over. Created 2026-05-28 after the 336-lead CLEANUP/DUPLICATE mislabel.
+
 ## What's where
+
+> **File locations (reorganized 2026-05-28):** design docs now live in `docs/design/`, release notes in `docs/release-notes/`. The table lists bare filenames as identifiers; prepend the folder to open them. Navigational docs (`DESIGN-INDEX.md`, `BUU-PROJECT-HANDOFF.md`, `README.md`, `GITHUB_GUIDE.md`, `POST-PUSH-NOTES.md`) stay in the repo root.
 
 | Document | Status | Read this when |
 |---|---|---|
-| **BUU-v1.2.8-DESIGN.md** | Drafting (renumbered from v1.2.7 on 2026-05-07) | Working on setup-and-teardown flows / three-phase pipeline |
-| **RELEASE-NOTES-v1.2.7.md** | Shipped 2026-05-07 | Reference for the dialog-handler crash fix |
-| **RELEASE-NOTES-v1.2.6.md** | Shipped | Reference for iframe-aware selectors |
-| **BUU-v1.2.5-DESIGN.md** | Shipped | Reference for the resilience pack (retries, breaker, re-auth, etc.) |
-| **BUU-v1.2.4-DESIGN.md** | Shipped 2026-05-01 | Reference for the unify-runner refactor |
-| **BUUA-DESIGN.md** | Hybrid architecture LOCKED 2026-05-04; rest partially stale, awaiting API probe results. Strategic role superseded — see note below. | Discussing the v2.0 fork or anything automation-related. Section 0 is the latest. |
-| **BUU-PROJECT-HANDOFF.md** | Section 0 refreshed 2026-05-07 with current ship status; body still has older version-specific status mentions | Need PestPac selectors, runner template details, build commands, file paths, operating practices |
-| **API DOCUMENTATION/** | PestPac API spec + SDKs + portal prose docs | Anything API-related. swagger.yaml has 347 endpoints. portal-prose contains a plaintext API key — gitignore before commit. |
+| **BUU-v2.2.2-DESIGN.md** | Drafted 2026-05-28. **Active.** | Interim release pulled forward after the void-flow-reports-success-when-nothing-persisted finding. Scope: trustworthy reporting (diagnostic capture, verify-after-action, dialog text logging, skip↔error reclassification) + major cleanup (repo, scripts, log retention). Everything else stays in v2.3. |
+| **BUU-v2.3.0-DESIGN.md** | Drafted 2026-05-27. Partially deferred. | The big refactor + 25-item agenda. Trustworthiness items pulled forward into v2.2.2; everything else stays here. Read after v2.2.2 ships. |
+| **BUU-v2.0.1-DESIGN.md** | Shipped (v2.0.1 series) | Reference for early BUU 2.0 polish (Auto worker-count + license awareness, toolbar relabeling). |
+| **BUU-v1.2.8-DESIGN.md** | Shipped 2026-05-11 (BUU Legacy) | Reference for setup-and-teardown flow composition / three-phase pipeline. Carried into BUU 2.0. |
+| **RELEASE-NOTES-v1.2.7.md** | Shipped 2026-05-07 (BUU Legacy) | Reference for the dialog-handler crash fix |
+| **RELEASE-NOTES-v1.2.6.md** | Shipped (BUU Legacy) | Reference for iframe-aware selectors |
+| **BUU-v1.2.5-DESIGN.md** | Shipped (BUU Legacy) | Reference for the resilience pack (retries, breaker, re-auth, etc.) |
+| **BUU-v1.2.4-DESIGN.md** | Shipped 2026-05-01 (BUU Legacy) | Reference for the unify-runner refactor |
+| **BUU-v1.3.4-DESIGN.md** | Final Legacy backlog doc | Reference only — Legacy is frozen at v1.3.5. Some items may have been carried into BUU 2.0. |
+| **BUUA-DESIGN.md** | Superseded by BUU 2.0 (2026-05-27). Historical context only. | Don't act on this. Architecture concerns (multi-runner, elastic scaling) shipped in BUU 2.0 v2.0.0. API hybrid is now v3.0-branch territory. |
+| **BUU-PROJECT-HANDOFF.md** | Section 0 stale (last refresh 2026-05-07, pre-v2.x). Body still has older version-specific status mentions. Refresh pending. | Need PestPac selectors, runner template details, build commands, file paths, operating practices |
+| **API DOCUMENTATION/** | PestPac API spec + SDKs + portal prose docs | Anything API-related. swagger.yaml has 347 endpoints. portal-prose contains a plaintext API key — gitignore before commit. v3.0 work depends on this. |
 
-> **Strategic note (2026-05-07):** The "BUU enters bug-fix mode after v1.2.5; BUUA takes over feature work" plan from earlier is paused, not cancelled. BUU continues to grow features (v1.2.8 is a feature release) while BUUA work waits on WorkWave API authentication. When the API access lands, BUUA work resumes; flow composition built in v1.2.8 will be the natural foundation for BUUA's per-job flow specification. See `BUU-v1.2.8-DESIGN.md` Section 1 strategic note.
+> **Strategic note (2026-05-27):** The earlier "BUUA fork takes over feature work" plan is
+> fully resolved — BUU 2.0 *is* the BUUA architecture. BUU 2.0 has been the active branch
+> through v2.2.1. v2.3.0 is the next release and continues active feature work on BUU 2.0.
+> BUU Legacy (v1.x) is in pure maintenance; no further Legacy feature work planned.
 
 ---
 
-## Project status snapshot (2026-05-07, post-v1.2.7-ship)
+## Project status snapshot (2026-05-07, HISTORICAL — BUU Legacy v1.x line)
+
+> Frozen Legacy-era snapshot. For current state, see the **CURRENT STATE** section near the
+> top of this doc. The v1.x line below is BUU Legacy, which is frozen at v1.3.5. Active feature
+> work is on BUU 2.0 (v2.0.0-elastic branch), now at v2.2.1, with v2.3.0 in design.
 
 - **v1.2.3 SHIPPED 2026-05-01** — Icon, run guards, heartbeat, live counters, resume-on-launch, log retries.
 - **v1.2.4 SHIPPED 2026-05-01** — Unified runner with start-mode picker (step / step-row / run-all).
