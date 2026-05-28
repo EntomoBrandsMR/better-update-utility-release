@@ -28,3 +28,12 @@ API DOCUMENTATION/
 
 # Backup files
 *.bak
+
+# Excel lock/temp files
+~$*
+
+# Scratch / forensic artifacts (regenerable; never belong in git)
+error-log.txt
+_skip-analysis.json
+_commitmsg-*.txt
+
