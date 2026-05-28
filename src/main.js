@@ -97,19 +97,49 @@ function coordOpenJournal(){
   try{
     // Meta: enough to rebuild each job (label, sheet, profile, flow, total). flowSteps included
     // so resume is fully self-contained even if the user changed the in-app flow since.
+    // v2.2.2 Session 2F: also captures pool-level configuration (setupScope, startMode) and
+    // per-job retry knobs (retryCount, breakerThreshold, retryRowIndexes, reauthIntervalMin)
+    // so a resume restores the SAME runtime parameters the original run used. Also adds
+    // phaseProgress so resume knows whether coordinator-driven setup already completed.
     const meta = {
       poolId: COORD.poolId,
       batchSize: COORD.batchSize,
       startedAt: new Date().toISOString(),
+      setupScope: COORD.setupScope,
+      startMode: COORD.startMode,
+      startModeTarget: COORD.startModeTarget,
+      // phaseProgress mirrors the single-runner v3 checkpoint shape. Only the coordinator
+      // can write here; per-worker setup/teardown is repeated on each spawn so it doesn't
+      // need persistence. Updated by coordMarkPhaseProgress() below.
+      phaseProgress: { setupCompleted: false, teardownCompleted: false },
       jobs: Array.from(COORD.jobs.values()).map(j => ({
         jobId: j.jobId, label: j.label, spreadsheetPath: j.spreadsheetPath,
         profileId: j.profileId, setupFlowId: j.setupFlowId, teardownFlowId: j.teardownFlowId,
         errHandle: j.errHandle, totalRows: j.totalRows, flowSteps: j.flowSteps,
+        // v2.2.2 Session 2E knobs (persisted for resume)
+        retryCount: j.retryCount, breakerThreshold: j.breakerThreshold,
+        retryRowIndexes: j.retryRowIndexes, reauthIntervalMin: j.reauthIntervalMin,
+        startRow: j.startRow,
       })),
     };
     fs.writeFileSync(coordJournalMetaPath(COORD.poolId), JSON.stringify(meta));
     COORD.journalStream = fs.createWriteStream(coordJournalPath(COORD.poolId), { flags: 'a' });
   }catch(e){ console.error('[coord] could not open journal:', e.message); COORD.journalStream = null; }
+}
+
+// v2.2.2 Session 2F: update the meta sidecar's phaseProgress when a coordinator-driven
+// setup/teardown completes. Read-modify-write is safe here because the coordinator is the
+// only writer (workers don't touch the meta file).
+function coordMarkPhaseProgress(field){
+  if(!COORD.poolId) return;
+  try{
+    const p = coordJournalMetaPath(COORD.poolId);
+    if(!fs.existsSync(p)) return;
+    const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+    m.phaseProgress = m.phaseProgress || {};
+    m.phaseProgress[field] = true;
+    fs.writeFileSync(p, JSON.stringify(m));
+  }catch(e){ /* best-effort */ }
 }
 
 // Append one completed-row record. Called on every row-result BEFORE updating counters, so
@@ -527,7 +557,7 @@ function coordCheckComplete(){
       try { coordWriteReadResults(); } catch(e){ console.error('[coord] read-results write failed:', e.message); }
       if(COORD.setupScope !== 'per-worker'){
         if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase:'teardown', state:'phase-start', scope:COORD.setupScope });
-        try { await coordRunOnceFlows('teardown'); } catch(e) { console.error('[coord] teardown once-flows error:', e.message); }
+        try { await coordRunOnceFlows('teardown'); coordMarkPhaseProgress('teardownCompleted'); } catch(e) { console.error('[coord] teardown once-flows error:', e.message); }
       }
       coordRunLogoutSweep('auto-complete');
     })();
@@ -1297,7 +1327,7 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   // workers spawn. Awaited so workers never start processing rows before setup has completed.
   if(COORD.setupScope !== 'per-worker'){
     if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase:'setup', state:'phase-start', scope:COORD.setupScope });
-    try { await coordRunOnceFlows('setup'); } catch(e) { console.error('[coord] setup once-flows error:', e.message); }
+    try { await coordRunOnceFlows('setup'); coordMarkPhaseProgress('setupCompleted'); } catch(e) { console.error('[coord] setup once-flows error:', e.message); }
   }
 
   const hwCap = computeHardwareCap();
@@ -1477,6 +1507,9 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
   }
 
   // Rebuild COORD.jobs from meta, pre-seeding completedRows.
+  // v2.2.2 Session 2F: also restores per-job retry knobs (Session 2E) so resume preserves the
+  // SAME runtime config the original run used. Missing fields default to safe values (older
+  // journals predating 2E/2F resume with retry=2/breaker=0/etc).
   COORD.jobs.clear();
   for (const j of meta.jobs){
     COORD.jobs.set(j.jobId, {
@@ -1484,18 +1517,39 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
       spreadsheetPath: j.spreadsheetPath, profileId: j.profileId,
       setupFlowId: j.setupFlowId, teardownFlowId: j.teardownFlowId,
       errHandle: j.errHandle, totalRows: j.totalRows,
-      nextRow: 1, done: 0, ok: 0, err: 0, skip: 0, finished: false,
+      // v2.2.2 Session 2F: restore Session 2E knobs from meta (defaults if missing).
+      retryCount: Number.isFinite(j.retryCount) ? j.retryCount : 2,
+      breakerThreshold: Number.isFinite(j.breakerThreshold) ? j.breakerThreshold : 0,
+      retryRowIndexes: Array.isArray(j.retryRowIndexes) ? j.retryRowIndexes : null,
+      reauthIntervalMin: Number.isFinite(j.reauthIntervalMin) ? j.reauthIntervalMin : 0,
+      startRow: Number.isFinite(j.startRow) ? j.startRow : 1,
+      nextRow: Number.isFinite(j.startRow) ? j.startRow : 1, done: 0, ok: 0, err: 0, skip: 0, finished: false,
       completedRows: completedByJob[j.jobId] || new Set(),
     });
   }
   // Seed counters from the completed sets so the UI shows real progress immediately.
   for (const job of COORD.jobs.values()){ job.done = job.completedRows.size; }
 
+  // v2.2.2 Session 2F: restore pool-level configuration from meta (defaults preserve old behavior).
+  COORD.setupScope = meta.setupScope || 'per-worker';
+  COORD.startMode = meta.startMode || 'run-all';
+  COORD.startModeTarget = meta.startModeTarget || { workers: 1, batchSize: meta.batchSize || 10 };
   COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || meta.batchSize || 10));
   COORD.active = true;
   // Re-open the SAME journal in append mode (continue the continuous record).
   COORD.poolId = poolId;
   try { COORD.journalStream = fs.createWriteStream(jp, { flags: 'a' }); } catch(e){ COORD.journalStream = null; }
+
+  // v2.2.2 Session 2F: respect phaseProgress from the meta. If coordinator-driven setup already
+  // ran in the original session, skip it on resume. Teardown still runs at the end. Per-worker
+  // scope is unaffected (each new worker runs its own setup/teardown by design).
+  const _resumePhase = (meta.phaseProgress || {});
+  if(COORD.setupScope !== 'per-worker' && !_resumePhase.setupCompleted){
+    if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase:'setup', state:'phase-start', scope:COORD.setupScope });
+    try { await coordRunOnceFlows('setup'); coordMarkPhaseProgress('setupCompleted'); } catch(e) { console.error('[coord] resume setup once-flows error:', e.message); }
+  } else if(COORD.setupScope !== 'per-worker' && _resumePhase.setupCompleted){
+    console.log('[coord] resume: skipping setup (already completed in original session)');
+  }
 
   const hwCap = computeHardwareCap();
   let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, j.totalRows - j.completedRows.size);
