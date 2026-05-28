@@ -791,6 +791,59 @@ ipcMain.handle('get-worker-caps', async () => {
   };
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// v2.2.2 — SHARED LOGIN HELPER (canonical, hardened, drift-proof)
+// ────────────────────────────────────────────────────────────────────────────
+// Single source of truth for "log into PestPac". Used in TWO contexts:
+//   1. Main process directly (check-license-cap IPC handler) — calls
+//      loginToPestPacInPage(page, creds) as a normal JS function.
+//   2. Spawned child template runners (buildRunner, buildPoolWorker,
+//      buildLogoutSweeper, buildOnceFlowRunner) — interpolate LOGIN_TO_PESTPAC_SRC
+//      into the emitted JS so the same function is available in the child.
+// LOGIN_TO_PESTPAC_SRC is the EXACT textual source of loginToPestPacInPage with
+// the name `loginToPestPacInPage` rewritten to `loginToPestPac` for compatibility
+// with the existing template call sites. Keep them in sync; they MUST never drift.
+// (If you edit one and not the other, you'll reintroduce the exact class of bug
+// that v2.2.1 had to fix: the sweeper's login was missed when the worker's was
+// updated. That's why this is a single string derived from a single function.)
+// The hardened body includes the `LoginForm-loginBtn` triple-fallback that the
+// sweeper/once-flow templates carried; the previous buildRunner/buildPoolWorker
+// copies were missing this fallback. Now ALL five call sites get it.
+// ════════════════════════════════════════════════════════════════════════════
+async function loginToPestPacInPage(page, creds){
+  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  await page.waitForSelector('input[name="uid"]',{timeout:15000});
+  await page.fill('input[name="uid"]',creds.companyKey||'');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
+  await page.waitForSelector('input[name="username"]',{timeout:15000});
+  await page.fill('input[name="username"]',creds.username||'');
+  await page.fill('input[name="password"]',creds.password||'');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }
+  catch(e){ try{ await page.click('button[data-testid="loginBtn"]',{force:true,timeout:8000}); }
+            catch(_){ try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true,timeout:8000}); }catch(__){} } }
+  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
+}
+// String form used by spawned-child templates. Stays identical to loginToPestPacInPage
+// except the function is named `loginToPestPac` (matching every existing call site in the
+// four runner templates). If you edit loginToPestPacInPage above, update this too.
+const LOGIN_TO_PESTPAC_SRC = `async function loginToPestPac(page, creds){
+  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  await page.waitForSelector('input[name="uid"]',{timeout:15000});
+  await page.fill('input[name="uid"]',creds.companyKey||'');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
+  await page.waitForSelector('input[name="username"]',{timeout:15000});
+  await page.fill('input[name="username"]',creds.username||'');
+  await page.fill('input[name="password"]',creds.password||'');
+  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
+  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }
+  catch(e){ try{ await page.click('button[data-testid="loginBtn"]',{force:true,timeout:8000}); }
+            catch(_){ try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true,timeout:8000}); }catch(__){} } }
+  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
+}`;
+
 // v2.2.1: log a coordinator-side license-reader session OUT before closing its browser.
 // RULE: any session that logs in counts as a consumed license for as long as it stays logged
 // in — there are NO exempt sessions. The elastic recheck (coordLicenseScale) and the Auto
@@ -834,23 +887,12 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
     const { chromium } = require('playwright-core');
     browser = await chromium.launch({ headless: true, executablePath: chromiumExe, args: ['--disable-gpu','--disable-dev-shm-usage'] });
     const page = await (await browser.newContext()).newPage();
-    // Login (mirrors the runner's loginToPestPac sequence).
-    await page.goto(prof.loginUrl || 'https://login.pestpac.com/', { waitUntil: 'load', timeout: 30000 });
-    await page.waitForSelector('input[name="uid"]', { timeout: 15000 });
-    await page.fill('input[name="uid"]', prof.companyKey || '');
-    try { await page.waitForSelector('.MuiBackdrop-root', { state: 'hidden', timeout: 12000 }); } catch {}
-    try { await page.click('button[data-testid="CompanyKeyForm-loginBtn"]', { timeout: 15000 }); }
-    catch { await page.click('button[data-testid="CompanyKeyForm-loginBtn"]', { force: true }); }
-    await page.waitForSelector('input[name="username"]', { timeout: 15000 });
-    await page.fill('input[name="username"]', prof.username || '');
-    await page.fill('input[name="password"]', prof.password || '');
-    // v2.1.1a: PestPac shows a MUI loading backdrop over the form that intercepts the login
-    // click (Playwright reports "<div class=MuiBackdrop-root> intercepts pointer events" and
-    // times out). Wait for any backdrop to clear before clicking; fall back to a forced click.
-    try { await page.waitForSelector('.MuiBackdrop-root', { state: 'hidden', timeout: 12000 }); } catch {}
-    try { await page.click('button[data-testid="loginBtn"]', { timeout: 15000 }); }
-    catch { await page.click('button[data-testid="loginBtn"]', { force: true }); }
-    await page.waitForSelector('a[href*="AutoLogin"]', { timeout: 30000 });
+    // v2.2.2: login via the shared canonical helper. Behavior identical to the inline
+    // sequence this replaces, including the v2.1.1a MUI-backdrop wait and force-click
+    // fallback for both the company-key and credential buttons, plus the v2.2.2 third
+    // fallback to button[data-testid="LoginForm-loginBtn"] that the inline copy here
+    // was missing (the sweeper/once-flow templates had it; this didn't).
+    await loginToPestPacInPage(page, { loginUrl: prof.loginUrl, companyKey: prof.companyKey, username: prof.username, password: prof.password });
     // Navigate to the license page and read the free-licenses cell.
     await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
     // v2.2.1: read the PestPac FREE-licenses value robustly. The page has MULTIPLE license
@@ -2133,21 +2175,11 @@ async function countRows(fp){
 //   3. Connectivity-wait > 10 min (after waitForNetwork() returns)
 //   4. Detection-based re-auth (when row-start detects login URL)
 // Throws if any step in the sequence fails. Caller decides whether that's fatal.
-async function loginToPestPac(page, creds){
-  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
-  await page.waitForSelector('input[name="uid"]',{timeout:15000});
-  await page.fill('input[name="uid"]','');
-  await page.fill('input[name="uid"]',creds.companyKey||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
-  await page.waitForSelector('input[name="username"]',{timeout:15000});
-  await page.fill('input[name="username"]',creds.username||'');
-  await page.fill('input[name="password"]',creds.password||'');
-  // v2.1.1a: PestPac's MUI loading backdrop intercepts the login click; wait it out, then force.
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="loginBtn"]',{force:true}); }
-  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
-}
+// v2.2.2: interpolated from the canonical LOGIN_TO_PESTPAC_SRC at the top of main.js
+// so every runtime (single-runner / pool-worker / sweeper / once-flow / in-process
+// license check) uses the SAME hardened sequence. v2.2.1 had drift here — pool worker
+// missed the LoginForm-loginBtn third-fallback that sweeper had. No more.
+${LOGIN_TO_PESTPAC_SRC}
 
 // v1.2.6: automatic iframe traversal for selector-based steps.
 // PestPac renders form pages (and especially modal dialogs like attach-to-lead)
@@ -3271,19 +3303,8 @@ function loadAllRows(fp){
   return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
 }
 
-async function loginToPestPac(page, creds){
-  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
-  await page.waitForSelector('input[name="uid"]',{timeout:15000});
-  await page.fill('input[name="uid"]',creds.companyKey||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
-  await page.waitForSelector('input[name="username"]',{timeout:15000});
-  await page.fill('input[name="username"]',creds.username||'');
-  await page.fill('input[name="password"]',creds.password||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="loginBtn"]',{force:true}); }
-  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
-}
+// v2.2.2: shared canonical login (was a 4th copy here; see LOGIN_TO_PESTPAC_SRC at top of main.js).
+${LOGIN_TO_PESTPAC_SRC}
 
 async function findLocator(page, selector, opts){
   opts=opts||{}; const timeoutMs=opts.timeout||30000; const startedAt=Date.now();
@@ -3540,21 +3561,8 @@ async function runStep(page, step, creds){
     case 'pestpac-login':{ await loginToPestPac(page,creds); break; }
   }
 }
-async function loginToPestPac(page, creds){
-  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
-  await page.waitForSelector('input[name="uid"]',{timeout:15000});
-  await page.fill('input[name="uid"]',creds.companyKey||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
-  await page.waitForSelector('input[name="username"]',{timeout:15000});
-  await page.fill('input[name="username"]',creds.username||'');
-  await page.fill('input[name="password"]',creds.password||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }
-  catch(e){ try{ await page.click('button[data-testid="loginBtn"]',{force:true,timeout:8000}); }
-            catch(_){ try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true,timeout:8000}); }catch(__){} } }
-  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
-}
+// v2.2.2: shared canonical login (was a copy of the hardened sequence; now sourced from LOGIN_TO_PESTPAC_SRC).
+${LOGIN_TO_PESTPAC_SRC}
 
 // Count + log out every BUU session on the License Manager page. Returns {before, after, loggedOut}.
 async function sweepOnce(page){
@@ -3635,21 +3643,8 @@ const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32
 function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
 function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
 function ms(s){return Math.round(parseFloat(s||1)*1000);}
-async function loginToPestPac(page, creds){
-  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
-  await page.waitForSelector('input[name="uid"]',{timeout:15000});
-  await page.fill('input[name="uid"]',creds.companyKey||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
-  await page.waitForSelector('input[name="username"]',{timeout:15000});
-  await page.fill('input[name="username"]',creds.username||'');
-  await page.fill('input[name="password"]',creds.password||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }
-  catch(e){ try{ await page.click('button[data-testid="loginBtn"]',{force:true,timeout:8000}); }
-            catch(_){ try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true,timeout:8000}); }catch(__){} } }
-  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
-}
+// v2.2.2: shared canonical login (was the 4th and final inline copy; now sourced from LOGIN_TO_PESTPAC_SRC).
+${LOGIN_TO_PESTPAC_SRC}
 async function runStep(page, step, creds){
   const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return ''; }); };
   switch(step.type){
