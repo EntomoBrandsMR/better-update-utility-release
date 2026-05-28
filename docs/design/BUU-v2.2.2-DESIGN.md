@@ -169,7 +169,7 @@ Updated as each session lands. Read this section first when picking the work bac
 - [x] 2D — network-aware retry + error classification port. Probe + wait + classifyError + classifyPhase factored into canonical SRC constants used by BOTH templates. Pool worker now does post-failure network probe + bounded wait before retrying, and surfaces errorCategory/phase in row-result + per-worker log.
 - [x] 2E — retry config port. retryCount, breakerThreshold, retryRowIndexes, reauthIntervalMin accepted per-job via pool-submit-job; forwarded to buildPoolWorker; emitted as constants in the worker template; wired into the batch loop (circuit breaker bookkeeping + drain on trip, retry-row filter with synthetic row-result emit so coord bookkeeping stays consistent, proactive re-auth at row boundary). Coordinator handles circuit-breaker event.
 - [x] 2F — resume audit + gap closure. Pool journal meta now persists setupScope, startMode, startModeTarget, per-job retry knobs (retryCount/breakerThreshold/retryRowIndexes/reauthIntervalMin), and a phaseProgress {setupCompleted, teardownCompleted} sidecar. coordMarkPhaseProgress() updates phaseProgress as coordinator-driven once-flows finish. coordResumeFromJournal restores all of it and skips already-completed coordinator-driven setup on resume.
-- [ ] 2G — kill the single-runner
+- [x] 2G — kill the single-runner. Deleted from main.js: automationProcesses Map; buildRunner template (~1376 lines); IPC handlers start-automation / stop-automation / run-control / get-checkpoint / find-orphan-checkpoints / load-checkpoint / discard-checkpoint. ~1755 lines removed total. preload.js gains a SHIM LAYER that maps the old call surface to pool equivalents (startAutomation → poolSubmitJob+poolStart with workers=1, stopAutomation → poolStop, runControl → poolRunControl, checkpoint v3 APIs → no-ops returning safe defaults) and bridges pool-status / pool-complete events back to the old 'automation-event' shape the renderer's handleRunEvent expects. The renderer is intentionally NOT rewritten this session — its existing single-runner code paths now route through the shim to the pool runtime. Renderer rewrite deferred to a later cleanup. Trade-off: row-start/row-done synthesis from pool-status snapshots is approximate (status of completed rows inferred from aggregate counter deltas, not exact); decorative events (heartbeat, mode, phase-step) are skipped.
 - [ ] 2H — validation pass and version bump
 
 ---
@@ -180,7 +180,8 @@ Updated as each session lands. Read this section first when picking the work bac
 - Diff-by-diff sign-off is the rule. No 200-line drops.
 - Validators after every session: `node --check src/main.js`, `node --check src/preload.js`,
   `node scripts/_check-html-js.js`, `node scripts/_validate-pool-worker.js`,
-  `node scripts/_validate-runner.js`, `node scripts/_test-coordinator.js` (49/49).
+  `node scripts/_test-coordinator.js` (49/49).
+  (Note: `_validate-runner.js` was removed in Session 2G since buildRunner no longer exists.)
 - The v2.3 design doc's "do unification by itself, don't mix with feature work" rule
   applies here. Don't pull any A1-A5 work into a Tier 2 session no matter how tempting.
 - Step-by-step is a Matthew-uses-this feature, not optional. If a session ends with
