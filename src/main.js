@@ -1026,6 +1026,74 @@ const RESOLVE_STEP_LOCATOR_FN_SRC = `async function resolveStepLocator(page, ste
   return await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
 }`;
 
+// v2.2.2 Session 2D: network-aware retry + error classification, factored out of
+// buildRunner so the pool worker template can interpolate them too. probeNetwork +
+// waitForNetwork were v1.2.5 item 2.8 (TCP probe + bounded wait with backoff so a
+// disconnected PestPac doesn't burn the retry budget on dead-network failures).
+// classifyError + classifyPhase were v1.2.5 item 2.10 (error categorization for
+// the per-row Excel log's forensic columns).
+//
+// Requirements at the call site (template must satisfy before interpolating):
+//   - PROBE_NETWORK_FN_SRC and WAIT_FOR_NETWORK_FN_SRC: the spawned-child must
+//     declare `const net = require('net');` at top. waitForNetwork references
+//     `currentMode` for the user-stop sentinel — must be declared (pool worker
+//     has it from Session 2C; legacy single-runner already has it).
+//   - CLASSIFY_ERROR_FN_SRC / CLASSIFY_PHASE_FN_SRC: no external dependencies.
+const PROBE_NETWORK_FN_SRC = `function probeNetwork(){
+  return new Promise(function(resolve){
+    const sock = net.connect({ host: 'app.pestpac.com', port: 443, timeout: 5000 });
+    let done = false;
+    const finish = function(ok){
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch (_) {}
+      resolve(ok);
+    };
+    sock.once('connect', function(){ finish(true); });
+    sock.once('error', function(){ finish(false); });
+    sock.once('timeout', function(){ finish(false); });
+  });
+}`;
+
+const WAIT_FOR_NETWORK_FN_SRC = `async function waitForNetwork(){
+  const startWait = Date.now();
+  let attempt = 0;
+  const backoffs = [5000, 10000, 30000, 60000];
+  while (true) {
+    if (await probeNetwork()) return Date.now() - startWait;
+    const wait = backoffs[Math.min(attempt, backoffs.length - 1)];
+    attempt++;
+    emit({
+      type: 'heartbeat',
+      phase: 'waiting-for-internet',
+      attempt: attempt,
+      waitMs: wait,
+      totalWaitedMs: Date.now() - startWait
+    });
+    await new Promise(function(r){ setTimeout(r, wait); });
+    if (currentMode === 'stop') throw new Error('__STOP__');
+  }
+}`;
+
+const CLASSIFY_ERROR_FN_SRC = `function classifyError(errMsg){
+  const m = String(errMsg || '');
+  if (/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ERR_NAME_NOT_RESOLVED|ENOTFOUND|getaddrinfo/i.test(m)) return 'internet-down';
+  if (/ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ECONNREFUSED|ECONNRESET/i.test(m)) return 'pestpac-down';
+  if (/ERR_|net::/i.test(m)) return 'unknown-network';
+  if (/waitForSelector.*Timeout|waiting for selector/i.test(m)) return 'selector';
+  if (/Timeout|timed out|TimeoutError/i.test(m)) return 'timeout';
+  if (/Assert failed|HTTP 4\\\\d\\\\d|status code 4\\\\d\\\\d/i.test(m)) return 'validation';
+  return 'unknown';
+}`;
+
+const CLASSIFY_PHASE_FN_SRC = `function classifyPhase(errMsg){
+  const m = String(errMsg || '');
+  if (/waitForSelector|waiting for selector|timeout.*selector/i.test(m)) return 'pre-action';
+  if (/Assert failed/i.test(m)) return 'post-action';
+  if (/Navigation failed|page\\\\.goto/i.test(m)) return 'action';
+  return 'action';
+}`;
+
 // v2.2.1: log a coordinator-side license-reader session OUT before closing its browser.
 // RULE: any session that logs in counts as a consumed license for as long as it stays logged
 // in — there are NO exempt sessions. The elastic recheck (coordLicenseScale) and the Auto
@@ -2055,75 +2123,19 @@ function waitForCommand(){
 }
 
 // v1.2.5 item 2.8 (Phase 7): Network-aware retry.
-// probeNetwork() does a single TCP connect to PestPac and resolves true/false within 5s.
-// Source of truth for "are we connected" — error strings from Playwright are heterogeneous
-// and unreliable as a sole classifier. We probe AFTER any row failure to decide whether
-// to enter the wait-and-ping loop or fall through to the existing retry/skip logic.
-function probeNetwork(){
-  return new Promise(function(resolve){
-    const sock = net.connect({ host: 'app.pestpac.com', port: 443, timeout: 5000 });
-    let done = false;
-    const finish = function(ok){
-      if (done) return;
-      done = true;
-      try { sock.destroy(); } catch (_) {}
-      resolve(ok);
-    };
-    sock.once('connect', function(){ finish(true); });
-    sock.once('error', function(){ finish(false); });
-    sock.once('timeout', function(){ finish(false); });
-  });
-}
+// v2.2.2 Session 2D: sourced from canonical PROBE_NETWORK_FN_SRC / WAIT_FOR_NETWORK_FN_SRC
+// at the top of main.js. Behavior unchanged. The reason these are interpolated rather than
+// inline: the pool worker template now uses the same helpers (Session 2D), so this is one
+// source of truth shared by both runtimes.
+${PROBE_NETWORK_FN_SRC}
 
-// waitForNetwork() loops with backoff until probeNetwork() returns true.
-// Honors the user-stop sentinel — if currentMode flips to 'stop' during the wait,
-// throws __STOP__ so the row catch handler bails cleanly. Returns total ms waited.
-async function waitForNetwork(){
-  const startWait = Date.now();
-  let attempt = 0;
-  const backoffs = [5000, 10000, 30000, 60000];
-  while (true) {
-    if (await probeNetwork()) return Date.now() - startWait;
-    const wait = backoffs[Math.min(attempt, backoffs.length - 1)];
-    attempt++;
-    emit({
-      type: 'heartbeat',
-      phase: 'waiting-for-internet',
-      attempt: attempt,
-      waitMs: wait,
-      totalWaitedMs: Date.now() - startWait
-    });
-    await new Promise(function(r){ setTimeout(r, wait); });
-    if (currentMode === 'stop') throw new Error('__STOP__');
-  }
-}
+${WAIT_FOR_NETWORK_FN_SRC}
 
-// v1.2.5 item 2.10 (Phase 8): error classifier.
-// Maps an error message to one of seven categories for the new Excel log column.
-// String-based heuristic (vs 2.8's probe-based gate) — sufficient for forensic column,
-// not used for runtime decisions. Order matters: more-specific patterns checked first.
-function classifyError(errMsg){
-  const m = String(errMsg || '');
-  if (/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ERR_NAME_NOT_RESOLVED|ENOTFOUND|getaddrinfo/i.test(m)) return 'internet-down';
-  if (/ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ECONNREFUSED|ECONNRESET/i.test(m)) return 'pestpac-down';
-  if (/ERR_|net::/i.test(m)) return 'unknown-network';
-  if (/waitForSelector.*Timeout|waiting for selector/i.test(m)) return 'selector';
-  if (/Timeout|timed out|TimeoutError/i.test(m)) return 'timeout';
-  if (/Assert failed|HTTP 4\\d\\d|status code 4\\d\\d/i.test(m)) return 'validation';
-  return 'unknown';
-}
+// v1.2.5 item 2.10 (Phase 8): error + phase classifiers for the Excel-log forensic columns.
+// v2.2.2 Session 2D: sourced from canonical CLASSIFY_ERROR_FN_SRC / CLASSIFY_PHASE_FN_SRC.
+${CLASSIFY_ERROR_FN_SRC}
 
-// v1.2.5 item 2.10 (Phase 8): phase classifier from error message.
-// Heuristic — distinguishes pre-action (waitForSelector failed) from action (click/type
-// itself failed) from post-action (assert / follow-up wait failed). Saves us from
-// instrumenting every runStep case individually for v1.2.5.
-function classifyPhase(errMsg){
-  const m = String(errMsg || '');
-  if (/waitForSelector|waiting for selector|timeout.*selector/i.test(m)) return 'pre-action';
-  if (/Assert failed/i.test(m)) return 'post-action';
-  if (/Navigation failed|page\\.goto/i.test(m)) return 'action';
-  return 'action';  // default — most errors are action-phase
-}
+${CLASSIFY_PHASE_FN_SRC}
 
 // Resolve a preview snapshot of what's about to happen, used during pauses.
 // Mirrors the substitution logic in runStep's r() but does not touch the page.
@@ -3404,6 +3416,8 @@ function buildPoolWorker(cfg){
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+// v2.2.2 Session 2D: net is required for the TCP probe used by network-aware retry.
+const net = require('net');
 const _nm = process.env.NODE_PATH || path.join(__dirname);
 ${REQUIRE_FN_SRC}
 if(process.env.NODE_PATH){ try{require('module').Module._initPaths();}catch(e){} }
@@ -3561,6 +3575,15 @@ ${MATCHES_TEXT_FN_SRC}
 ${FIND_IN_CONTAINER_FN_SRC}
 
 ${RESOLVE_STEP_LOCATOR_FN_SRC}
+
+// v2.2.2 Session 2D: network-aware retry + error classification (was buildRunner-only).
+${PROBE_NETWORK_FN_SRC}
+
+${WAIT_FOR_NETWORK_FN_SRC}
+
+${CLASSIFY_ERROR_FN_SRC}
+
+${CLASSIFY_PHASE_FN_SRC}
 
 async function runStep(page, step, row, creds){
   const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
@@ -3722,6 +3745,24 @@ async function processRow(page, row, creds, rowNum){
     // not errors. STOP propagates to the caller; NEXT_ROW becomes a clean skip.
     if(e && e.message === '__STOP__') throw e;
     if(e && e.message === '__NEXT_ROW__') return {status:'skip', error:'Skipped via Next-row during step-through', failedStep:'(user skipped)'};
+    // v2.2.2 Session 2D: network-aware retry gate (was buildRunner-only). Probe AFTER the
+    // failure; if PestPac is unreachable, wait for connectivity to come back BEFORE entering
+    // the retry loop, so retries operate on a fresh connection instead of burning the budget
+    // during a multi-minute outage (the v1.2.5 disaster pattern — see item 2.8 commentary).
+    try {
+      if (await probeNetwork() === false) {
+        emit({type:'log', message:'Network down detected at row '+rowNum+' — waiting for reconnection before retry.'});
+        const waitedMs = await waitForNetwork();
+        emit({type:'log', message:'Network restored after '+Math.round(waitedMs/1000)+'s. Resuming row '+rowNum+'.'});
+        // Note: 10-min outage re-auth trigger from buildRunner not ported here — the pool
+        // worker's session-management story is different (workers re-spawn on logout sweep).
+        // Session 2E will add the per-row re-auth trigger if profile-by-profile timing shows
+        // it's needed. For now: bounded outage wait + clean retry on reconnect.
+      }
+    } catch (waitErr) {
+      if (waitErr && waitErr.message === '__STOP__') throw waitErr;
+      emit({type:'log', message:'Network gate unexpected error: '+(waitErr && waitErr.message)+' — continuing with retry logic'});
+    }
     if(ERR_HANDLE==='retry'){
       let attemptN=0, lastErr=e;
       while(attemptN<RETRY_COUNT){
@@ -3733,9 +3774,23 @@ async function processRow(page, row, creds, rowNum){
           lastErr=e2;
         }
       }
-      return {status:'skip', error:('After '+attemptN+' retries: '+lastErr.message), failedStep:done[done.length-1]||'?'};
+      // v2.2.2 Session 2D: enrich failure with error category/phase columns (was buildRunner-only).
+      const errMsg = 'After '+attemptN+' retries: '+lastErr.message;
+      return {
+        status:'skip',
+        error: errMsg,
+        failedStep: done[done.length-1]||'?',
+        errorCategory: classifyError(errMsg),
+        phase: classifyPhase(errMsg)
+      };
     }
-    return {status:'skip', error:e.message, failedStep:done[done.length-1]||'?'};
+    return {
+      status:'skip',
+      error: e.message,
+      failedStep: done[done.length-1]||'?',
+      errorCategory: classifyError(e.message),
+      phase: classifyPhase(e.message)
+    };
   }
 }
 
@@ -3793,11 +3848,15 @@ async function main(){
         }
         throw e;
       }
-      const entry={ row:rowNum, timestamp:new Date().toISOString(), url:row.URL||row.url||'', status:res.status, error:res.error||'', failedStep:res.failedStep||'', fieldsWritten:res.fieldsWritten||'', durationMs:Date.now()-t0 };
+      const entry={ row:rowNum, timestamp:new Date().toISOString(), url:row.URL||row.url||'', status:res.status, error:res.error||'', failedStep:res.failedStep||'', fieldsWritten:res.fieldsWritten||'', durationMs:Date.now()-t0,
+        // v2.2.2 Session 2D: forensic columns from the classifier (populated on failure).
+        errorCategory: res.errorCategory || '', phase: res.phase || '' };
       addLog(entry);
       // v2.2.0: include any read-field values captured this row so the coordinator can write the
       // dedicated results workbook. row.__reads is { colName: {value,label,out} }.
-      emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null});
+      // v2.2.2 Session 2D: also pass errorCategory/phase so the renderer can show categorized failures.
+      emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null,
+        errorCategory: res.errorCategory || '', phase: res.phase || ''});
       // v2.2.2 Session 2C: pause AFTER row in step-row mode. Same gating as buildRunner
       // (step-row pauses on the boundary so the user can verify the row's outcome in PestPac
       // before continuing). Skipped on the last row of the batch only if a drain has arrived;
