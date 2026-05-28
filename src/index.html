@@ -1075,6 +1075,8 @@ textarea { resize: vertical; min-height: 60px; }
     <div class="run-prog-wrap"><div class="run-prog-bar" id="runProgBar" style="width:0"></div></div>
     <div class="run-stats">
       <div class="run-stat"><div class="run-stat-val" id="rs-done">0</div><div class="run-stat-lbl">Done</div></div>
+      <!-- v2.2.3 Session 3B (A5): reclaim re-processed count (+breakdown line below grid) -->
+      <div class="run-stat"><div class="run-stat-val" style="color:var(--t3)" id="rs-reclaim">0</div><div class="run-stat-lbl">Re-processed</div></div>
       <div class="run-stat"><div class="run-stat-val" style="color:var(--green)" id="rs-ok">0</div><div class="run-stat-lbl">Success</div></div>
       <div class="run-stat"><div class="run-stat-val" style="color:var(--red)" id="rs-err">0</div><div class="run-stat-lbl">Errors</div></div>
       <div class="run-stat"><div class="run-stat-val" style="color:var(--amber)" id="rs-skip">0</div><div class="run-stat-lbl">Skipped</div></div>
@@ -1083,6 +1085,8 @@ textarea { resize: vertical; min-height: 60px; }
       <div class="run-stat"><div class="run-stat-val" id="rs-pct">0%</div><div class="run-stat-lbl">Complete</div></div>
       <div class="run-stat"><div class="run-stat-val" id="rs-elapsed">-</div><div class="run-stat-lbl">Elapsed</div></div>
     </div>
+    <!-- v2.2.3 Session 3B (A5): reclaim breakdown line. Hidden until reclaims accumulate. -->
+    <div id="rs-reclaim-breakdown" style="display:none;font-size:11px;color:var(--t3);margin-top:6px;text-align:center"></div>
     <!-- v2.0.0: staged-jobs list. Shows jobs queued for the pool (label, rows, remove).
          Visible whenever there are staged jobs; lets you review/remove before Run pool. -->
     <div id="stagedJobsHd" style="display:none;font-size:11px;font-weight:600;color:var(--t3);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em">Staged jobs <button class="btn sm" style="margin-left:8px;padding:1px 8px" onclick="poolClearStaged()">Clear all</button></div>
@@ -3331,17 +3335,42 @@ function renderCoordStatus(st){
       + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+(w.done||0).toLocaleString()+'</b> done</span><span style="color:var(--green)">'+(w.ok||0).toLocaleString()+' ok</span><span style="color:var(--red)">'+(w.err||0).toLocaleString()+' err</span><span style="color:var(--amber)">'+(w.skip||0).toLocaleString()+' skip</span></div></div>';
   }).join('');
   // Aggregate strip.
-  let done=0,ok=0,err=0,skip=0,total=0;
-  for(const j of (st.jobs||[])){ done+=j.done; ok+=j.ok; err+=j.err; skip+=j.skip; total+=j.totalRows; }
-  document.getElementById('rs-done').textContent=done.toLocaleString();
+  // v2.2.3 Session 3B (A5): use distinctDone (unique completed rows) as the headline so
+  // reclaim re-processes don't inflate the counter. j.done remains the row-result total
+  // (includes re-processes) for the rate/ETA calculations where it makes more sense.
+  let distinctDone=0,doneTotal=0,ok=0,err=0,skip=0,total=0,reclaimTotal=0;
+  const reclaimAgg={'drain':0,'user-stop':0,'breaker':0,'crash':0};
+  for(const j of (st.jobs||[])){
+    distinctDone+=(j.distinctDone||j.done||0);
+    doneTotal+=(j.done||0);
+    ok+=j.ok; err+=j.err; skip+=j.skip;
+    total+=j.totalRows;
+    reclaimTotal+=(j.reclaimsTotal||0);
+    if(j.reclaimsByReason){
+      for(const k of Object.keys(reclaimAgg)) reclaimAgg[k]+=(j.reclaimsByReason[k]||0);
+    }
+  }
+  document.getElementById('rs-done').textContent=distinctDone.toLocaleString();
   document.getElementById('rs-ok').textContent=ok.toLocaleString();
   document.getElementById('rs-err').textContent=err.toLocaleString();
   document.getElementById('rs-skip').textContent=skip.toLocaleString();
-  const pct=total>0?Math.round(done/total*100):0;
+  // v2.2.3 Session 3B (A5): reclaim count + breakdown line.
+  document.getElementById('rs-reclaim').textContent=reclaimTotal.toLocaleString();
+  const bd=document.getElementById('rs-reclaim-breakdown');
+  if(reclaimTotal>0){
+    const parts=[];
+    if(reclaimAgg['drain']>0)parts.push(reclaimAgg['drain']+' scale-down');
+    if(reclaimAgg['user-stop']>0)parts.push(reclaimAgg['user-stop']+' user stop');
+    if(reclaimAgg['breaker']>0)parts.push(reclaimAgg['breaker']+' breaker');
+    if(reclaimAgg['crash']>0)parts.push(reclaimAgg['crash']+' crash');
+    bd.textContent='+'+reclaimTotal.toLocaleString()+' re-processed ('+parts.join(', ')+')';
+    bd.style.display='block';
+  } else { bd.style.display='none'; }
+  const pct=total>0?Math.round(distinctDone/total*100):0;
   document.getElementById('runProgBar').style.width=pct+'%';
   document.getElementById('rs-pct').textContent=pct+'%';
-  if(done>0&&runStartTime){const mins=(Date.now()-runStartTime)/60000;const rate=mins>0?Math.round(done/mins):0;document.getElementById('rs-rate').textContent=rate.toLocaleString();const remain=total-done;const eta=rate>0?Math.round(remain/rate):0;document.getElementById('rs-eta').textContent=eta>60?Math.round(eta/60)+'h':eta+'m';}
-  document.getElementById('runStatusMsg').textContent='Pool · '+st.liveWorkers+' worker(s) live, target '+st.desiredWorkers+' · '+done.toLocaleString()+'/'+total.toLocaleString()+' rows';
+  if(distinctDone>0&&runStartTime){const mins=(Date.now()-runStartTime)/60000;const rate=mins>0?Math.round(distinctDone/mins):0;document.getElementById('rs-rate').textContent=rate.toLocaleString();const remain=total-distinctDone;const eta=rate>0?Math.round(remain/rate):0;document.getElementById('rs-eta').textContent=eta>60?Math.round(eta/60)+'h':eta+'m';}
+  document.getElementById('runStatusMsg').textContent='Pool · '+st.liveWorkers+' worker(s) live, target '+st.desiredWorkers+' · '+distinctDone.toLocaleString()+'/'+total.toLocaleString()+' rows';
 }
 
 // Render the staged-jobs list. When the pool is running, jobs show live progress and the

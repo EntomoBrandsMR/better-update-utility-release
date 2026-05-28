@@ -265,6 +265,13 @@ function coordEmitStatus(){
   const jobs = Array.from(COORD.jobs.values()).map(j => ({
     jobId: j.jobId, label: j.label, totalRows: j.totalRows,
     done: j.done, ok: j.ok, err: j.err, skip: j.skip,
+    // v2.2.3 Session 3B (A5): distinctDone is the number of UNIQUE rows that have completed
+    // (counted via the journal-backed completedRows set). j.done counts every row-result
+    // emit including reclaim re-processes, so distinctDone is the trustworthy headline.
+    // reclaimsTotal + reclaimsByReason expose the "+N re-processed" breakdown line.
+    distinctDone: (j.completedRows ? j.completedRows.size : j.done),
+    reclaimsTotal: j.reclaimsTotal || 0,
+    reclaimsByReason: j.reclaimsByReason || { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 },
     remaining: Math.max(0, j.totalRows - (j.nextRow - 1)), finished: j.finished,
   }));
   const workers = Array.from(COORD.workers.values()).map(w => ({
@@ -388,9 +395,22 @@ async function coordSpawnWorker(){
       const cjob = COORD.jobs.get(w.jobId);
       if(cjob && Array.isArray(w.batch) && w.batch.length){
         if(!cjob.requeue) cjob.requeue = [];
+        // v2.2.3 Session 3B (A5): tally crash reclaims separately. Idempotent guard:
+        // only count rows that weren't already requeued (e.g. by a worker-side 'reclaim'
+        // message that did arrive). The set-of-already-requeued check avoids double-counting
+        // when the worker emitted reclaim AND then the process closed.
+        const alreadyRequeued = new Set(cjob.requeue);
+        let crashCount = 0;
         for(const r of w.batch){
           if(cjob.completedRows && cjob.completedRows.has(r)) continue;
+          if(alreadyRequeued.has(r)) continue;
           cjob.requeue.push(r);
+          crashCount++;
+        }
+        if(crashCount > 0){
+          if(!cjob.reclaimsByReason) cjob.reclaimsByReason = { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 };
+          cjob.reclaimsByReason.crash += crashCount;
+          cjob.reclaimsTotal = (cjob.reclaimsTotal || 0) + crashCount;
         }
         if(cjob.requeue.length) cjob.finished = false;
       }
@@ -545,11 +565,24 @@ function coordHandleWorkerMessage(workerId, msg){
       // completed. Clearing job.finished and the rows still being in requeue blocks completion
       // (coordAllDrained returns false while any requeue is non-empty), so the pool cannot report
       // "done" with rows outstanding — the exact silent-loss bug this fixes.
+      // v2.2.3 Session 3B (A5): tally reclaims by reason for the counter display.
+      // msg.reason is one of: 'drain' | 'user-stop' | 'breaker'. Old workers (pre-3B) won't
+      // send a reason — default to 'drain' for back-compat.
       if(job && Array.isArray(msg.rows) && msg.rows.length){
         if(!job.requeue) job.requeue = [];
+        const alreadyRequeued = new Set(job.requeue);
+        let counted = 0;
         for(const r of msg.rows){
           if(job.completedRows && job.completedRows.has(r)) continue;
+          if(alreadyRequeued.has(r)) continue;
           job.requeue.push(r);
+          counted++;
+        }
+        if(counted > 0){
+          const reason = (msg.reason === 'user-stop' || msg.reason === 'breaker' || msg.reason === 'drain') ? msg.reason : 'drain';
+          if(!job.reclaimsByReason) job.reclaimsByReason = { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 };
+          job.reclaimsByReason[reason] += counted;
+          job.reclaimsTotal = (job.reclaimsTotal || 0) + counted;
         }
         job.finished = false;
       }
@@ -1290,6 +1323,17 @@ ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath,
     retryRowIndexes: _retrySet,
     reauthIntervalMin: Number.isFinite(_ri) ? Math.max(0, _ri) : 0,
     done: 0, ok: 0, err: 0, skip: 0, finished: false,
+    // v2.2.3 Session 3B (A5): track distinct rows that have completed via a Set so the
+    // headline counter is reclaim-aware (j.done includes reclaim re-completions and would
+    // exceed totalRows; distinctDone == completedRows.size is the trustworthy number).
+    // Resume re-seeds this from the journal in coordResumeFromJournal.
+    completedRows: new Set(),
+    // Reclaim tally for the breakdown line — incremented in the 'reclaim' case + the crash
+    // catch-all in proc.on('close'). reclaimsByReason buckets by cause; reclaimsTotal is the
+    // sum for the headline. Both reset on a fresh submit (resume doesn't persist these in
+    // the journal meta today; tally restarts at zero on resume — documented in v2.2.3 doc).
+    reclaimsTotal: 0,
+    reclaimsByReason: { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 },
   });
   coordEmitStatus();
   return { ok: true, jobId, totalRows: total, startRow };
@@ -2236,6 +2280,14 @@ async function main(){
   // v2.2.1: holds the unstarted tail of the current batch when a drain interrupts mid-batch, so
   // we can hand those rows back to the coordinator (lossless reclaim) before shutting down.
   let _reclaimRows = [];
+  // v2.2.3 Session 3B (A5): tag each reclaim with WHY it happened so the coordinator can
+  // tally "+N re-processed (X drain, Y breaker, Z user-stop)". Reasons used:
+  //   'drain'     — coordinator sent a drain command (scale-down / pool-stop / sweep)
+  //   'user-stop' — user clicked Stop mid-step or at a step-row pause
+  //   'breaker'   — circuit breaker tripped on consecutive errors
+  // Crash reclaims are tagged by the coordinator's catch-all path (where the worker can't
+  // emit anything because it's already gone).
+  let _reclaimReason = 'drain';
   // v2.2.2 Session 2E: circuit-breaker counters + re-auth timer scoped to main() so they
   // persist across batches. consecutiveErrors resets on any success; lastSuccessfulRow lets
   // the trip annotation say where progress stopped. nextReauthAt=0 disables proactive re-auth.
@@ -2297,6 +2349,7 @@ async function main(){
         if(e && e.message === '__STOP__'){
           _draining = true;
           _reclaimRows = msg.rows.slice(_bi+1);  // any rows not yet started
+          _reclaimReason = 'user-stop';  // v2.2.3 Session 3B (A5)
           emit({type:'row-result', row:rowNum, status:'stopped', error:'User stop during step-through', durationMs:Date.now()-t0});
           _currentRowNum = null; _currentRow = null;
           break;
@@ -2340,6 +2393,7 @@ async function main(){
         emit({type:'circuit-breaker', rowNum:rowNum, consecutiveErrors:consecutiveErrors, lastSuccessfulRow:lastSuccessfulRow});
         _draining = true;
         _reclaimRows = msg.rows.slice(_bi+1);
+        _reclaimReason = 'breaker';  // v2.2.3 Session 3B (A5)
         break;
       }
       // v2.2.2 Session 2C: pause AFTER row in step-row mode. Same gating as buildRunner
@@ -2352,6 +2406,7 @@ async function main(){
         if(currentMode === 'stop'){
           _draining = true;
           _reclaimRows = msg.rows.slice(_bi+1);
+          _reclaimReason = 'user-stop';  // v2.2.3 Session 3B (A5)
           break;
         }
       }
@@ -2362,7 +2417,10 @@ async function main(){
   // rows from the interrupted batch that we never started. The coordinator pushes these into
   // job.requeue (skipping anything already completed) so another worker drains them. This MUST
   // be emitted before logout so the message is flushed while stdout is still open.
-  if(_reclaimRows && _reclaimRows.length){ emit({type:'reclaim', rows:_reclaimRows}); }
+  // v2.2.3 Session 3B (A5): tag with the reason so the coordinator can tally
+  // "+N re-processed (X drain, Y user-stop, Z breaker)". Default reason 'drain' covers
+  // the coordinator-sent drain command (scale-down / pool-stop / sweep).
+  if(_reclaimRows && _reclaimRows.length){ emit({type:'reclaim', rows:_reclaimRows, reason:_reclaimReason}); }
 
   // v2.1.0: shutdown sequence on drain. Report each phase so the UI can show
 // 'shutting down' -> 'logging out' -> gone. Logout MUST happen (frees the PestPac license),
