@@ -148,6 +148,14 @@ function coordJournalAppend(jobId, row, status){
   try{ COORD.journalStream.write(JSON.stringify({ j: jobId, r: row, s: status }) + '\n'); }catch(e){}
 }
 
+// v2.2.3 Session 3A (A3): append a dialog record to the journal. Separate from row records
+// because dialogs can fire mid-step (multiple per row possible) and we want to keep the row
+// record minimal. Discriminated by the `t` field; coordReadJournal needs to filter both.
+function coordJournalAppendDialog(jobId, rowNum, message, dialogType, ts){
+  if(!COORD.journalStream) return;
+  try{ COORD.journalStream.write(JSON.stringify({ t:'dlg', j:jobId, r:rowNum, m:message, k:dialogType, ts:ts }) + '\n'); }catch(e){}
+}
+
 // Close + clean up the journal on clean pool completion (nothing to resume).
 function coordCloseJournal(deleteFiles){
   try{ if(COORD.journalStream){ COORD.journalStream.end(); COORD.journalStream = null; } }catch(e){}
@@ -184,7 +192,10 @@ function coordFindOrphanPools(){
       const jp = coordJournalPath(poolId);
       if(fs.existsSync(jp)){
         const lines = fs.readFileSync(jp, 'utf8').split('\n');
-        for(const line of lines){ if(!line) continue; try{ const rec = JSON.parse(line); (completedByJob[rec.j] = completedByJob[rec.j] || new Set()).add(rec.r); }catch{} }
+        // v2.2.3 Session 3A (A3): journal now mixes completion records {j,r,s} with dialog
+        // records {t:'dlg',j,r,m,k,ts}. Only completion records (no `t` field) count toward
+        // completedRows. Skip dialogs here so they don't mark uncompleted rows as done.
+        for(const line of lines){ if(!line) continue; try{ const rec = JSON.parse(line); if(rec.t === 'dlg') continue; (completedByJob[rec.j] = completedByJob[rec.j] || new Set()).add(rec.r); }catch{} }
       }
       let totalRemaining = 0;
       const jobs = meta.jobs.map(j => {
@@ -458,6 +469,20 @@ function coordHandleWorkerMessage(workerId, msg){
       break;
     case 'shutting-down':
       w.status = 'shutting-down';
+      break;
+    case 'dialog':
+      // v2.2.3 Session 3A (A3): a dialog fired in this worker. Append a discriminated record
+      // to the journal so post-run forensics can see "row N triggered this exact prompt".
+      // Also forward to renderer for live display in the worker card.
+      coordJournalAppendDialog(w.jobId, msg.row, msg.message, msg.dialogType, msg.ts);
+      if (mainWindow) mainWindow.webContents.send('pool-dialog', {
+        workerId: workerId,
+        jobId: w.jobId,
+        row: msg.row,
+        message: msg.message,
+        dialogType: msg.dialogType,
+        ts: msg.ts,
+      });
       break;
     case 'circuit-breaker':
       // v2.2.2 Session 2E: a worker tripped its breaker. Log it to coord console; the worker
@@ -1499,10 +1524,12 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
   try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch(e){ return { ok:false, error:'Could not read resume metadata: '+e.message }; }
 
   // Load completed rows per job from the journal.
+  // v2.2.3 Session 3A (A3): journal now mixes completion records {j,r,s} with dialog records
+  // {t:'dlg',j,r,m,k,ts}. Only completion records count toward completedRows on resume.
   const completedByJob = {};
   if (fs.existsSync(jp)) {
     const lines = fs.readFileSync(jp, 'utf8').split('\n');
-    for (const line of lines){ if(!line) continue; try{ const rec=JSON.parse(line); (completedByJob[rec.j]=completedByJob[rec.j]||new Set()).add(rec.r); }catch{} }
+    for (const line of lines){ if(!line) continue; try{ const rec=JSON.parse(line); if(rec.t === 'dlg') continue; (completedByJob[rec.j]=completedByJob[rec.j]||new Set()).add(rec.r); }catch{} }
   }
 
   // Rebuild COORD.jobs from meta, pre-seeding completedRows.
@@ -1600,6 +1627,11 @@ ipcMain.handle('pool-read-journal', async (_, args) => {
   try { if (fs.existsSync(metaPath)) meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch {}
   const labelByJob = {}; for (const j of (meta.jobs||[])) labelByJob[j.jobId] = j.label;
   const rows = [];
+  // v2.2.3 Session 3A (A3): also collect dialog records into a separate stream so the
+  // merged-log viewer can show "this row had a dialog with message X". Same dialogs appear
+  // in the per-worker xlsx Log sheet (under the 'dialogs' column), but the merged log
+  // aggregates across workers/jobs which is more useful for forensics.
+  const dialogs = [];
   const counts = { ok: 0, skip: 0, error: 0, total: 0 };
   try {
     const lines = fs.readFileSync(jp, 'utf8').split('\n');
@@ -1607,6 +1639,11 @@ ipcMain.handle('pool-read-journal', async (_, args) => {
       if (!line) continue;
       try {
         const rec = JSON.parse(line);
+        // Dialog record: {t:'dlg', j, r, m, k, ts}. Not a row completion; skip counter logic.
+        if (rec.t === 'dlg') {
+          dialogs.push({ job: labelByJob[rec.j] || rec.j, row: rec.r, message: rec.m, dialogType: rec.k, ts: rec.ts });
+          continue;
+        }
         const status = rec.s;
         rows.push({ job: labelByJob[rec.j] || rec.j, row: rec.r, status });
         counts.total++;
@@ -1617,7 +1654,7 @@ ipcMain.handle('pool-read-journal', async (_, args) => {
     }
   } catch (e) { return { ok: false, error: e.message }; }
   rows.sort((a,b) => a.row - b.row);
-  return { ok: true, poolId, jobs: (meta.jobs||[]).map(j=>({jobId:j.jobId,label:j.label})), rows, counts };
+  return { ok: true, poolId, jobs: (meta.jobs||[]).map(j=>({jobId:j.jobId,label:j.label})), rows, dialogs, counts };
 });
 
 // Scale the live worker count toward `target`: spawn if below, retire surplus if above.
@@ -1806,6 +1843,12 @@ let _draining = false;
 // currentMode: 'run-all' | 'step' | 'step-row' | 'stop'.
 // 'stop' triggers an in-progress pause to release and a clean drain shortly after.
 let currentMode = START_MODE;
+// v2.2.3 Session 3A (A3): track the row currently being processed so the blanket dialog
+// listener can attribute dialogs to the right row. Set by the batch loop before processRow,
+// cleared after row-result. The current row object is also exposed so the listener can
+// push captured dialogs into row.__dialogs for the per-worker xlsx log.
+let _currentRowNum = null;
+let _currentRow = null;
 const _readline = require('readline');
 const _rl = _readline.createInterface({ input: process.stdin, terminal: false });
 _rl.on('line', function(line){
@@ -2118,17 +2161,26 @@ async function processRow(page, row, creds, rowNum){
         }
       }
       // v2.2.2 Session 2D: enrich failure with error category/phase columns (was buildRunner-only).
+      // v2.2.3 Session 3A (A4): retry-exhaustion is an ERROR, not a skip. Pre-2.2.3 we used
+      // 'skip' for any non-ok outcome (legacy from v1.x); A4 reserves 'skip' for user-chosen
+      // filtering only — Next-row sentinels and retry-row-filter exclusions. Genuine
+      // automation failures are 'error'. Counters, journal, and coordinator bookkeeping all
+      // treat these distinctly after Session 3B.
       const errMsg = 'After '+attemptN+' retries: '+lastErr.message;
       return {
-        status:'skip',
+        status:'error',
         error: errMsg,
         failedStep: done[done.length-1]||'?',
         errorCategory: classifyError(errMsg),
         phase: classifyPhase(errMsg)
       };
     }
+    // v2.2.3 Session 3A (A4): same reclassification for the errHandle='skip' path. When the
+    // user picked "skip on error" as their handling strategy, a failed row is still an error
+    // (BUU couldn't make it work), just not retried. Reserving 'skip' for user-chosen
+    // filtering keeps the distinction clean.
     return {
-      status:'skip',
+      status:'error',
       error: e.message,
       failedStep: done[done.length-1]||'?',
       errorCategory: classifyError(e.message),
@@ -2142,6 +2194,31 @@ async function main(){
   const ALL_ROWS = loadAllRows(SPREADSHEET);
   const browser = await chromium.launch({ headless:true, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage','--disable-background-timer-throttling'] });
   const page = await (await browser.newContext()).newPage();
+
+  // v2.2.3 Session 3A (A3): blanket dialog listener. Logs every dialog (PestPac validation
+  // popups, confirmation dialogs, alerts) regardless of whether a Handle Dialog step is
+  // registered. Multiple page.on('dialog') listeners are all called by Playwright — the
+  // Handle Dialog step's specific listener still does the accept/dismiss; this one only
+  // observes. If NO listener calls accept/dismiss, Playwright auto-dismisses, which is the
+  // pre-2.2.3 default behavior for unhandled dialogs. Captured dialogs flow two places:
+  //   1) row.__dialogs[] on the current row, written to the per-worker xlsx Log sheet
+  //   2) emit({type:'dialog', ...}) so the coordinator journals it into the merged log
+  page.on('dialog', dialog => {
+    try {
+      const message = dialog.message();
+      const dialogType = dialog.type();  // 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+      const captured = { ts: new Date().toISOString(), message: message, dialogType: dialogType, row: _currentRowNum };
+      // Stash on the current row (if any). Setup/teardown have _currentRow=null; the emit
+      // below still captures the dialog text into the journal, which is what matters.
+      if (_currentRow) {
+        if (!_currentRow.__dialogs) _currentRow.__dialogs = [];
+        _currentRow.__dialogs.push(captured);
+      }
+      emit({ type:'dialog', row: _currentRowNum, message: message, dialogType: dialogType, ts: captured.ts });
+    } catch (e) { /* logging never throws */ }
+    // Intentionally NOT calling accept/dismiss here — that's the Handle Dialog step's job,
+    // or Playwright's default auto-dismiss otherwise.
+  });
 
   // v2.1.0: report the login phase so the UI shows 'logging in' before 'running'.
   emit({type:'logging-in'});
@@ -2207,6 +2284,10 @@ async function main(){
       // batchPos/batchSize = e.g. 3/10 (which row of this batch); totalSteps for the step counter.
       emit({type:'row-start', row:rowNum, batchPos:_bi+1, batchSize:msg.rows.length});
       const t0=Date.now();
+      // v2.2.3 Session 3A (A3): set the row-attribution globals so the blanket dialog
+      // listener can tag captured dialogs with this row. Cleared after row-result emit.
+      _currentRowNum = rowNum;
+      _currentRow = row;
       // v2.2.2 Session 2C: processRow throws __STOP__ when user clicked Stop mid-step.
       // Catch it here so the batch loop can drain cleanly (with the rest of the batch
       // released to the coordinator via _reclaimRows).
@@ -2217,24 +2298,37 @@ async function main(){
           _draining = true;
           _reclaimRows = msg.rows.slice(_bi+1);  // any rows not yet started
           emit({type:'row-result', row:rowNum, status:'stopped', error:'User stop during step-through', durationMs:Date.now()-t0});
+          _currentRowNum = null; _currentRow = null;
           break;
         }
+        _currentRowNum = null; _currentRow = null;
         throw e;
       }
       const entry={ row:rowNum, timestamp:new Date().toISOString(), url:row.URL||row.url||'', status:res.status, error:res.error||'', failedStep:res.failedStep||'', fieldsWritten:res.fieldsWritten||'', durationMs:Date.now()-t0,
         // v2.2.2 Session 2D: forensic columns from the classifier (populated on failure).
-        errorCategory: res.errorCategory || '', phase: res.phase || '' };
+        errorCategory: res.errorCategory || '', phase: res.phase || '',
+        // v2.2.3 Session 3A (A3): serialize captured dialogs for the worker xlsx log.
+        // Empty string when none; pipe-separated list of messages when present so the
+        // xlsx column is readable as a single cell.
+        dialogs: (row.__dialogs && row.__dialogs.length) ? row.__dialogs.map(d => d.dialogType + ': ' + d.message).join(' | ') : '' };
       addLog(entry);
       // v2.2.0: include any read-field values captured this row so the coordinator can write the
       // dedicated results workbook. row.__reads is { colName: {value,label,out} }.
       // v2.2.2 Session 2D: also pass errorCategory/phase so the renderer can show categorized failures.
+      // v2.2.3 Session 3A (A3): also pass captured dialogs through to the coordinator/renderer.
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null,
-        errorCategory: res.errorCategory || '', phase: res.phase || ''});
-      // v2.2.2 Session 2E: circuit breaker bookkeeping. Counts toward trip only for genuine
-      // skips (errored rows); user-skip (status='skip' with error starting "Skipped via Next")
-      // and 'ok'/'ok (retry)' don't count. On a trip, drain the worker so the coordinator
-      // can stop the pool cleanly via the existing reclaim path.
-      const _isUserSkip = res.status === 'skip' && /^Skipped via Next-row/.test(res.error || '');
+        errorCategory: res.errorCategory || '', phase: res.phase || '',
+        dialogs: row.__dialogs || null});
+      _currentRowNum = null; _currentRow = null;
+      // v2.2.2 Session 2E: circuit breaker bookkeeping. ok/ok-retry reset the counter;
+      // user-chosen skips (Next-row or retry-row-filter exclusions) don't count. Genuine
+      // errors increment.
+      // v2.2.3 Session 3A (A4): now that 'skip' is reserved for user-chosen filtering only,
+      // ANY status='skip' is a user/filter skip and should NOT increment the breaker counter.
+      // The old regex check is redundant (kept as a belt-and-suspenders heuristic for any
+      // weird path that still uses 'skip' with a non-user error message — shouldn't exist
+      // after A4 but cheap to leave in).
+      const _isUserSkip = res.status === 'skip';
       if (res.status === 'ok' || res.status === 'ok (retry)') {
         consecutiveErrors = 0;
         lastSuccessfulRow = rowNum;

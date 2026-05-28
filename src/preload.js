@@ -219,4 +219,8 @@ contextBridge.exposeInMainWorld('api', {
   onPoolReadResults:   (cb)    => ipcRenderer.on('pool-read-results', (_, d) => cb(d)),
   onPoolLicenseUpdate: (cb)    => ipcRenderer.on('pool-license-update', (_, d) => cb(d)),
   onPoolPause:         (cb)    => ipcRenderer.on('pool-pause', (_, d) => cb(d)),
+  // v2.2.3 Session 3A (A3): per-worker dialog events. Captures every dialog (alert/confirm/
+  // prompt/beforeunload) along with its text and the row it fired during. Renderer can show
+  // a "recent dialogs" pane or attach to a worker card.
+  onPoolDialog:        (cb)    => ipcRenderer.on('pool-dialog', (_, d) => cb(d)),
 });

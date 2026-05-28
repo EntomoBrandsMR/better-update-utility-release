@@ -133,6 +133,46 @@ v2.2.2 Tier 1.
 
 ---
 
+## SCOPE CALIBRATION (added 2026-05-28 at v2.2.3 kickoff)
+
+Acceptance criterion 6 reads "one place in the unified runtime, not three." Reality check
+on the state v2.2.2 actually shipped: the single-runner was deleted, but the pool worker,
+once-flow runner, and logout sweeper are still three separate template builders with their
+own `runStep` switches. They share helper SRC constants (login, selectors, network probe,
+classifiers) but the per-step engine itself is duplicated.
+
+What this means for v2.2.3:
+- A1 (diagnostic capture per row), A2 (verify-after-action), A4 (skip/error
+  reclassification), A5 (counter display) — these are PER-ROW concerns that live in the
+  pool worker's batch loop. ONE place. Criterion 6 is met for them as written.
+- A3 (dialog text always logged) — touches the `dialog` step type. That step lives in
+  the pool worker's runStep AND the once-flow runner's runStep. Two places. The once-flow
+  runner is short (only setup/teardown), so the cost is minor — but I'm flagging this in
+  case "true one-place" is the bar Matthew wants. If so, that's an extra structural step
+  (extract runStep into a canonical SRC constant) that should come BEFORE A3 implementation.
+- B2 / B4 / B5 — pure renderer + main-process changes, not runtime-template changes.
+
+Default plan: ship A1, A2, A4, A5 in the pool worker. Ship A3 in both the pool worker AND
+the once-flow runner (two-line dup). If Matthew wants A3 to be "one place" before shipping,
+flag it on review and extract runStep then. The acceptance criterion is still met for the
+work that motivated v2.2.3 (false-ok reporting on per-row work).
+
+---
+
+## TIER 3 PROGRESS
+
+Updated as each session lands.
+
+- [x] 3A — A3 (dialog text always logged) + A4 (skip/error reclassification). Pool worker installs a blanket page.on('dialog') listener at page setup that captures every dialog (alert/confirm/prompt/beforeunload), stashes it on row.__dialogs for the per-worker xlsx Log, and emits a 'dialog' event to the coordinator. _currentRowNum/_currentRow track the in-flight row so dialogs are correctly attributed. The existing Handle Dialog step's specific accept/dismiss handler is unchanged (Playwright calls multiple listeners). Coordinator writes dialog records to the journal as discriminated entries {t:'dlg',j,r,m,k,ts} — journal-read paths (orphan scan, resume, pool-read-journal) updated to filter dialog records out of completion counts. Renderer exposed onPoolDialog via preload. A4: retry-exhaustion and errHandle='skip' paths now return status='error' instead of 'skip'. 'skip' is reserved for user-chosen filtering (Next-row sentinel + retry-row-filter exclusions). Circuit-breaker logic updated: any status='skip' is a user skip (doesn't count toward the breaker), errors count, ok/ok-retry reset.
+- [ ] 3B — A5 (counter display refinement)
+- [ ] 3C — A1 (diagnostic capture on every row failure)
+- [ ] 3D — A2 (verify-after-action pass)
+- [ ] 3E — B4 (log retention)
+- [ ] 3F — B2 (working-data convention enforcement)
+- [ ] 3G — Validation + version bump to 2.2.3
+
+---
+
 ## NOTES FOR FUTURE CLAUDE SESSION
 
 - Matthew explicitly said: ship the major cleanup AND reporting. v2.2.2 took unification +
