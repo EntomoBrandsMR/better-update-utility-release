@@ -296,7 +296,14 @@ async function coordSpawnWorker(){
     logPath,
     chromiumExePath: chromiumExe,
     errHandle: job.errHandle || 'retry',
-    selectorTimeout: 30, pageLoadMode: 'domcontentloaded', retryCount: 2,
+    selectorTimeout: 30, pageLoadMode: 'domcontentloaded',
+    // v2.2.2 Session 2E: per-job runtime knobs forwarded to the worker template.
+    // retryCount defaults to 2 (prior hardcode); breakerThreshold 0 means disabled;
+    // retryRowIndexes null = process all rows; reauthIntervalMin 0 = no proactive re-auth.
+    retryCount: Number.isFinite(job.retryCount) ? job.retryCount : 2,
+    breakerThreshold: Number.isFinite(job.breakerThreshold) ? job.breakerThreshold : 0,
+    retryRowIndexes: Array.isArray(job.retryRowIndexes) ? job.retryRowIndexes : null,
+    reauthIntervalMin: Number.isFinite(job.reauthIntervalMin) ? job.reauthIntervalMin : 0,
     // v2.2.2 Session 2C: passing the pool-level startMode so the worker knows whether to
     // pause before each step (step), pause after each row (step-row), or just run (run-all).
     startMode: COORD.startMode || 'run-all',
@@ -422,6 +429,14 @@ function coordHandleWorkerMessage(workerId, msg){
       break;
     case 'shutting-down':
       w.status = 'shutting-down';
+      break;
+    case 'circuit-breaker':
+      // v2.2.2 Session 2E: a worker tripped its breaker. Log it to coord console; the worker
+      // is already draining itself + reclaiming the tail of its batch (so other workers in
+      // the pool keep going on this job's remaining rows). Surface as a coord-side log so it
+      // shows up in the pool status panel for the user.
+      console.warn('[coord] worker '+workerId+' tripped circuit breaker after '+msg.consecutiveErrors+' consecutive errors (last ok row: '+msg.lastSuccessfulRow+')');
+      w.breakerTripped = true;
       break;
     case 'logging-out':
       w.status = 'logging-out';
@@ -1183,7 +1198,7 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
 
 // Submit a job into the (not-yet-started) pool. Returns the jobId. Jobs are staged, then
 // 'pool-start' spawns workers to drain them. flowSteps is the full allSteps array.
-ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, resumeFromRow }) => {
+ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, resumeFromRow, retryCount, breakerThreshold, retryRowIndexes, reauthIntervalMin }) => {
   if (COORD.active) return { ok: false, error: 'Pool is already running. Stop it before staging new jobs.' };
   const total = countRowsSync(spreadsheetPath);
   if (total <= 0) return { ok: false, error: 'Could not read rows from ' + spreadsheetPath };
@@ -1195,12 +1210,31 @@ ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath,
   let startRow = parseInt(resumeFromRow);
   if (!Number.isFinite(startRow) || startRow < 1) startRow = 1;
   if (startRow > total + 1) startRow = total + 1;
+  // v2.2.2 Session 2E: per-job runtime knobs, previously single-runner-only.
+  // retryCount: bounded retries per row when errHandle='retry'. Default 2 matches the
+  //   previous coordSpawnWorker hardcode.
+  // breakerThreshold: stop the worker if this many consecutive rows fail. 0 = disabled.
+  //   (Coordinator marks the job finished + drains the worker when it trips.)
+  // retryRowIndexes: optional array of 1-based source row numbers — if set, the worker
+  //   processes ONLY those rows (skips all others). Used for retry-failed mode.
+  // reauthIntervalMin: optional re-auth interval in minutes; 0 = disabled.
+  const _rc = parseInt(retryCount);
+  const _bt = parseInt(breakerThreshold);
+  const _ri = parseInt(reauthIntervalMin);
+  const _retrySet = Array.isArray(retryRowIndexes)
+    ? retryRowIndexes.map(n => parseInt(n)).filter(n => Number.isFinite(n) && n >= 1)
+    : null;
   COORD.jobs.set(jobId, {
     jobId, label: label || path.basename(spreadsheetPath),
     flowSteps, spreadsheetPath, profileId,
     setupFlowId: setupFlowId || null, teardownFlowId: teardownFlowId || null,
     errHandle: errHandle || 'retry',
     totalRows: total, nextRow: startRow, startRow,
+    // v2.2.2 Session 2E knobs (passed through to worker via coordSpawnWorker)
+    retryCount: Number.isFinite(_rc) ? Math.max(0, _rc) : 2,
+    breakerThreshold: Number.isFinite(_bt) ? Math.max(0, _bt) : 0,
+    retryRowIndexes: _retrySet,
+    reauthIntervalMin: Number.isFinite(_ri) ? Math.max(0, _ri) : 0,
     done: 0, ok: 0, err: 0, skip: 0, finished: false,
   });
   coordEmitStatus();
@@ -3410,6 +3444,8 @@ function buildPoolWorker(cfg){
     flowSteps, setupSteps = [], teardownSteps = [], spreadsheetPath, logPath,
     chromiumExePath, errHandle = 'retry', selectorTimeout = 30,
     pageLoadMode = 'domcontentloaded', retryCount = 2, runContext = {},
+    // v2.2.2 Session 2E: per-job runtime knobs.
+    breakerThreshold = 0, retryRowIndexes = null, reauthIntervalMin = 0,
   } = cfg;
   return `
 'use strict';
@@ -3434,6 +3470,14 @@ const PAGE_LOAD_MODE = ${JSON.stringify(pageLoadMode)};
 // large account, so this is 90s (vs the old hardcoded 30s) to cut false skips on slow loads.
 const NAV_TIMEOUT = 90000;
 const RETRY_COUNT = ${parseInt(retryCount)};
+// v2.2.2 Session 2E: per-job knobs. BREAKER_THRESHOLD=0 disables the circuit breaker.
+// RETRY_ROW_INDEXES=null processes all rows; an array (-> Set below) restricts to those row
+// numbers (retry-failed mode). REAUTH_INTERVAL_MS=0 disables proactive re-auth; otherwise
+// the worker re-logs-in at the next row boundary after the timer elapses.
+const BREAKER_THRESHOLD = ${parseInt(breakerThreshold) || 0};
+const RETRY_ROW_INDEXES = ${retryRowIndexes && retryRowIndexes.length ? JSON.stringify(retryRowIndexes) : 'null'};
+const REAUTH_INTERVAL_MS = ${(parseInt(reauthIntervalMin) || 0) * 60 * 1000};
+const RETRY_ROW_SET = RETRY_ROW_INDEXES ? new Set(RETRY_ROW_INDEXES) : null;
 const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
 const FLOW_STEPS = ${JSON.stringify(flowSteps)};
 const SETUP_STEPS = ${JSON.stringify(setupSteps)};
@@ -3816,6 +3860,12 @@ async function main(){
   // v2.2.1: holds the unstarted tail of the current batch when a drain interrupts mid-batch, so
   // we can hand those rows back to the coordinator (lossless reclaim) before shutting down.
   let _reclaimRows = [];
+  // v2.2.2 Session 2E: circuit-breaker counters + re-auth timer scoped to main() so they
+  // persist across batches. consecutiveErrors resets on any success; lastSuccessfulRow lets
+  // the trip annotation say where progress stopped. nextReauthAt=0 disables proactive re-auth.
+  let consecutiveErrors = 0;
+  let lastSuccessfulRow = 0;
+  let nextReauthAt = REAUTH_INTERVAL_MS > 0 ? Date.now() + REAUTH_INTERVAL_MS : 0;
   while(!_draining){
     const msg = await requestBatch();
     if(!msg || msg.cmd==='drain' || _draining){ break; }
@@ -3829,8 +3879,32 @@ async function main(){
       // up — otherwise these rows vanish silently. Capture the tail and break; the emit happens
       // after the loop, before the shutdown/logout sequence.
       if(_draining){ _reclaimRows = msg.rows.slice(_bi); break; }
+      // v2.2.2 Session 2E: retry-failed mode. RETRY_ROW_SET is non-null only when the user
+      // selected "retry failed rows" — in that case the worker silently skips any row not in
+      // the set (no row-result emit; coordinator counts these as processed via the journal).
+      // We emit a synthetic 'row-result' with status='skip' so coordinator bookkeeping stays
+      // consistent (otherwise the coordinator never sees this row close and the pool waits
+      // forever for it).
+      if (RETRY_ROW_SET && !RETRY_ROW_SET.has(rowNum)) {
+        emit({type:'row-result', row:rowNum, status:'skip', error:'(retry mode: row not in retry set)', durationMs:0});
+        continue;
+      }
       const row = ALL_ROWS[rowNum-1];
       if(!row){ emit({type:'row-result', row:rowNum, status:'skip', error:'row index out of range'}); continue; }
+      // v2.2.2 Session 2E: proactive re-auth at row boundary. Fires when the configured timer
+      // elapses (REAUTH_INTERVAL_MS > 0). Best-effort — failure is logged, row attempts the
+      // run anyway; if the session is genuinely dead the per-row failure + network-aware
+      // retry gate (Session 2D) handles it.
+      if (nextReauthAt > 0 && Date.now() >= nextReauthAt) {
+        emit({type:'log', message:'Re-authenticating (timer) before row '+rowNum});
+        try {
+          await loginToPestPac(page, creds);
+          nextReauthAt = Date.now() + REAUTH_INTERVAL_MS;
+          emit({type:'log', message:'Re-auth complete. Continuing.'});
+        } catch (e) {
+          emit({type:'log', message:'Re-auth failed: '+e.message+' — continuing; per-row retry will handle if needed.'});
+        }
+      }
       // batchPos/batchSize = e.g. 3/10 (which row of this batch); totalSteps for the step counter.
       emit({type:'row-start', row:rowNum, batchPos:_bi+1, batchSize:msg.rows.length});
       const t0=Date.now();
@@ -3857,6 +3931,24 @@ async function main(){
       // v2.2.2 Session 2D: also pass errorCategory/phase so the renderer can show categorized failures.
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null,
         errorCategory: res.errorCategory || '', phase: res.phase || ''});
+      // v2.2.2 Session 2E: circuit breaker bookkeeping. Counts toward trip only for genuine
+      // skips (errored rows); user-skip (status='skip' with error starting "Skipped via Next")
+      // and 'ok'/'ok (retry)' don't count. On a trip, drain the worker so the coordinator
+      // can stop the pool cleanly via the existing reclaim path.
+      const _isUserSkip = res.status === 'skip' && /^Skipped via Next-row/.test(res.error || '');
+      if (res.status === 'ok' || res.status === 'ok (retry)') {
+        consecutiveErrors = 0;
+        lastSuccessfulRow = rowNum;
+      } else if (!_isUserSkip) {
+        consecutiveErrors++;
+      }
+      if (BREAKER_THRESHOLD > 0 && consecutiveErrors >= BREAKER_THRESHOLD) {
+        emit({type:'log', message:'Circuit breaker tripped: '+consecutiveErrors+' consecutive errors. Last successful row: '+lastSuccessfulRow+'. Draining worker.'});
+        emit({type:'circuit-breaker', rowNum:rowNum, consecutiveErrors:consecutiveErrors, lastSuccessfulRow:lastSuccessfulRow});
+        _draining = true;
+        _reclaimRows = msg.rows.slice(_bi+1);
+        break;
+      }
       // v2.2.2 Session 2C: pause AFTER row in step-row mode. Same gating as buildRunner
       // (step-row pauses on the boundary so the user can verify the row's outcome in PestPac
       // before continuing). Skipped on the last row of the batch only if a drain has arrived;
