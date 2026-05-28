@@ -163,7 +163,7 @@ update `version-buu2.json` on `main` BOM-free.
 
 Updated as each session lands. Read this section first when picking the work back up.
 
-- [ ] 2A — helper dedup (findLocator, matchesText, findInContainer, resolveStepLocator, dec, emit, ms, _require)
+- [x] 2A — helper dedup (_require, findLocator + minimal variant, matchesText, findInContainer, resolveStepLocator). Shipped as commits TBD on 2026-05-28. dec/emit/ms intentionally NOT dedup'd (trivial one-liners, no drift risk, churn cost > payoff).
 - [ ] 2B — step-type parity (port textedit to pool, port readfield to single-runner)
 - [ ] 2C — pool worker gains step-by-step
 - [ ] 2D — network-aware retry + error classification port

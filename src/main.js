@@ -844,6 +844,153 @@ const LOGIN_TO_PESTPAC_SRC = `async function loginToPestPac(page, creds){
   await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
 }`;
 
+// ════════════════════════════════════════════════════════════════════════════
+// v2.2.2 (Session 2A) — SHARED RUNTIME HELPERS (drift-proof, template-interpolated)
+// ────────────────────────────────────────────────────────────────────────────
+// Each constant below is the canonical source of a helper that previously lived
+// duplicated across multiple spawned-child templates (buildRunner / buildPoolWorker /
+// buildLogoutSweeper / buildOnceFlowRunner). Each template now interpolates the
+// constant via ${NAME} instead of carrying its own copy. Same pattern as
+// LOGIN_TO_PESTPAC_SRC above. Helpers chosen for extraction are the substantive
+// shared ones (selector resolution, find-by-text); trivial one-liners like dec,
+// emit, ms intentionally remain inline — extracting them adds churn for no
+// behavioral payoff and they don't drift in practice.
+//
+// REQUIRE_FN_SRC: module resolution from spawned-child context. Both buildRunner
+// and buildPoolWorker declare _nm separately (it captures NODE_PATH at child
+// startup); _require itself depends on _nm being in scope. Templates that use
+// _require must also declare _nm before interpolating REQUIRE_FN_SRC.
+//
+// FIND_LOCATOR_FN_SRC: iframe-walking selector resolver. Used by every
+// step-engine template that needs to interact with PestPac form pages, which
+// render content inside iframes. Canonical version is buildRunner's
+// pretty-printed form with the detailed "Frames searched: [...]" error message.
+//
+// FIND_LOCATOR_MINIMAL_SRC: sweeper-only variant. Deliberately stripped (no
+// iframe walk) because the sweeper's only step types are login/logout, both of
+// which live in the top frame. Kept separate so the iframe-walking version
+// never gets used by mistake in a context that doesn't need it.
+//
+// MATCHES_TEXT_FN_SRC / FIND_IN_CONTAINER_FN_SRC / RESOLVE_STEP_LOCATOR_FN_SRC:
+// the find-by-text scoping stack (v1.3.0 Item 1). Only used by templates with a
+// full step engine (buildRunner, buildPoolWorker) — sweeper and once-flow runner
+// don't reference them, so they don't get interpolated there.
+// ════════════════════════════════════════════════════════════════════════════
+const REQUIRE_FN_SRC = `function _require(mod){
+  try{return require(mod);}catch(e){
+    try{return require(path.join(_nm,mod));}catch(e2){
+      throw new Error('Cannot find: '+mod+' (tried NODE_PATH: '+_nm+')');
+    }
+  }
+}`;
+
+const FIND_LOCATOR_FN_SRC = `async function findLocator(page, selector, opts){
+  opts = opts || {};
+  const timeoutMs = opts.timeout || 30000;
+  const pollMs = 250;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    // Top frame first (most common; cheapest path).
+    try {
+      const top = page.locator(selector);
+      if (await top.count() > 0) return top;
+    } catch (_) {}
+    // Walk every iframe. page.frames() includes the main frame, so skip it.
+    const main = page.mainFrame();
+    for (const f of page.frames()) {
+      if (f === main) continue;
+      try {
+        const inFrame = f.locator(selector);
+        if (await inFrame.count() > 0) return inFrame;
+      } catch (_) {
+        // Cross-origin frames throw on access; skip silently.
+      }
+    }
+    // Not found yet — wait briefly and re-scan.
+    await new Promise(function(r){ setTimeout(r, pollMs); });
+  }
+  // Final attempt with detailed error so the user knows where to look.
+  const frameInfo = page.frames().map(function(f){ return f.url() || '(blank)'; }).join(', ');
+  throw new Error('Selector "' + selector + '" not found in any frame after ' + timeoutMs + 'ms. Frames searched: [' + frameInfo + ']');
+}`;
+
+// Sweeper variant: NO iframe walk. Sweeper only handles login (top-frame form)
+// and logout (top-frame masthead link), so iframe walking is dead work and the
+// stripped version avoids any timing risk of polling iframes that don't exist.
+const FIND_LOCATOR_MINIMAL_SRC = `async function findLocator(page, selector, opts){
+  if(selector && selector.startsWith('xpath=')) return page.locator(selector);
+  return page.locator(selector);
+}`;
+
+const MATCHES_TEXT_FN_SRC = `function matchesText(haystack, needle, mode){
+  var h = (haystack == null ? '' : String(haystack));
+  var n = (needle == null ? '' : String(needle));
+  switch(mode || 'contains'){
+    case 'exact':       return h.trim() === n.trim();
+    case 'starts':      return h.trim().indexOf(n.trim()) === 0;
+    case 'ends':        { var ht = h.trim(), nt = n.trim(); return nt.length <= ht.length && ht.lastIndexOf(nt) === (ht.length - nt.length); }
+    case 'contains-ci': return h.trim().toLowerCase().indexOf(n.trim().toLowerCase()) !== -1;
+    case 'exact-ci':    return h.trim().toLowerCase() === n.trim().toLowerCase();
+    case 'regex':
+      try { return new RegExp(n).test(h); }
+      catch(e){ throw new Error('Find-by-text regex invalid: ' + n + ' — ' + e.message); }
+    case 'contains':
+    default:            return h.trim().indexOf(n.trim()) !== -1;
+  }
+}`;
+
+const FIND_IN_CONTAINER_FN_SRC = `async function findInContainer(page, containerSel, matchText, targetSel, mode, opts){
+  opts = opts || {};
+  var timeoutMs = opts.timeout || 30000;
+  var pollMs = 250;
+  var startedAt = Date.now();
+  var lastSeenCount = 0;
+  while (Date.now() - startedAt < timeoutMs) {
+    var frames = [page.mainFrame()];
+    for (var fi = 0; fi < page.frames().length; fi++) {
+      if (page.frames()[fi] !== page.mainFrame()) frames.push(page.frames()[fi]);
+    }
+    var matched = [];
+    for (var k = 0; k < frames.length; k++) {
+      var f = frames[k];
+      var containers;
+      try { containers = f.locator(containerSel); } catch(e){ continue; }
+      var count;
+      try { count = await containers.count(); } catch(e){ continue; }
+      for (var ci = 0; ci < count; ci++) {
+        var txt = '';
+        try { txt = await containers.nth(ci).innerText({timeout: 2000}); }
+        catch(e){
+          try { txt = await containers.nth(ci).textContent({timeout: 2000}) || ''; } catch(e2){ txt = ''; }
+        }
+        if (matchesText(txt, matchText, mode)) {
+          matched.push({ frame: f, index: ci });
+        }
+      }
+      lastSeenCount += count;
+    }
+    if (matched.length === 1) {
+      var m = matched[0];
+      var containerLoc = m.frame.locator(containerSel).nth(m.index);
+      if (!targetSel) return containerLoc;
+      return containerLoc.locator(targetSel);
+    }
+    if (matched.length > 1) {
+      throw new Error('Find-by-text matched ' + matched.length + ' containers for "' + matchText + '" (mode: ' + (mode||'contains') + '). Expected exactly 1. Make the match text more specific or narrow the container selector — BUU will not guess which one.');
+    }
+    await new Promise(function(r){ setTimeout(r, pollMs); });
+  }
+  throw new Error('Find-by-text found no container matching "' + matchText + '" (mode: ' + (mode||'contains') + ') in selector "' + containerSel + '" after ' + timeoutMs + 'ms. Containers seen during scan: ' + lastSeenCount + '. Check the match text/column value and the container selector.');
+}`;
+
+const RESOLVE_STEP_LOCATOR_FN_SRC = `async function resolveStepLocator(page, step, resolveFn){
+  if (step.findByText) {
+    var matchResolved = resolveFn(step.matchText || '');
+    return await findInContainer(page, step.containerSel || '', matchResolved, step.selector || '', step.matchMode || 'contains', {timeout: SELECTOR_TIMEOUT});
+  }
+  return await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+}`;
+
 // v2.2.1: log a coordinator-side license-reader session OUT before closing its browser.
 // RULE: any session that logs in counts as a consumed license for as long as it stays logged
 // in — there are NO exempt sessions. The elastic recheck (coordLicenseScale) and the Auto
@@ -1744,13 +1891,7 @@ const CRED_PATH = process.argv[3];
 
 // Resolve modules from app node_modules
 const _nm = process.env.NODE_PATH || path.join(__dirname);
-function _require(mod){
-  try{return require(mod);}catch(e){
-    try{return require(path.join(_nm,mod));}catch(e2){
-      throw new Error('Cannot find: '+mod+' (tried NODE_PATH: '+_nm+')');
-    }
-  }
-}
+${REQUIRE_FN_SRC}
 if(process.env.NODE_PATH){
   try{require('module').Module._initPaths();}catch(e){}
 }
@@ -2191,120 +2332,21 @@ ${LOGIN_TO_PESTPAC_SRC}
 // Returns: a Locator. Throws if no frame contains the selector after the timeout window.
 // Note: behaves identically to page.locator(...) when the selector IS in the top frame —
 // just adds one extra count() call. ~10–30ms overhead per step in the worst case.
-async function findLocator(page, selector, opts){
-  opts = opts || {};
-  const timeoutMs = opts.timeout || 30000;
-  const pollMs = 250;
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    // Top frame first (most common; cheapest path).
-    try {
-      const top = page.locator(selector);
-      if (await top.count() > 0) return top;
-    } catch (_) {}
-    // Walk every iframe. page.frames() includes the main frame, so skip it.
-    const main = page.mainFrame();
-    for (const f of page.frames()) {
-      if (f === main) continue;
-      try {
-        const inFrame = f.locator(selector);
-        if (await inFrame.count() > 0) return inFrame;
-      } catch (_) {
-        // Cross-origin frames throw on access; skip silently.
-      }
-    }
-    // Not found yet — wait briefly and re-scan. This handles "selector appears
-    // a few hundred ms after the previous step" without exhausting the timeout immediately.
-    await new Promise(function(r){ setTimeout(r, pollMs); });
-  }
-  // Final attempt with detailed error so the user knows where to look.
-  const frameInfo = page.frames().map(function(f){ return f.url() || '(blank)'; }).join(', ');
-  throw new Error('Selector "' + selector + '" not found in any frame after ' + timeoutMs + 'ms. Frames searched: [' + frameInfo + ']');
-}
+// v2.2.2 (Session 2A): selector resolution helpers sourced from the canonical
+// constants in main.js (FIND_LOCATOR_FN_SRC / MATCHES_TEXT_FN_SRC /
+// FIND_IN_CONTAINER_FN_SRC / RESOLVE_STEP_LOCATOR_FN_SRC). Same behavior as
+// the v1.2.6 / v1.3.0 originals — see those constants for full docstrings.
+// findLocator: iframe-walking selector resolver (top frame + every iframe, 250ms poll).
+// matchesText: text comparator for find-by-text (exact / starts / ends / contains / regex).
+// findInContainer: pick the single container whose text matches; throw on 0 or 2+.
+// resolveStepLocator: dispatches to findInContainer when step.findByText, else findLocator.
+${FIND_LOCATOR_FN_SRC}
 
-// v1.3.0 Item 1: text-match comparator for find-by-text scope. Compares a container's
-// visible text against the user's match text using the chosen mode. All non-regex modes
-// trim both sides first (PestPac cells are padded with whitespace/labels). Returns boolean.
-function matchesText(haystack, needle, mode){
-  var h = (haystack == null ? '' : String(haystack));
-  var n = (needle == null ? '' : String(needle));
-  switch(mode || 'contains'){
-    case 'exact':       return h.trim() === n.trim();
-    case 'starts':      return h.trim().indexOf(n.trim()) === 0;
-    case 'ends':        { var ht = h.trim(), nt = n.trim(); return nt.length <= ht.length && ht.lastIndexOf(nt) === (ht.length - nt.length); }
-    case 'contains-ci': return h.trim().toLowerCase().indexOf(n.trim().toLowerCase()) !== -1;
-    case 'exact-ci':    return h.trim().toLowerCase() === n.trim().toLowerCase();
-    case 'regex':
-      try { return new RegExp(n).test(h); }
-      catch(e){ throw new Error('Find-by-text regex invalid: ' + n + ' — ' + e.message); }
-    case 'contains':
-    default:            return h.trim().indexOf(n.trim()) !== -1;
-  }
-}
+${MATCHES_TEXT_FN_SRC}
 
-// v1.3.0 Item 1: find the single container (out of many look-alikes) whose visible text
-// matches matchText per mode, then return a locator scoped to targetSel INSIDE it. If
-// targetSel is empty, returns the matched container locator itself. Iframe-aware (reuses
-// the same top-frame-then-iframes walk as findLocator). Throws a clear error if zero or
-// more than one container matches — BUU never guesses which look-alike is the right one.
-async function findInContainer(page, containerSel, matchText, targetSel, mode, opts){
-  opts = opts || {};
-  var timeoutMs = opts.timeout || 30000;
-  var pollMs = 250;
-  var startedAt = Date.now();
-  var lastSeenCount = 0;
-  while (Date.now() - startedAt < timeoutMs) {
-    // Collect every frame to search: top frame first, then all iframes.
-    var frames = [page.mainFrame()];
-    for (var fi = 0; fi < page.frames().length; fi++) {
-      if (page.frames()[fi] !== page.mainFrame()) frames.push(page.frames()[fi]);
-    }
-    var matched = [];   // {frame, index} for each container whose text matches
-    for (var k = 0; k < frames.length; k++) {
-      var f = frames[k];
-      var containers;
-      try { containers = f.locator(containerSel); } catch(e){ continue; }
-      var count;
-      try { count = await containers.count(); } catch(e){ continue; }
-      for (var ci = 0; ci < count; ci++) {
-        var txt = '';
-        try { txt = await containers.nth(ci).innerText({timeout: 2000}); }
-        catch(e){
-          // innerText can fail on hidden nodes; fall back to textContent.
-          try { txt = await containers.nth(ci).textContent({timeout: 2000}) || ''; } catch(e2){ txt = ''; }
-        }
-        if (matchesText(txt, matchText, mode)) {
-          matched.push({ frame: f, index: ci });
-        }
-      }
-      lastSeenCount += count;
-    }
-    if (matched.length === 1) {
-      var m = matched[0];
-      var containerLoc = m.frame.locator(containerSel).nth(m.index);
-      if (!targetSel) return containerLoc;
-      return containerLoc.locator(targetSel);
-    }
-    if (matched.length > 1) {
-      throw new Error('Find-by-text matched ' + matched.length + ' containers for "' + matchText + '" (mode: ' + (mode||'contains') + '). Expected exactly 1. Make the match text more specific or narrow the container selector — BUU will not guess which one.');
-    }
-    // Zero matches yet — wait and rescan (the grid may still be loading).
-    await new Promise(function(r){ setTimeout(r, pollMs); });
-  }
-  throw new Error('Find-by-text found no container matching "' + matchText + '" (mode: ' + (mode||'contains') + ') in selector "' + containerSel + '" after ' + timeoutMs + 'ms. Containers seen during scan: ' + lastSeenCount + '. Check the match text/column value and the container selector.');
-}
+${FIND_IN_CONTAINER_FN_SRC}
 
-// v1.3.0 Item 1: resolve the locator a selector-using step should act on. Centralizes the
-// findByText branch so each step case stays a one-liner. When step.findByText is on, resolves
-// the match text through the same token resolver the step uses, then scopes via findInContainer.
-// Otherwise behaves exactly like the legacy findLocator(page, step.selector) call.
-async function resolveStepLocator(page, step, resolveFn){
-  if (step.findByText) {
-    var matchResolved = resolveFn(step.matchText || '');
-    return await findInContainer(page, step.containerSel || '', matchResolved, step.selector || '', step.matchMode || 'contains', {timeout: SELECTOR_TIMEOUT});
-  }
-  return await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
-}
+${RESOLVE_STEP_LOCATOR_FN_SRC}
 
 // v1.2.6: diagnostic dump for any selector. Called by step types when the user
 // has flipped the debug checkbox on (originally only on click steps in v1.2.5-debug1;
@@ -3228,7 +3270,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const _nm = process.env.NODE_PATH || path.join(__dirname);
-function _require(mod){ try{return require(mod);}catch(e){ try{return require(path.join(_nm,mod));}catch(e2){ throw new Error('Cannot find: '+mod); } } }
+${REQUIRE_FN_SRC}
 if(process.env.NODE_PATH){ try{require('module').Module._initPaths();}catch(e){} }
 const { chromium } = _require('playwright-core');
 const XLSX = _require('xlsx');
@@ -3306,34 +3348,14 @@ function loadAllRows(fp){
 // v2.2.2: shared canonical login (was a 4th copy here; see LOGIN_TO_PESTPAC_SRC at top of main.js).
 ${LOGIN_TO_PESTPAC_SRC}
 
-async function findLocator(page, selector, opts){
-  opts=opts||{}; const timeoutMs=opts.timeout||30000; const startedAt=Date.now();
-  while(Date.now()-startedAt<timeoutMs){
-    try{ const top=page.locator(selector); if(await top.count()>0) return top; }catch(_){}
-    const main=page.mainFrame();
-    for(const f of page.frames()){ if(f===main) continue; try{ const inF=f.locator(selector); if(await inF.count()>0) return inF; }catch(_){} }
-    await new Promise(function(r){ setTimeout(r,250); });
-  }
-  throw new Error('Selector "'+selector+'" not found in any frame after '+timeoutMs+'ms');
-}
-function matchesText(h,n,mode){ h=(h==null?'':String(h)); n=(n==null?'':String(n)); switch(mode||'contains'){ case 'exact':return h.trim()===n.trim(); case 'starts':return h.trim().indexOf(n.trim())===0; case 'ends':{var ht=h.trim(),nt=n.trim();return nt.length<=ht.length&&ht.lastIndexOf(nt)===(ht.length-nt.length);} case 'contains-ci':return h.trim().toLowerCase().indexOf(n.trim().toLowerCase())!==-1; case 'exact-ci':return h.trim().toLowerCase()===n.trim().toLowerCase(); case 'regex':try{return new RegExp(n).test(h);}catch(e){throw new Error('regex invalid: '+n);} default:return h.trim().indexOf(n.trim())!==-1; } }
-async function findInContainer(page, containerSel, matchText, targetSel, mode, opts){
-  opts=opts||{}; const timeoutMs=opts.timeout||30000; const startedAt=Date.now();
-  while(Date.now()-startedAt<timeoutMs){
-    const frames=[page.mainFrame()]; for(const f of page.frames()){ if(f!==page.mainFrame()) frames.push(f); }
-    const matched=[];
-    for(const f of frames){ let containers; try{ containers=f.locator(containerSel); }catch(e){ continue; } let count; try{ count=await containers.count(); }catch(e){ continue; }
-      for(let ci=0; ci<count; ci++){ let txt=''; try{ txt=await containers.nth(ci).innerText({timeout:2000}); }catch(e){ try{ txt=await containers.nth(ci).textContent({timeout:2000})||''; }catch(e2){ txt=''; } } if(matchesText(txt,matchText,mode)) matched.push({frame:f,index:ci}); } }
-    if(matched.length===1){ const m=matched[0]; const c=m.frame.locator(containerSel).nth(m.index); return targetSel?c.locator(targetSel):c; }
-    if(matched.length>1) throw new Error('Find-by-text matched '+matched.length+' containers for "'+matchText+'"; expected 1.');
-    await new Promise(function(r){ setTimeout(r,250); });
-  }
-  throw new Error('Find-by-text found no container matching "'+matchText+'"');
-}
-async function resolveStepLocator(page, step, resolveFn){
-  if(step.findByText){ const m=resolveFn(step.matchText||''); return await findInContainer(page, step.containerSel||'', m, step.selector||'', step.matchMode||'contains', {timeout:SELECTOR_TIMEOUT}); }
-  return await findLocator(page, step.selector, {timeout:SELECTOR_TIMEOUT});
-}
+// v2.2.2 (Session 2A): selector helpers via canonical constants (see main.js top).
+${FIND_LOCATOR_FN_SRC}
+
+${MATCHES_TEXT_FN_SRC}
+
+${FIND_IN_CONTAINER_FN_SRC}
+
+${RESOLVE_STEP_LOCATOR_FN_SRC}
 
 async function runStep(page, step, row, creds){
   const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
@@ -3545,10 +3567,8 @@ function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('
 function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
 function ms(s){return Math.round(parseFloat(s||1)*1000);}
 
-async function findLocator(page, selector, opts){
-  if(selector && selector.startsWith('xpath=')) return page.locator(selector);
-  return page.locator(selector);
-}
+// v2.2.2 (Session 2A): sweeper uses the stripped (no-iframe) minimal variant.
+${FIND_LOCATOR_MINIMAL_SRC}
 // Minimal step engine — only the step types login uses (navigate/type/click/select/wait).
 async function runStep(page, step, creds){
   const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||''); };
