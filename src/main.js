@@ -2653,7 +2653,9 @@ async function runStep(page,step,row,creds){
           newVal = currentVal.trim().replace(/  +/g,' ');
           break;
         case 'regex':
-          try{newVal = currentVal.replace(new RegExp(search, flags), replace);}
+          // v2.2.2 Session 2B: was "replace" (undefined), corrected to "replaceStr" to match
+          // the local variable a few lines above. Same fix applied to the pool-worker port.
+          try{newVal = currentVal.replace(new RegExp(search, flags), replaceStr);}
           catch(e){throw new Error('Invalid regex pattern: '+search+' — '+e.message);}
           break;
       }
@@ -2665,6 +2667,36 @@ async function runStep(page,step,row,creds){
         await page.$eval(step.selector, (el,v) => { el.textContent=v; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }, newVal);
       }
       break;}
+    // v2.2.2 Session 2B: readfield ported from buildPoolWorker (v2.2.0). Reads a field's
+    // current value/label and stores under step.colName so (a) later steps can use {{colName}}
+    // via the row resolver and (b) downstream readResults collection (where applicable) can
+    // surface it. value+label for <select>; text for inputs/spans. Iframe-aware via page.frames().
+    case 'readfield':{
+      const colName=(step.colName||'').trim(); if(!colName) break;
+      const mode=step.readMode||'both';
+      let value=null, label=null, found=false;
+      const sel=step.selector||'';
+      for(const f of page.frames()){
+        try{
+          const handle=await f.$(sel); if(!handle) continue;
+          const info=await f.evaluate(el=>{
+            const tag=(el.tagName||'').toLowerCase();
+            if(tag==='select'){ const o=el.options&&el.selectedIndex>=0?el.options[el.selectedIndex]:null; return {value:el.value, label:o?(o.textContent||'').trim():''}; }
+            if(tag==='input'||tag==='textarea'){ return {value:el.value, label:el.value}; }
+            const t=(el.textContent||'').trim(); return {value:t, label:t};
+          }, handle);
+          value=info.value; label=info.label; found=true; break;
+        }catch(e){ /* not in this frame */ }
+      }
+      if(!found){ if(step.readOnMissing==='error') throw new Error('Read field: selector not found: '+sel); value=''; label=''; }
+      const out = mode==='value' ? (value||'') : (mode==='text' ? (label||'') : (label||value||''));
+      row[colName]=out;
+      row[colName+'__raw']=(value||'');
+      row[colName+'__label']=(label||'');
+      if(!row.__reads) row.__reads={};
+      row.__reads[colName]={ value:(value||''), label:(label||''), out:out };
+      break;
+    }
   }
 }
 
@@ -3408,6 +3440,71 @@ async function runStep(page, step, row, creds){
       row[colName+'__label']=(label||'');
       if(!row.__reads) row.__reads={};
       row.__reads[colName]={ value:(value||''), label:(label||''), out:out };
+      break;
+    }
+    // v2.2.2 Session 2B: textedit ported from buildRunner. Multi-mode in-place text manipulation
+    // on the field at step.selector. Reads current value, transforms per editMode, writes back.
+    // editModes: find-replace / exact-remove / partial-remove-word / partial-remove-piece /
+    //            partial-replace-piece / remove-after / remove-before / trim /
+    //            remove-extra-spaces / regex. Bug fix on port: the regex editMode previously
+    //            referenced undefined "replace" — corrected to "replaceStr".
+    case 'textedit':{
+      await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});
+      const currentVal = await page.$eval(step.selector, el => el.value || el.textContent || el.innerText || '');
+      const search = r(step.searchVal||'');
+      const replaceStr = r(step.replaceVal||'');
+      const tch = step.charVal||'@';
+      const flags = (step.regexFlags||'gi');
+      let newVal = currentVal;
+      switch(step.editMode||'find-replace'){
+        case 'find-replace':
+          if(step.caseSensitive==='yes'){
+            newVal = currentVal.split(search).join(replaceStr);
+          } else {
+            const searchLower = search.toLowerCase();
+            let result=''; let i=0;
+            while(i<currentVal.length){
+              if(currentVal.substring(i,i+search.length).toLowerCase()===searchLower){ result+=replaceStr; i+=search.length; }
+              else { result+=currentVal[i]; i++; }
+            }
+            newVal = result;
+          }
+          break;
+        case 'exact-remove':
+          newVal = currentVal.split(search).join('');
+          break;
+        case 'partial-remove-word':
+          newVal = currentVal.split(/\\s+/).filter(w => !(step.caseSensitive==='yes' ? w.includes(search) : w.toLowerCase().includes(search.toLowerCase()))).join(' ').trim();
+          break;
+        case 'partial-remove-piece':
+          newVal = currentVal.split(/\\s+/).map(w => { const idx = step.caseSensitive==='yes' ? w.indexOf(search) : w.toLowerCase().indexOf(search.toLowerCase()); if(idx<0) return w; return w.slice(0,idx) + w.slice(idx+search.length); }).join(' ').trim();
+          break;
+        case 'partial-replace-piece':
+          newVal = currentVal.split(/\\s+/).map(w => { const idx = step.caseSensitive==='yes' ? w.indexOf(search) : w.toLowerCase().indexOf(search.toLowerCase()); if(idx<0) return w; return w.slice(0,idx) + replaceStr + w.slice(idx+search.length); }).join(' ').trim();
+          break;
+        case 'remove-after':
+          { const idx=currentVal.indexOf(tch); if(idx>=0) newVal=currentVal.slice(0,idx); }
+          break;
+        case 'remove-before':
+          { const idx=currentVal.indexOf(tch); if(idx>=0) newVal=currentVal.slice(idx+tch.length); }
+          break;
+        case 'trim':
+          newVal = currentVal.trim();
+          break;
+        case 'remove-extra-spaces':
+          newVal = currentVal.trim().replace(/  +/g,' ');
+          break;
+        case 'regex':
+          try{ newVal = currentVal.replace(new RegExp(search, flags), replaceStr); }
+          catch(e){ throw new Error('Invalid regex pattern: '+search+' — '+e.message); }
+          break;
+      }
+      const tag = await page.$eval(step.selector, el => el.tagName.toLowerCase());
+      if(tag==='input'||tag==='textarea'){
+        await page.fill(step.selector, newVal);
+      } else {
+        await page.$eval(step.selector, (el,v) => { el.textContent=v; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }, newVal);
+      }
       break;
     }
     case 'dialog':{ const matchText=step.dialogMatch||''; const dialogAction=step.dialogAction||'accept'; if(page._buuDialogListener){ try{page.off('dialog',page._buuDialogListener);}catch(_){} page._buuDialogListener=null; } const handler=async dialog=>{ try{page.off('dialog',handler);}catch(_){} if(page._buuDialogListener===handler)page._buuDialogListener=null; const msg=dialog.message(); const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase()); try{ if(matches){ if(dialogAction==='dismiss')await dialog.dismiss(); else await dialog.accept(); } else { await dialog.dismiss(); } }catch(e){} }; page._buuDialogListener=handler; page.on('dialog',handler); break; }
