@@ -51,6 +51,10 @@ contextBridge.exposeInMainWorld('api', {
   poolResume:          (d)     => ipcRenderer.invoke('pool-resume', d),
   poolDiscardOrphan:   (d)     => ipcRenderer.invoke('pool-discard-orphan', d),
   poolReadJournal:     (d)     => ipcRenderer.invoke('pool-read-journal', d),
+  // v2.2.2 Session 2C: pool step-by-step control. Routes next-step / next-row / run-all /
+  // stop to the active worker's stdin. Use this for pool runs in startMode='step' or
+  // 'step-row'. (The legacy runControl below is for the single-runner.)
+  poolRunControl:      (d)     => ipcRenderer.invoke('pool-run-control', d),
   onPoolStatus:        (cb)    => ipcRenderer.on('pool-status', (_, d) => cb(d)),
   onPoolComplete:      (cb)    => ipcRenderer.on('pool-complete', (_, d) => cb(d)),
   onPoolSweepStart:    (cb)    => ipcRenderer.on('pool-sweep-start', (_, d) => cb(d)),
@@ -59,4 +63,7 @@ contextBridge.exposeInMainWorld('api', {
   onPoolOnceFlow:      (cb)    => ipcRenderer.on('pool-once-flow', (_, d) => cb(d)),
   onPoolReadResults:   (cb)    => ipcRenderer.on('pool-read-results', (_, d) => cb(d)),
   onPoolLicenseUpdate: (cb)    => ipcRenderer.on('pool-license-update', (_, d) => cb(d)),
+  // v2.2.2 Session 2C: pause events from pool workers (step-by-step + step-row mode).
+  // payload: {kind:'step'|'row', workerId, jobId, row, stepIndex?, totalSteps?, step?, mode}
+  onPoolPause:         (cb)    => ipcRenderer.on('pool-pause', (_, d) => cb(d)),
 });

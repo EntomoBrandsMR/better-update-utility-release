@@ -164,8 +164,8 @@ update `version-buu2.json` on `main` BOM-free.
 Updated as each session lands. Read this section first when picking the work back up.
 
 - [x] 2A — helper dedup (_require, findLocator + minimal variant, matchesText, findInContainer, resolveStepLocator). Shipped as commits TBD on 2026-05-28. dec/emit/ms intentionally NOT dedup'd (trivial one-liners, no drift risk, churn cost > payoff).
-- [ ] 2B — step-type parity (port textedit to pool, port readfield to single-runner)
-- [ ] 2C — pool worker gains step-by-step
+- [x] 2B — step-type parity. textedit ported buildRunner→buildPoolWorker, readfield ported buildPoolWorker→buildRunner. Both engines now share the same 14-step catalog. Fixed a pre-existing `replace`/`replaceStr` undefined-variable bug in the regex sub-mode of textedit (would have thrown on any user flow using editMode=regex).
+- [x] 2C — pool worker gains step-by-step. Worker template gets START_MODE, currentMode state, the existing readline demuxes step commands (mode/next-step/next-row/run-all/stop), pause-step before each step, pause-row after each row, resolvePreview for the pause panel. Coordinator: COORD.startMode + startModeTarget; pool-start forces workers=1/batchSize=1 in step modes; new pool-run-control IPC forwards commands to workers and handles Run-All transition (scales to startModeTarget.workers, restores batchSize). Renderer: currentPoolPause flag routes Next-step/Next-row/Run-All buttons to poolRunControl when triggered by a pool pause; onPoolPause translates the new pool-pause event into the existing showPause() flow; pool-start now passes startMode from the existing start-mode dropdown.
 - [ ] 2D — network-aware retry + error classification port
 - [ ] 2E — retry config port (retryCount, breakerThreshold, retryRowIndexes, reauthInterval)
 - [ ] 2F — resume audit + gap closure

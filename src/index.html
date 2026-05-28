@@ -1225,6 +1225,11 @@ let isRunning = false;
 let currentLogPath = null, runStartTime = null, runRowsDone = 0, runTotal = 0;
 let currentRunId = null;
 let currentRunMode = 'run-all'; // tracks runner's current mode for UI; updated by 'mode' / 'pause-*' events
+// v2.2.2 Session 2C: when set, the currently-shown pause panel was triggered by a POOL
+// worker (not the single-runner). The Next-step / Next-row / Run-All / Stop button handlers
+// check this flag and route to poolRunControl instead of runControl. Cleared by hidePause
+// and by the button handlers themselves.
+let currentPoolPause = null;
 // v2.1.0 (#5) step-by-step -> pool handoff: tracks the NEXT row to process while the user is
 // stepping manually in the single-runner. When they switch to the pool, poolStageCurrent passes
 // this as resumeFromRow so the pool picks up where the stepping left off. null = no handoff (pool
@@ -2918,16 +2923,34 @@ function hidePause(){
 }
 
 async function paneNextStep(){
-  if(API.runControl) await API.runControl({runId:currentRunId, cmd:'next-step'});
+  // v2.2.2 Session 2C: pool step pauses route through poolRunControl. Single-runner pauses
+  // route through runControl as before. currentPoolPause is set by the onPoolPause subscriber
+  // below when a pool worker emits pause-step / pause-row.
+  if (currentPoolPause && API.poolRunControl) {
+    await API.poolRunControl({cmd:'next-step'});
+  } else if (API.runControl) {
+    await API.runControl({runId:currentRunId, cmd:'next-step'});
+  }
+  currentPoolPause = null;
   hidePause();
 }
 async function paneNextRow(){
-  if(API.runControl) await API.runControl({runId:currentRunId, cmd:'next-row'});
+  if (currentPoolPause && API.poolRunControl) {
+    await API.poolRunControl({cmd:'next-row'});
+  } else if (API.runControl) {
+    await API.runControl({runId:currentRunId, cmd:'next-row'});
+  }
+  currentPoolPause = null;
   hidePause();
 }
 async function paneRunAll(){
-  if(API.runControl) await API.runControl({runId:currentRunId, cmd:'run-all'});
+  if (currentPoolPause && API.poolRunControl) {
+    await API.poolRunControl({cmd:'run-all'});
+  } else if (API.runControl) {
+    await API.runControl({runId:currentRunId, cmd:'run-all'});
+  }
   currentRunMode='run-all';
+  currentPoolPause = null;
   hidePause();
   addLiveLog('Released — running through to end','info');
 }
@@ -3148,7 +3171,12 @@ async function poolRunClick(){
   const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
   const setupScope = (document.getElementById('poolSetupScope')||{}).value || 'per-worker';
   if(!confirm('Start worker pool?\n\n• '+n+' workers (headless, batch size '+batchSize+')\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull batches until all jobs drain. Continue?')) return;
-  const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope });
+  // v2.2.2 Session 2C: pool start mode pulled from the same start-mode dropdown the
+// single-runner uses. Session 2G will move the dropdown into the pool launch UI; for now
+// it just doubles up so pool runs can also be stepped through.
+const _smSel = document.getElementById('startModeSel');
+const startMode = (_smSel && _smSel.value) || 'run-all';
+const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode });
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
   poolUIActive(true);
   go('run');
@@ -3370,6 +3398,38 @@ async function poolStopWorkerClick(workerId){
 
 // Wire coordinator events once.
 if(API.onPoolStatus) API.onPoolStatus(function(st){ renderCoordStatus(st); });
+// v2.2.2 Session 2C: pool worker pause events. Translates the pool-pause shape to the
+// `evt` shape showPause() expects, sets currentPoolPause so the button handlers route to
+// poolRunControl, then shows the pause panel exactly the way single-runner pauses do.
+if(API.onPoolPause) API.onPoolPause(function(p){
+  // p: {kind:'step'|'row', workerId, jobId, row, stepIndex?, totalSteps?, step?, mode}
+  currentPoolPause = { workerId: p.workerId, jobId: p.jobId, mode: p.mode };
+  if (p.kind === 'step') {
+    currentRunMode = 'step';
+    const evt = {
+      type: 'pause-step',
+      rowIndex: p.row,
+      totalRows: 0,           // pool worker doesn't carry totalRows in pause payload; UI handles undefined
+      stepIndex: p.stepIndex,
+      totalSteps: p.totalSteps,
+      step: p.step,
+      mode: p.mode,
+      phase: '',              // pool pauses are always main-flow (not setup/teardown)
+    };
+    showPause('step', evt);
+    addLiveLog('Pool: paused before step '+(p.stepIndex+1)+'/'+p.totalSteps+' on row '+p.row, 'warn');
+  } else if (p.kind === 'row') {
+    currentRunMode = 'step-row';
+    const evt = {
+      type: 'pause-row',
+      rowIndex: p.row,
+      totalRows: 0,
+      mode: p.mode,
+    };
+    showPause('step-row', evt);
+    addLiveLog('Pool: paused after row '+p.row, 'warn');
+  }
+});
 if(API.onPoolComplete) API.onPoolComplete(function(d){
   document.getElementById('runStatusMsg').textContent='Pool complete';
   poolUIActive(false); stopElapsedTicker();

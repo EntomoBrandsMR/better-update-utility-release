@@ -79,6 +79,10 @@ const COORD = {
   usedProfileIds: new Set(), // v2.1.1: profiles used this run — the logout sweep logs in with one
   sweepRunning: false,  // v2.1.1: guards against double-spawning the logout sweeper
   setupScope: 'per-worker', // v2.1.1 (#8): 'per-worker' | 'per-job' | 'global'
+  startMode: 'run-all',     // v2.2.2 Session 2C: 'run-all' | 'step' | 'step-row'. Forces
+                            // workers=1 batch=1 when 'step'/'step-row'. Transitions via
+                            // pool-run-control(cmd:'run-all') unlock the configured worker count.
+  startModeTarget: { workers: 1, batchSize: 10 }, // configured target; restored on Run-All transition.
 };
 
 // v2.0.0 resume: append-only journal. Path is per-pool-run so a fresh run never appends to
@@ -293,6 +297,9 @@ async function coordSpawnWorker(){
     chromiumExePath: chromiumExe,
     errHandle: job.errHandle || 'retry',
     selectorTimeout: 30, pageLoadMode: 'domcontentloaded', retryCount: 2,
+    // v2.2.2 Session 2C: passing the pool-level startMode so the worker knows whether to
+    // pause before each step (step), pause after each row (step-row), or just run (run-all).
+    startMode: COORD.startMode || 'run-all',
     runContext: { runId: workerId, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
   });
   fs.writeFileSync(runnerPath, script);
@@ -384,6 +391,34 @@ function coordHandleWorkerMessage(workerId, msg){
     case 'step':
       // live detail - which step of the flow this row is on (e.g. 7/8).
       w.currentRow = msg.row; w.step = msg.step; w.totalSteps = msg.totalSteps;
+      break;
+    case 'pause-step':
+      // v2.2.2 Session 2C: forward to renderer. Includes workerId so the renderer knows
+      // which worker is paused (in step modes there's only one, but the field is there for
+      // consistency with future multi-worker debug modes). step/preview/row come from worker.
+      w.status = 'paused';
+      if (mainWindow) mainWindow.webContents.send('pool-pause', {
+        kind: 'step',
+        workerId: workerId,
+        jobId: w.jobId,
+        row: msg.row,
+        stepIndex: msg.stepIndex,
+        totalSteps: msg.totalSteps,
+        step: msg.step,
+        mode: msg.mode || COORD.startMode,
+      });
+      break;
+    case 'pause-row':
+      // v2.2.2 Session 2C: emitted after a completed row in step-row mode. Renderer shows
+      // the row's outcome and waits for the user to click Next-row or Run-All.
+      w.status = 'paused';
+      if (mainWindow) mainWindow.webContents.send('pool-pause', {
+        kind: 'row',
+        workerId: workerId,
+        jobId: w.jobId,
+        row: msg.row,
+        mode: msg.mode || COORD.startMode,
+      });
       break;
     case 'shutting-down':
       w.status = 'shutting-down';
@@ -1122,14 +1157,27 @@ ipcMain.handle('pool-clear-jobs', async () => {
 
 // Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
-ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope }) => {
+ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
   // each worker runs the once-flows for its own session. 'per-job' / 'global' run them ONCE,
   // executed by the coordinator via a dedicated headless session, with workers skipping them.
   COORD.setupScope = (setupScope === 'per-job' || setupScope === 'global') ? setupScope : 'per-worker';
-  COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || 10));
+  // v2.2.2 Session 2C: startMode replaces the single-runner's start-mode dropdown. Step modes
+  // FORCE workers=1 and batchSize=1 regardless of configured target — the configured target
+  // is remembered in startModeTarget and restored when the user clicks Run-All mid-step
+  // (handled by pool-run-control). This honors Matthew's Q1: step-by-step uses one worker;
+  // after testing, automation respects the worker pool settings.
+  COORD.startMode = (startMode === 'step' || startMode === 'step-row') ? startMode : 'run-all';
+  const _cfgWorkers = parseInt(workerCount) || 1;
+  const _cfgBatch = Math.max(1, Math.min(500, parseInt(batchSize) || 10));
+  COORD.startModeTarget = { workers: _cfgWorkers, batchSize: _cfgBatch };
+  if (COORD.startMode === 'step' || COORD.startMode === 'step-row') {
+    COORD.batchSize = 1;
+  } else {
+    COORD.batchSize = _cfgBatch;
+  }
   // Reset per-run job counters in case jobs were staged then this is a restart.
   // v2.1.0 (#5): reset nextRow to the job's startRow (the step-by-step handoff cursor), not a
   // hard 1 — otherwise switching from manual stepping to the pool would re-run completed rows.
@@ -1151,7 +1199,11 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   }
 
   const hwCap = computeHardwareCap();
-  let target = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING, hwCap));
+  // v2.2.2 Session 2C: in step/step-row mode, force a single worker regardless of configured
+  // count. The configured count is stored in COORD.startModeTarget and applied when the user
+  // clicks Run-All mid-step (via pool-run-control).
+  const _modeWorkerCount = (COORD.startMode === 'step' || COORD.startMode === 'step-row') ? 1 : (parseInt(workerCount) || 1);
+  let target = Math.max(1, Math.min(_modeWorkerCount, MAX_WORKERS_HARD_CEILING, hwCap));
   COORD.desiredWorkers = target;
 
   // Spawn initial workers (bounded by total rows available — no point spawning idle workers).
@@ -1196,6 +1248,57 @@ ipcMain.handle('pool-stop', async () => {
   }, 180000);
   coordEmitStatus();
   return { ok: true, stopped: COORD.workers.size };
+});
+
+// v2.2.2 Session 2C: pool step-by-step control channel. Routes renderer commands
+// (next-step / next-row / run-all / stop) to the active pool worker's stdin. In step
+// or step-row mode the pool is forced to 1 worker so there's exactly one target. On
+// 'run-all', this transitions the pool out of step mode and scales up to the
+// configured worker target stored in COORD.startModeTarget at pool-start.
+ipcMain.handle('pool-run-control', async (_, { cmd }) => {
+  if (!COORD.active) return { ok: false, error: 'Pool not running.' };
+  if (!['next-step','next-row','run-all','stop','mode'].includes(cmd) && !(cmd && cmd.startsWith('mode:'))) {
+    return { ok: false, error: 'Unknown command: ' + cmd };
+  }
+  // 'stop' here means user clicked Stop during a step pause. Treat it like pool-stop —
+  // tell each worker to drain (workers honor it at the next decision point) AND release
+  // any pending pause so the worker can reach the drain check.
+  if (cmd === 'stop') {
+    if (COORD.licenseTimer) { clearInterval(COORD.licenseTimer); COORD.licenseTimer = null; }
+    for (const job of COORD.jobs.values()) { job.nextRow = job.totalRows + 1; job.finished = true; }
+    for (const w of COORD.workers.values()) {
+      try { w.process.stdin.write(JSON.stringify({ cmd:'stop' }) + '\n'); } catch {}
+      try { w.process.stdin.write(JSON.stringify({ cmd:'drain' }) + '\n'); } catch {}
+      w.status = 'draining';
+    }
+    coordEmitStatus();
+    return { ok: true };
+  }
+  // 'run-all' transitions out of step mode. Switch coord state, restore configured batch
+  // size, tell the live worker(s) to switch to run-all, then scale to configured target.
+  if (cmd === 'run-all') {
+    COORD.startMode = 'run-all';
+    if (COORD.startModeTarget && COORD.startModeTarget.batchSize) {
+      COORD.batchSize = COORD.startModeTarget.batchSize;
+    }
+    for (const w of COORD.workers.values()) {
+      try { w.process.stdin.write(JSON.stringify({ cmd:'run-all' }) + '\n'); } catch {}
+    }
+    const tgt = (COORD.startModeTarget && COORD.startModeTarget.workers) || 1;
+    const hwCap = computeHardwareCap();
+    COORD.desiredWorkers = Math.max(1, Math.min(tgt, MAX_WORKERS_HARD_CEILING, hwCap));
+    await coordScaleTo(COORD.desiredWorkers);
+    coordEmitStatus();
+    return { ok: true, desiredWorkers: COORD.desiredWorkers, batchSize: COORD.batchSize };
+  }
+  // 'next-step' / 'next-row' release the current pause without changing mode. Forward to
+  // the live worker. In step modes there's exactly one worker, but if multiple are alive
+  // (e.g. mid Run-All transition) we forward to all — only the one actually paused will
+  // act on it.
+  for (const w of COORD.workers.values()) {
+    try { w.process.stdin.write(JSON.stringify({ cmd }) + '\n'); } catch {}
+  }
+  return { ok: true };
 });
 
 // v2.1.1: manual logout sweep — lets the user force a License-Manager cleanup at any time
@@ -3322,6 +3425,10 @@ const FLOW_STEPS = ${JSON.stringify(flowSteps)};
 const SETUP_STEPS = ${JSON.stringify(setupSteps)};
 const TEARDOWN_STEPS = ${JSON.stringify(teardownSteps)};
 const RUN_CONTEXT = ${JSON.stringify(runContext)};
+// v2.2.2 Session 2C: step-by-step mode. Coordinator passes 'run-all' / 'step' / 'step-row'
+// when spawning. Pool forces workers=1 batch=1 when startMode is 'step' or 'step-row',
+// then scales up when the user clicks Run-All (coordinator handles that scaling).
+const START_MODE = ${JSON.stringify(cfg.startMode || 'run-all')};
 const LOGIN_STEPS = FLOW_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
 const DATA_STEPS  = FLOW_STEPS.filter(s => !s.locked && s.type !== 'pestpac-logout');
 const LOGOUT_STEP = FLOW_STEPS.find(s => s.type === 'pestpac-logout') || {type:'pestpac-logout'};
@@ -3330,24 +3437,90 @@ const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32
 function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
 function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
 
-// ── stdin command channel: receives {cmd:'batch',rows:[...]} or {cmd:'drain'} ──
+// ── stdin command channel ──
+// Pre-2.2.2: only batch/drain messages flowed here.
+// v2.2.2 Session 2C: also demuxes step-by-step commands sent by the coordinator on behalf
+// of the renderer (mode / next-step / next-row / run-all / stop). A separate readline
+// would have collided with this one (both consume each \\n-delimited message), so one
+// readline demuxes by msg.cmd.
 let _pendingBatchResolve = null;
-// v2.1.0: a drain command can arrive AT ANY TIME (mid-row, mid-batch). We set a global flag
-// immediately so the row loop can stop after the current row and log out cleanly, instead of
-// only noticing drain at the next batch boundary (which, with slow pages, meant the coordinator
-// force-killed the worker mid-row before it could log out - leaving sessions logged in).
+let _pendingPauseResolve = null;
 let _draining = false;
+// currentMode: 'run-all' | 'step' | 'step-row' | 'stop'.
+// 'stop' triggers an in-progress pause to release and a clean drain shortly after.
+let currentMode = START_MODE;
 const _readline = require('readline');
 const _rl = _readline.createInterface({ input: process.stdin, terminal: false });
 _rl.on('line', function(line){
   let msg; try{ msg = JSON.parse(line); }catch(e){ return; }
   if(!msg || !msg.cmd) return;
-  if(msg.cmd === 'drain'){ _draining = true; }
-  if(_pendingBatchResolve){ const r=_pendingBatchResolve; _pendingBatchResolve=null; r(msg); }
+  switch(msg.cmd){
+    case 'batch':
+    case 'drain':
+      if(msg.cmd === 'drain') _draining = true;
+      if(_pendingBatchResolve){ const r=_pendingBatchResolve; _pendingBatchResolve=null; r(msg); }
+      break;
+    case 'mode':
+      // Whole-mode change. 'mode' alone changes how the engine behaves at the next decision
+      // point; it does NOT itself resolve a pending pause (use a separate next-* for that).
+      if(msg.mode === 'run-all' || msg.mode === 'step' || msg.mode === 'step-row' || msg.mode === 'stop'){
+        currentMode = msg.mode;
+      }
+      // If we just switched out of step modes, release any pending pause so the row loop continues.
+      if((currentMode === 'run-all' || currentMode === 'stop') && _pendingPauseResolve){
+        const r = _pendingPauseResolve; _pendingPauseResolve = null; r('auto');
+      }
+      break;
+    case 'next-step':
+    case 'next-row':
+    case 'run-all':
+    case 'stop':
+      // Implicit mode change for run-all/stop. next-step/next-row keep current mode.
+      if(msg.cmd === 'run-all') currentMode = 'run-all';
+      if(msg.cmd === 'stop') currentMode = 'stop';
+      if(_pendingPauseResolve){ const r = _pendingPauseResolve; _pendingPauseResolve = null; r(msg.cmd); }
+      break;
+  }
 });
 function requestBatch(){
   emit({type:'request-batch'});
   return new Promise(function(r){ _pendingBatchResolve = r; });
+}
+// v2.2.2 Session 2C: pause for the next renderer command in step modes. In run-all/stop
+// resolves immediately (returning 'auto') so the engine flows through without waiting.
+function waitForCommand(){
+  if(currentMode === 'run-all' || currentMode === 'stop') return Promise.resolve('auto');
+  return new Promise(function(r){ _pendingPauseResolve = r; });
+}
+// v2.2.2 Session 2C: substitution preview for the step-mode pause panel. Mirrors the r()
+// resolver in runStep but doesn't touch the page; the renderer displays what's about to
+// happen so the user can verify before clicking Next-step.
+function resolvePreview(step, row, creds){
+  const r = function(v){
+    if(!v) return '';
+    return v.replace(/{{CRED:companyKey}}/g, creds.companyKey||'')
+            .replace(/{{CRED:username}}/g, creds.username||'')
+            .replace(/{{CRED:password}}/g, creds.password||'')
+            .replace(/{{([^}]+)}}/g, function(_, ref){
+              if(ref === 'TODAY') return RUN_CONTEXT.today || '';
+              if(ref === 'RUNID') return RUN_CONTEXT.runId || '';
+              if(ref === 'PROFILE_USERNAME') return RUN_CONTEXT.profileUsername || '';
+              return row[ref] !== undefined ? String(row[ref]) : '';
+            });
+  };
+  let value = '';
+  if(step.type === 'type' || step.type === 'select') value = r(step.value || '');
+  else if(step.type === 'navigate') value = r(step.url || '');
+  else if(step.type === 'textedit') value = '(textedit: ' + (step.editMode || 'find-replace') + ')';
+  else if(step.type === 'checkbox') value = '(' + (step.checkAction || 'check') + ')';
+  else if(step.type === 'wait') value = '(' + (step.waitType || 'fixed') + ')';
+  let selectorOut = step.selector || '';
+  if(step.findByText){
+    const matchResolved = r(step.matchText || '');
+    selectorOut = 'in [' + (step.containerSel || '?') + '] where text ' + (step.matchMode || 'contains') + ' "' + matchResolved + '"'
+                + (step.selector ? ' → ' + step.selector : ' (the matched item)');
+  }
+  return { type: step.type, label: step._label || step.type, selector: selectorOut, value: value };
 }
 
 // ── log buffer (per-worker Excel log) ──
@@ -3519,13 +3692,47 @@ async function runOnceFlow(page, steps, creds){
 
 async function processRow(page, row, creds, rowNum){
   const done=[];
-  // v2.1.0: emit step progress (e.g. step 7/8) so the UI can show what each worker is doing.
-  const attempt=async()=>{ done.length=0; for(let si=0;si<DATA_STEPS.length;si++){ emit({type:'step', row:rowNum, step:si+1, totalSteps:DATA_STEPS.length}); await runStep(page, DATA_STEPS[si], row, creds); done.push(DATA_STEPS[si]._label||DATA_STEPS[si].type); } };
+  // v2.2.2 Session 2C: __STOP__ / __NEXT_ROW__ sentinels for step-mode control flow.
+  // - 'next-step' / 'auto' / 'run-all': falls through to execute the step normally.
+  // - 'next-row': throws __NEXT_ROW__ so the row is recorded as skip and the loop moves on.
+  // - 'stop': throws __STOP__ so the outer loop bails out and we proceed to shutdown.
+  const attempt=async()=>{
+    done.length=0;
+    for(let si=0;si<DATA_STEPS.length;si++){
+      const s=DATA_STEPS[si];
+      emit({type:'step', row:rowNum, step:si+1, totalSteps:DATA_STEPS.length});
+      // Pause BEFORE each step in step mode. Dialog steps skip the pause — they register an
+      // invisible page.on('dialog') listener; pausing here makes the user click Next on a no-op,
+      // then immediately again on the real action. Same rationale as buildRunner (v1.3.0 Item 5).
+      if(currentMode === 'step' && s.type !== 'dialog'){
+        const _preview = resolvePreview(s, row, creds);
+        emit({type:'pause-step', row:rowNum, stepIndex:si, totalSteps:DATA_STEPS.length, step:_preview, mode:currentMode});
+        const cmd = await waitForCommand();
+        if(currentMode === 'stop') throw new Error('__STOP__');
+        if(cmd === 'next-row') throw new Error('__NEXT_ROW__');
+        // 'next-step' / 'run-all' / 'auto' fall through.
+      }
+      await runStep(page, s, row, creds);
+      done.push(s._label||s.type);
+    }
+  };
   try{ await attempt(); return {status:'ok', fieldsWritten:done.join(' | ')}; }
   catch(e){
+    // v2.2.2 Session 2C: step-mode sentinels short-circuit retry — they're user actions,
+    // not errors. STOP propagates to the caller; NEXT_ROW becomes a clean skip.
+    if(e && e.message === '__STOP__') throw e;
+    if(e && e.message === '__NEXT_ROW__') return {status:'skip', error:'Skipped via Next-row during step-through', failedStep:'(user skipped)'};
     if(ERR_HANDLE==='retry'){
       let attemptN=0, lastErr=e;
-      while(attemptN<RETRY_COUNT){ attemptN++; try{ await attempt(); return {status:'ok (retry)', fieldsWritten:done.join(' | ')}; }catch(e2){ lastErr=e2; } }
+      while(attemptN<RETRY_COUNT){
+        attemptN++;
+        try{ await attempt(); return {status:'ok (retry)', fieldsWritten:done.join(' | ')}; }
+        catch(e2){
+          if(e2 && e2.message === '__STOP__') throw e2;
+          if(e2 && e2.message === '__NEXT_ROW__') return {status:'skip', error:'Skipped via Next-row during step-through', failedStep:'(user skipped)'};
+          lastErr=e2;
+        }
+      }
       return {status:'skip', error:('After '+attemptN+' retries: '+lastErr.message), failedStep:done[done.length-1]||'?'};
     }
     return {status:'skip', error:e.message, failedStep:done[done.length-1]||'?'};
@@ -3572,12 +3779,38 @@ async function main(){
       // batchPos/batchSize = e.g. 3/10 (which row of this batch); totalSteps for the step counter.
       emit({type:'row-start', row:rowNum, batchPos:_bi+1, batchSize:msg.rows.length});
       const t0=Date.now();
-      const res = await processRow(page, row, creds, rowNum);
+      // v2.2.2 Session 2C: processRow throws __STOP__ when user clicked Stop mid-step.
+      // Catch it here so the batch loop can drain cleanly (with the rest of the batch
+      // released to the coordinator via _reclaimRows).
+      let res;
+      try{ res = await processRow(page, row, creds, rowNum); }
+      catch(e){
+        if(e && e.message === '__STOP__'){
+          _draining = true;
+          _reclaimRows = msg.rows.slice(_bi+1);  // any rows not yet started
+          emit({type:'row-result', row:rowNum, status:'stopped', error:'User stop during step-through', durationMs:Date.now()-t0});
+          break;
+        }
+        throw e;
+      }
       const entry={ row:rowNum, timestamp:new Date().toISOString(), url:row.URL||row.url||'', status:res.status, error:res.error||'', failedStep:res.failedStep||'', fieldsWritten:res.fieldsWritten||'', durationMs:Date.now()-t0 };
       addLog(entry);
       // v2.2.0: include any read-field values captured this row so the coordinator can write the
       // dedicated results workbook. row.__reads is { colName: {value,label,out} }.
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null});
+      // v2.2.2 Session 2C: pause AFTER row in step-row mode. Same gating as buildRunner
+      // (step-row pauses on the boundary so the user can verify the row's outcome in PestPac
+      // before continuing). Skipped on the last row of the batch only if a drain has arrived;
+      // otherwise the row-pause still fires because the next row may come from a future batch.
+      if(currentMode === 'step-row' && !_draining){
+        emit({type:'pause-row', row:rowNum, mode:currentMode});
+        await waitForCommand();
+        if(currentMode === 'stop'){
+          _draining = true;
+          _reclaimRows = msg.rows.slice(_bi+1);
+          break;
+        }
+      }
     }
   }
 
