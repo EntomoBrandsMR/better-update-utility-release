@@ -893,6 +893,51 @@ function writeConfig(obj) { fs.writeFileSync(getConfigPath(), JSON.stringify({ .
 ipcMain.handle('get-config', () => readConfig());
 ipcMain.handle('set-config', (_, obj) => { writeConfig(obj); return { ok: true }; });
 
+// v2.2.3 Session 3E (B4): log retention. Delete per-worker .log streams, per-worker xlsx
+// logs, and failure capture dirs older than maxAgeDays. Runs at app startup, asynchronously,
+// so a slow disk doesn't block the UI. Journals live in userData directly (not under logs/),
+// so they're outside the scope of this cleanup — they're kept until manually removed (they're
+// the merged-log source of truth + resume metadata). Read-field results live next to the
+// source spreadsheet (upcoming/results/), also outside scope.
+//
+// What this DELETES under <userData>/logs:
+//   buu2-worker-*.log         per-worker debug streams
+//   BUU2-log-*-w*.xlsx        per-worker xlsx logs
+//   failures-pool*/           Session 3C diagnostic capture dirs (recursive)
+// What this PRESERVES:
+//   any file/dir not matching the patterns above (defensive — unknown files left alone)
+//
+// Config: cfg.logRetentionDays. Default 30. 0 disables.
+function cleanupOldLogs(maxAgeDays){
+  const days = Number.isFinite(maxAgeDays) ? maxAgeDays : 30;
+  if (days <= 0) return;
+  try {
+    const dir = getLogsDir();
+    const cutoff = Date.now() - (days * 24 * 60 * 60 * 1000);
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    let deletedFiles = 0, deletedDirs = 0;
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      let stat;
+      try { stat = fs.statSync(full); } catch(_) { continue; }
+      if (stat.mtimeMs >= cutoff) continue;
+      if (e.isFile()) {
+        const matches = /^buu2-worker-.*\.log$/i.test(e.name) || /^BUU2-log-.*\.xlsx$/i.test(e.name);
+        if (!matches) continue;
+        try { fs.unlinkSync(full); deletedFiles++; } catch(_) {}
+      } else if (e.isDirectory()) {
+        if (!/^failures-pool/.test(e.name)) continue;
+        try { fs.rmSync(full, { recursive: true, force: true }); deletedDirs++; } catch(_) {}
+      }
+    }
+    if (deletedFiles > 0 || deletedDirs > 0) {
+      console.log('[cleanup] log retention removed ' + deletedFiles + ' file(s) and ' + deletedDirs + ' capture dir(s) older than ' + days + ' days');
+    }
+  } catch(e) {
+    console.error('[cleanup] log retention failed:', e.message);
+  }
+}
+
 // ── CHROMIUM ──────────────────────────────────────────────────────────────────
 function getBundledChromiumPath() {
   // When packaged, Chromium is bundled in resources/chromium/
@@ -3421,6 +3466,17 @@ if (!gotLock) {
     }
   });
   app.setAppUserModelId('com.entomobands.buu-2');
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    createWindow();
+    // v2.2.3 Session 3E (B4): log retention. Runs asynchronously after window creation so a
+    // slow disk doesn't delay startup. Reads logRetentionDays from config; default 30.
+    setImmediate(() => {
+      try {
+        const cfg = readConfig();
+        const n = Number.isFinite(cfg.logRetentionDays) ? cfg.logRetentionDays : 30;
+        cleanupOldLogs(n);
+      } catch(e) { /* never block startup on cleanup */ }
+    });
+  });
 }
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
