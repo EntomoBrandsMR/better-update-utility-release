@@ -278,6 +278,9 @@ function coordEmitStatus(){
     reclaimsTotal: j.reclaimsTotal || 0,
     reclaimsByReason: j.reclaimsByReason || { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 },
     remaining: Math.max(0, j.totalRows - (j.nextRow - 1)), finished: j.finished,
+    // v2.2.3 Session 3F (B2): expose the source spreadsheet path so the renderer can offer
+    // an Archive button (move to upcoming/Finished/) on completed jobs.
+    spreadsheetPath: j.spreadsheetPath || null,
   }));
   const workers = Array.from(COORD.workers.values()).map(w => ({
     workerId: w.workerId, jobId: w.jobId, status: w.status,
@@ -3172,6 +3175,36 @@ ipcMain.handle('open-spreadsheet', async () => {
     totalRows = XLSX.utils.sheet_to_json(wb2.Sheets[wb2.SheetNames[0]]).length;
   }
   return { filePath: fp, name: path.basename(fp), headers, previewRows, totalRows };
+});
+
+// v2.2.3 Session 3F (B2): working-data convention enforcement. Move a completed spreadsheet
+// from <parent>/ (typically upcoming/) into <parent>/Finished/. One-click archive so the user
+// stops hand-moving files mid-process — the design-doc rule that motivated B2. If Finished/
+// doesn't exist yet, create it. If a file with the same name already exists in Finished/,
+// suffix the destination with a timestamp so we never silently overwrite.
+ipcMain.handle('archive-spreadsheet', async (_, { spreadsheetPath }) => {
+  try {
+    if (!spreadsheetPath || typeof spreadsheetPath !== 'string') return { ok: false, error: 'No path provided' };
+    if (!fs.existsSync(spreadsheetPath)) return { ok: false, error: 'Source file not found: ' + spreadsheetPath };
+    const srcDir = path.dirname(spreadsheetPath);
+    const baseName = path.basename(spreadsheetPath);
+    const archiveDir = path.join(srcDir, 'Finished');
+    if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+    let destName = baseName;
+    let dest = path.join(archiveDir, destName);
+    if (fs.existsSync(dest)) {
+      // Suffix with timestamp to avoid overwriting an earlier archive of the same name.
+      const ext = path.extname(baseName);
+      const stem = baseName.slice(0, baseName.length - ext.length);
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      destName = stem + '_' + ts + ext;
+      dest = path.join(archiveDir, destName);
+    }
+    fs.renameSync(spreadsheetPath, dest);
+    return { ok: true, archivedTo: dest };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 });
 
 ipcMain.handle('save-flow', async (_, { json, name }) => {

@@ -3403,15 +3403,43 @@ function renderStagedJobs(st){
   list.innerHTML = jobs.map(function(j){
     const prog = running ? (' · '+(j.done||0).toLocaleString()+'/'+(j.totalRows||0).toLocaleString()+' done'+(j.remaining!=null?(' · '+(j.remaining||0).toLocaleString()+' left'):'')) : (' · '+(j.totalRows||0).toLocaleString()+' rows');
     const rm = running ? '' : '<button class="btn sm" style="padding:1px 8px;color:var(--red)" onclick="poolRemoveStaged(\''+j.jobId+'\')">Remove</button>';
+    // v2.2.3 Session 3F (B2): Archive button when the job has finished and pool isn't running.
+    // Moves the source spreadsheet from upcoming/ into upcoming/Finished/ via the
+    // archive-spreadsheet IPC. Only shown when we have a finished flag AND a spreadsheetPath
+    // (the latter is null in older payloads, so we defensively skip the button without it).
+    const canArchive = !running && j.finished && j.spreadsheetPath;
+    const archive = canArchive ? '<button class="btn sm" style="padding:1px 8px;color:var(--green);margin-right:4px" title="Move this spreadsheet into upcoming/Finished/ (or wherever its sibling Finished/ folder is)" onclick="poolArchiveJob(\''+j.jobId+'\')">Archive</button>' : '';
     return '<div class="card" style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border:1px solid var(--brd)">'
       + '<div style="font-size:12px;color:var(--t2)"><b>'+(j.label||j.jobId)+'</b><span style="color:var(--t3)">'+prog+'</span></div>'
-      + rm + '</div>';
+      + '<div style="display:flex;align-items:center">' + archive + rm + '</div></div>';
   }).join('');
 }
 
 async function poolRemoveStaged(jobId){
   if(API.poolRemoveJob) await API.poolRemoveJob({ jobId });
   if(API.poolGetStatus) await API.poolGetStatus(); // triggers a fresh pool-status emit
+}
+// v2.2.3 Session 3F (B2): archive a finished job's spreadsheet into <parent>/Finished/.
+// Looks up the spreadsheetPath from the most recent pool-status (cached in lastPoolStatus by
+// the renderCoordStatus subscriber). Confirms with the user; on success refreshes the staged
+// list. If the file no longer exists (e.g. user moved it manually) shows a friendly message.
+let lastPoolStatus = null;
+async function poolArchiveJob(jobId){
+  if(!API.archiveSpreadsheet){ alert('Archive not available in this build.'); return; }
+  const job = (lastPoolStatus && lastPoolStatus.jobs || []).find(function(j){ return j.jobId === jobId; });
+  if(!job || !job.spreadsheetPath){ alert('Could not find the spreadsheet path for this job.'); return; }
+  if(!confirm('Move this spreadsheet into the Finished/ folder?\n\n'+job.spreadsheetPath+'\n\nThis takes it out of the upcoming queue so you don\'t run it again by accident.')) return;
+  try {
+    const res = await API.archiveSpreadsheet({ spreadsheetPath: job.spreadsheetPath });
+    if(res && res.ok){
+      addLiveLog('Archived to '+res.archivedTo, 'info');
+      // Remove the job from the staged list since its source is gone.
+      if(API.poolRemoveJob) await API.poolRemoveJob({ jobId });
+      if(API.poolGetStatus) await API.poolGetStatus();
+    } else {
+      alert('Archive failed: '+(res && res.error || 'unknown'));
+    }
+  } catch(e){ alert('Archive failed: '+(e && e.message || e)); }
 }
 async function poolClearStaged(){
   if(!confirm('Clear all staged jobs?')) return;
@@ -3443,7 +3471,7 @@ async function poolStopWorkerClick(workerId){
 }
 
 // Wire coordinator events once.
-if(API.onPoolStatus) API.onPoolStatus(function(st){ renderCoordStatus(st); });
+if(API.onPoolStatus) API.onPoolStatus(function(st){ lastPoolStatus = st; renderCoordStatus(st); });
 // v2.2.2 Session 2C: pool worker pause events. Translates the pool-pause shape to the
 // `evt` shape showPause() expects, sets currentPoolPause so the button handlers route to
 // poolRunControl, then shows the pause panel exactly the way single-runner pauses do.

@@ -183,6 +183,9 @@ contextBridge.exposeInMainWorld('api', {
   installChromium:     ()      => ipcRenderer.invoke('install-chromium'),
   onChromiumProgress:  (cb)    => ipcRenderer.on('chromium-progress', (_, d) => cb(d)),
   openSpreadsheet:     ()      => ipcRenderer.invoke('open-spreadsheet'),
+  // v2.2.3 Session 3F (B2): working-data convention. Moves a finished spreadsheet from
+  // upcoming/ into upcoming/Finished/ so the user stops hand-moving files mid-process.
+  archiveSpreadsheet:  (d)     => ipcRenderer.invoke('archive-spreadsheet', d),
   saveFlow:            (d)     => ipcRenderer.invoke('save-flow', d),
   loadFlow:            ()      => ipcRenderer.invoke('load-flow'),
   listOnceFlows:       ()      => ipcRenderer.invoke('list-once-flows'),
