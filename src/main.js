@@ -107,6 +107,9 @@ function coordOpenJournal(){
       setupScope: COORD.setupScope,
       startMode: COORD.startMode,
       startModeTarget: COORD.startModeTarget,
+      // v2.2.3 Session 3C (A1): persist diagnostic-capture config so resume preserves it.
+      diagnosticCapture: COORD.diagnosticCapture,
+      captureBucketCap: COORD.captureBucketCap,
       // phaseProgress mirrors the single-runner v3 checkpoint shape. Only the coordinator
       // can write here; per-worker setup/teardown is repeated on each spawn so it doesn't
       // need persistence. Updated by coordMarkPhaseProgress() below.
@@ -336,6 +339,13 @@ async function coordSpawnWorker(){
   const runnerLogPath = path.join(getLogsDir(), `buu2-worker-${workerId}.log`);
   const runnerLogStream = fs.createWriteStream(runnerLogPath, { flags: 'a' });
 
+  // v2.2.3 Session 3C (A1): diagnostic capture directory. One per pool run, under logsDir.
+  // The directory is created lazily by the worker on first capture (mkdir recursive). All
+  // workers in the same pool share the same dir; row folders are per-row so no collision.
+  const captureDir = COORD.diagnosticCapture && COORD.poolId
+    ? path.join(getLogsDir(), 'failures-' + COORD.poolId)
+    : null;
+
   const script = buildPoolWorker({
     flowSteps: job.flowSteps,
     setupSteps, teardownSteps,
@@ -354,6 +364,10 @@ async function coordSpawnWorker(){
     // v2.2.2 Session 2C: passing the pool-level startMode so the worker knows whether to
     // pause before each step (step), pause after each row (step-row), or just run (run-all).
     startMode: COORD.startMode || 'run-all',
+    // v2.2.3 Session 3C (A1): diagnostic capture config (forwards to worker template).
+    diagnosticCapture: !!COORD.diagnosticCapture,
+    captureDir: captureDir,
+    captureBucketCap: COORD.captureBucketCap || 10,
     runContext: { runId: workerId, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
   });
   fs.writeFileSync(runnerPath, script);
@@ -1357,7 +1371,7 @@ ipcMain.handle('pool-clear-jobs', async () => {
 
 // Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
-ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode }) => {
+ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
@@ -1387,7 +1401,15 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   // where every row skipped — saw all rows as "already done", handed out empty batches, and every
   // worker retired instantly ("workers appear then vanish, run stops"). Resume has its own path
   // (coordResumeFromJournal) that seeds completedRows deliberately; pool-start is always a fresh run.
-  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; job.completedRows = new Set(); }
+  // v2.2.3 Session 3C: also reset Session 3B's reclaim tally on a fresh pool-start so a
+  // second run in the same app session doesn't inherit stale reclaim counts from the prior run.
+  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; job.completedRows = new Set(); job.reclaimsTotal = 0; job.reclaimsByReason = { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 }; }
+  // v2.2.3 Session 3C (A1): diagnostic capture toggle + bucket cap. Default ON since
+  // v2.2.3 exists specifically to make false-ok reporting visible; user can flip off for
+  // a 'fast' run knowingly. Bucket cap (default 10) limits per-(status,errorCategory)
+  // capture folders so a 10k-row run can't fill the disk.
+  COORD.diagnosticCapture = (diagnosticCapture === false) ? false : true;
+  COORD.captureBucketCap = Math.max(1, Math.min(1000, parseInt(captureBucketCap) || 10));
   COORD.active = true;
   coordOpenJournal();  // v2.0.0 resume: start the append-only journal for this run
 
@@ -1595,6 +1617,9 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
       startRow: Number.isFinite(j.startRow) ? j.startRow : 1,
       nextRow: Number.isFinite(j.startRow) ? j.startRow : 1, done: 0, ok: 0, err: 0, skip: 0, finished: false,
       completedRows: completedByJob[j.jobId] || new Set(),
+      // v2.2.3 Session 3B (A5): reclaim tally is in-memory only — resumed runs start at zero.
+      reclaimsTotal: 0,
+      reclaimsByReason: { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 },
     });
   }
   // Seed counters from the completed sets so the UI shows real progress immediately.
@@ -1605,6 +1630,11 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
   COORD.startMode = meta.startMode || 'run-all';
   COORD.startModeTarget = meta.startModeTarget || { workers: 1, batchSize: meta.batchSize || 10 };
   COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || meta.batchSize || 10));
+  // v2.2.3 Session 3C (A1): restore diagnostic-capture config from meta. Default ON if missing
+  // (older journals predating 3C resume with capture enabled, which is the desired behavior for
+  // any resume — you want to keep diagnosing).
+  COORD.diagnosticCapture = (meta.diagnosticCapture === false) ? false : true;
+  COORD.captureBucketCap = Number.isFinite(meta.captureBucketCap) ? meta.captureBucketCap : 10;
   COORD.active = true;
   // Re-open the SAME journal in append mode (continue the continuous record).
   COORD.poolId = poolId;
@@ -1826,6 +1856,10 @@ function buildPoolWorker(cfg){
     pageLoadMode = 'domcontentloaded', retryCount = 2, runContext = {},
     // v2.2.2 Session 2E: per-job runtime knobs.
     breakerThreshold = 0, retryRowIndexes = null, reauthIntervalMin = 0,
+    // v2.2.3 Session 3C (A1): diagnostic capture. captureDir is the directory where per-row
+    // failure folders go (one per captured row). bucketCap=10 means at most 10 captures per
+    // (status, errorCategory) bucket — prevents 10k-row runs from filling the disk.
+    diagnosticCapture = true, captureDir = null, captureBucketCap = 10,
   } = cfg;
   return `
 'use strict';
@@ -1867,6 +1901,14 @@ const RUN_CONTEXT = ${JSON.stringify(runContext)};
 // when spawning. Pool forces workers=1 batch=1 when startMode is 'step' or 'step-row',
 // then scales up when the user clicks Run-All (coordinator handles that scaling).
 const START_MODE = ${JSON.stringify(cfg.startMode || 'run-all')};
+// v2.2.3 Session 3C (A1): diagnostic capture constants. CAPTURE_DIR is null when disabled.
+// CAPTURE_BUCKET_CAP limits per-(status,errorCategory) folders so high-volume failure modes
+// don't fill the disk. zlib is required here so the gzip call below doesn't reach for a
+// missing module under packaging.
+const DIAGNOSTIC_CAPTURE = ${diagnosticCapture ? 'true' : 'false'};
+const CAPTURE_DIR = ${captureDir ? JSON.stringify(captureDir) : 'null'};
+const CAPTURE_BUCKET_CAP = ${parseInt(captureBucketCap) || 10};
+const zlib = require('zlib');
 const LOGIN_STEPS = FLOW_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
 const DATA_STEPS  = FLOW_STEPS.filter(s => !s.locked && s.type !== 'pestpac-logout');
 const LOGOUT_STEP = FLOW_STEPS.find(s => s.type === 'pestpac-logout') || {type:'pestpac-logout'};
@@ -1893,6 +1935,18 @@ let currentMode = START_MODE;
 // push captured dialogs into row.__dialogs for the per-worker xlsx log.
 let _currentRowNum = null;
 let _currentRow = null;
+// v2.2.3 Session 3C (A1): ring buffers for per-row console + response capture. Reset to
+// empty arrays at the top of each row in the batch loop. Bounded to avoid runaway memory
+// during a long-running step (e.g. a PestPac page that spams console messages).
+const _CONSOLE_BUFFER_MAX = 200;
+const _RESPONSE_BUFFER_MAX = 50;
+let _consoleBuffer = [];
+let _responseBuffer = [];
+// Per-(status, errorCategory) capture counter so we cap at CAPTURE_BUCKET_CAP per bucket.
+// Keys are 'status|errorCategory' strings. Tracked locally to this worker; the cap is
+// per-worker, not pool-wide (an N-worker pool gets up to N*CAPTURE_BUCKET_CAP captures
+// per bucket — acceptable for v2.2.3 since exact pool-wide capping would need an IPC).
+const _captureBucketCount = {};
 const _readline = require('readline');
 const _rl = _readline.createInterface({ input: process.stdin, terminal: false });
 _rl.on('line', function(line){
@@ -2145,12 +2199,17 @@ async function runOnceFlow(page, steps, creds){
 
 async function processRow(page, row, creds, rowNum){
   const done=[];
+  // v2.2.3 Session 3C (A1): step trail with timestamps lives on the row so the diagnostic
+  // dump (written outside processRow) can include the full timeline. Reset on every attempt
+  // so a retry shows the retry's trail, not the failed first attempt + retry concatenated.
+  row.__stepTrail = [];
   // v2.2.2 Session 2C: __STOP__ / __NEXT_ROW__ sentinels for step-mode control flow.
   // - 'next-step' / 'auto' / 'run-all': falls through to execute the step normally.
   // - 'next-row': throws __NEXT_ROW__ so the row is recorded as skip and the loop moves on.
   // - 'stop': throws __STOP__ so the outer loop bails out and we proceed to shutdown.
   const attempt=async()=>{
     done.length=0;
+    row.__stepTrail = []; // reset on retry too
     for(let si=0;si<DATA_STEPS.length;si++){
       const s=DATA_STEPS[si];
       emit({type:'step', row:rowNum, step:si+1, totalSteps:DATA_STEPS.length});
@@ -2165,7 +2224,14 @@ async function processRow(page, row, creds, rowNum){
         if(cmd === 'next-row') throw new Error('__NEXT_ROW__');
         // 'next-step' / 'run-all' / 'auto' fall through.
       }
-      await runStep(page, s, row, creds);
+      const _stepStart = Date.now();
+      try {
+        await runStep(page, s, row, creds);
+        row.__stepTrail.push({ index: si, label: s._label || s.type, type: s.type, ok: true, ms: Date.now() - _stepStart, ts: new Date().toISOString() });
+      } catch (stepErr) {
+        row.__stepTrail.push({ index: si, label: s._label || s.type, type: s.type, ok: false, error: stepErr.message, ms: Date.now() - _stepStart, ts: new Date().toISOString() });
+        throw stepErr;
+      }
       done.push(s._label||s.type);
     }
   };
@@ -2233,6 +2299,62 @@ async function processRow(page, row, creds, rowNum){
   }
 }
 
+// v2.2.3 Session 3C (A1): per-row diagnostic capture. Writes a folder under CAPTURE_DIR
+// named 'row-<N>-<status>-<errorCategory>/' containing screenshot.png, dom.html.gz, url.txt,
+// steps.json (step trail with timestamps), console.log (browser console buffer for this row),
+// responses.log (non-OK HTTP responses + every non-GET), dialogs.json (captured dialogs).
+// Capped per (status,errorCategory) bucket to CAPTURE_BUCKET_CAP so high-volume failure
+// modes don't fill the disk. Best-effort: any capture step that fails is silently skipped
+// so a slow page or read-only disk never breaks the run.
+async function captureRowDiagnostic(page, row, rowNum, res, durationMs){
+  if (!DIAGNOSTIC_CAPTURE || !CAPTURE_DIR) return;
+  try {
+    const status = res.status || 'unknown';
+    const cat = res.errorCategory || (status === 'ok' || status === 'ok (retry)' ? 'success' : 'general');
+    const bucketKey = status + '|' + cat;
+    if ((_captureBucketCount[bucketKey] || 0) >= CAPTURE_BUCKET_CAP) return;
+    _captureBucketCount[bucketKey] = (_captureBucketCount[bucketKey] || 0) + 1;
+    // Sanitize the folder name so Windows is happy.
+    const safeStatus = String(status).replace(/[^a-zA-Z0-9-]/g, '_');
+    const safeCat = String(cat).replace(/[^a-zA-Z0-9-]/g, '_');
+    const dir = path.join(CAPTURE_DIR, 'row-' + rowNum + '-' + safeStatus + '-' + safeCat);
+    try { fs.mkdirSync(dir, { recursive: true }); } catch(e) { return; }
+    // 1. Screenshot first (most likely to fail on a closed page; do it before slow work).
+    try {
+      await page.screenshot({ path: path.join(dir, 'screenshot.png'), fullPage: false, timeout: 5000 });
+    } catch(e) { fs.writeFileSync(path.join(dir, 'screenshot.error.txt'), String(e.message)); }
+    // 2. URL.
+    try { fs.writeFileSync(path.join(dir, 'url.txt'), page.url()); } catch(e) {}
+    // 3. Step trail with timestamps.
+    try {
+      const trail = (row.__stepTrail || []).map(t => Object.assign({}, t));
+      const meta = { row: rowNum, status: status, error: res.error || '', errorCategory: cat, phase: res.phase || '', failedStep: res.failedStep || '', durationMs: durationMs, fieldsWritten: res.fieldsWritten || '' };
+      fs.writeFileSync(path.join(dir, 'steps.json'), JSON.stringify({ meta: meta, trail: trail }, null, 2));
+    } catch(e) {}
+    // 4. Console buffer (last N entries).
+    try {
+      const txt = _consoleBuffer.map(e => '[' + e.ts + '] ' + e.level + ': ' + e.text).join('\\n');
+      fs.writeFileSync(path.join(dir, 'console.log'), txt);
+    } catch(e) {}
+    // 5. Response buffer (non-OK + non-GET).
+    try {
+      const txt = _responseBuffer.map(e => '[' + e.ts + '] ' + e.method + ' ' + e.status + ' ' + e.url).join('\\n');
+      fs.writeFileSync(path.join(dir, 'responses.log'), txt);
+    } catch(e) {}
+    // 6. Dialogs.
+    try {
+      const dl = row.__dialogs || [];
+      fs.writeFileSync(path.join(dir, 'dialogs.json'), JSON.stringify(dl, null, 2));
+    } catch(e) {}
+    // 7. DOM snapshot last (potentially largest + slowest).
+    try {
+      const html = await page.content();
+      const gz = zlib.gzipSync(Buffer.from(html, 'utf8'));
+      fs.writeFileSync(path.join(dir, 'dom.html.gz'), gz);
+    } catch(e) { fs.writeFileSync(path.join(dir, 'dom.error.txt'), String(e.message)); }
+  } catch(_outer) { /* outer catch: capture is never allowed to break the run */ }
+}
+
 async function main(){
   const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
   const ALL_ROWS = loadAllRows(SPREADSHEET);
@@ -2262,6 +2384,34 @@ async function main(){
     } catch (e) { /* logging never throws */ }
     // Intentionally NOT calling accept/dismiss here — that's the Handle Dialog step's job,
     // or Playwright's default auto-dismiss otherwise.
+  });
+
+  // v2.2.3 Session 3C (A1): per-row console + HTTP-response capture for diagnostic dumps.
+  // Bounded ring buffers so a chatty page can't grow memory unbounded mid-row. Reset to empty
+  // at the top of each row in the batch loop. Captures every console message (log/warn/error)
+  // and every non-OK HTTP response status; the diagnostic dump uses both to explain why a row
+  // looked successful but PestPac didn't persist (the void-flow false-ok pattern that motivated
+  // v2.2.3 — a 200 response with the wrong body is invisible without this trail).
+  page.on('console', msg => {
+    try {
+      const t = msg.type();
+      const text = msg.text();
+      if (_consoleBuffer.length >= _CONSOLE_BUFFER_MAX) _consoleBuffer.shift();
+      _consoleBuffer.push({ ts: new Date().toISOString(), level: t, text: text });
+    } catch(e) { /* never throws */ }
+  });
+  page.on('response', async resp => {
+    try {
+      const status = resp.status();
+      const url = resp.url();
+      const method = resp.request().method();
+      // Filter: skip GETs of static assets to keep the buffer signal-to-noise high. Any
+      // non-GET (POST/PUT/DELETE/PATCH) is interesting (form submissions). GETs are captured
+      // only when status >= 400 (errors are diagnostic gold).
+      if (method === 'GET' && status < 400) return;
+      if (_responseBuffer.length >= _RESPONSE_BUFFER_MAX) _responseBuffer.shift();
+      _responseBuffer.push({ ts: new Date().toISOString(), method: method, status: status, url: url });
+    } catch(e) { /* never throws */ }
   });
 
   // v2.1.0: report the login phase so the UI shows 'logging in' before 'running'.
@@ -2340,6 +2490,11 @@ async function main(){
       // listener can tag captured dialogs with this row. Cleared after row-result emit.
       _currentRowNum = rowNum;
       _currentRow = row;
+      // v2.2.3 Session 3C (A1): reset per-row capture buffers. console.on and response.on
+      // listeners are installed once at page setup and push to these arrays continuously;
+      // resetting here scopes captured signal to this row only.
+      _consoleBuffer = [];
+      _responseBuffer = [];
       // v2.2.2 Session 2C: processRow throws __STOP__ when user clicked Stop mid-step.
       // Catch it here so the batch loop can drain cleanly (with the rest of the batch
       // released to the coordinator via _reclaimRows).
@@ -2372,6 +2527,11 @@ async function main(){
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null,
         errorCategory: res.errorCategory || '', phase: res.phase || '',
         dialogs: row.__dialogs || null});
+      // v2.2.3 Session 3C (A1): diagnostic capture. Awaited inline so the next row's listeners
+      // don't overwrite buffers mid-serialization. Bucket-capped + best-effort: a slow capture
+      // can add ~1-3s per captured row, but is bounded by CAPTURE_BUCKET_CAP per bucket. The
+      // helper itself swallows all errors so a capture failure never breaks the run.
+      try { await captureRowDiagnostic(page, row, rowNum, res, Date.now()-t0); } catch(_) {}
       _currentRowNum = null; _currentRow = null;
       // v2.2.2 Session 2E: circuit breaker bookkeeping. ok/ok-retry reset the counter;
       // user-chosen skips (Next-row or retry-row-filter exclusions) don't count. Genuine

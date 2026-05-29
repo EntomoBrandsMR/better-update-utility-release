@@ -790,6 +790,12 @@ textarea { resize: vertical; min-height: 60px; }
         <option value="global">Global (once)</option>
       </select>
     </div>
+    <!-- v2.2.3 Session 3C (A1): diagnostic capture toggle. Default ON so the false-ok
+         pattern that motivated v2.2.3 produces useful evidence the first run after upgrade. -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px" title="On each row, write a folder under logs/failures-<poolId>/ containing screenshot, DOM snapshot, URL, step trail with timestamps, console buffer, HTTP responses, and captured dialogs. Capped at 10 captures per (status, error category) bucket so high-volume runs don't fill the disk. Adds ~1-3s per captured row.">
+      <label style="font-size:11px;color:var(--t3);display:flex;align-items:center;gap:5px"><input id="poolDiagCapture" type="checkbox" checked style="margin:0;cursor:pointer"> Diagnostic capture</label>
+      <input id="poolDiagCap" type="number" min="1" max="1000" value="10" title="Captures per (status, error category) bucket" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:11px">
+    </div>
     <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" style="width:100%" title="Start the worker pool">Run pool</button>
     <button class="tbtn" id="poolSweepBtn" onclick="poolLogoutSweepClick()" style="width:100%;margin-top:2px" title="Log out any BUU sessions still logged in on PestPac (License Manager). Use if you see stuck sessions.">Log out stuck sessions</button>
   </div>
@@ -3174,13 +3180,16 @@ async function poolRunClick(){
   const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
   const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
   const setupScope = (document.getElementById('poolSetupScope')||{}).value || 'per-worker';
+  // v2.2.3 Session 3C (A1): diagnostic capture config. ON by default; user can flip off.
+  const diagnosticCapture = !!(document.getElementById('poolDiagCapture')||{checked:true}).checked;
+  const captureBucketCap = parseInt((document.getElementById('poolDiagCap')||{}).value) || 10;
   if(!confirm('Start worker pool?\n\n• '+n+' workers (headless, batch size '+batchSize+')\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull batches until all jobs drain. Continue?')) return;
   // v2.2.2 Session 2C: pool start mode pulled from the same start-mode dropdown the
 // single-runner uses. Session 2G will move the dropdown into the pool launch UI; for now
 // it just doubles up so pool runs can also be stepped through.
 const _smSel = document.getElementById('startModeSel');
 const startMode = (_smSel && _smSel.value) || 'run-all';
-const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode });
+const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
   poolUIActive(true);
   go('run');

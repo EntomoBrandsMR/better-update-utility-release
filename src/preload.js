@@ -127,6 +127,12 @@ async function shimStartAutomation(d) {
       licenseIntervalMin: 0,
       setupScope: 'per-worker',
       startMode: d.startMode || 'run-all',
+      // v2.2.3 Session 3C (A1): the legacy startAutomation path (used by the simple Start
+      // button via the v2.2.2 shim) gets diagnostic capture ON by default so single-runner-
+      // style runs benefit from the same trustworthy-reporting evidence as pool runs. The
+      // user can disable via the pool-launch UI when running through that path instead.
+      diagnosticCapture: true,
+      captureBucketCap: 10,
     });
     if (!start || start.ok === false) {
       return { ok: false, error: (start && start.error) || 'pool-start failed' };
