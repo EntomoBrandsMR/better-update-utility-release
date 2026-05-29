@@ -133,6 +133,8 @@ async function shimStartAutomation(d) {
       // user can disable via the pool-launch UI when running through that path instead.
       diagnosticCapture: true,
       captureBucketCap: 10,
+      // v2.2.3 Session 3D (A2): verify-after-action ON by default for the legacy Start path too.
+      verifyAfterAction: true,
     });
     if (!start || start.ok === false) {
       return { ok: false, error: (start && start.error) || 'pool-start failed' };

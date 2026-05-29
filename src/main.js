@@ -110,6 +110,8 @@ function coordOpenJournal(){
       // v2.2.3 Session 3C (A1): persist diagnostic-capture config so resume preserves it.
       diagnosticCapture: COORD.diagnosticCapture,
       captureBucketCap: COORD.captureBucketCap,
+      // v2.2.3 Session 3D (A2): persist verify-after-action toggle for resume.
+      verifyAfterAction: COORD.verifyAfterAction,
       // phaseProgress mirrors the single-runner v3 checkpoint shape. Only the coordinator
       // can write here; per-worker setup/teardown is repeated on each spawn so it doesn't
       // need persistence. Updated by coordMarkPhaseProgress() below.
@@ -368,6 +370,8 @@ async function coordSpawnWorker(){
     diagnosticCapture: !!COORD.diagnosticCapture,
     captureDir: captureDir,
     captureBucketCap: COORD.captureBucketCap || 10,
+    // v2.2.3 Session 3D (A2): verify-after-action toggle.
+    verifyAfterAction: !!COORD.verifyAfterAction,
     runContext: { runId: workerId, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
   });
   fs.writeFileSync(runnerPath, script);
@@ -1371,7 +1375,7 @@ ipcMain.handle('pool-clear-jobs', async () => {
 
 // Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
-ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap }) => {
+ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap, verifyAfterAction }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
@@ -1410,6 +1414,10 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   // capture folders so a 10k-row run can't fill the disk.
   COORD.diagnosticCapture = (diagnosticCapture === false) ? false : true;
   COORD.captureBucketCap = Math.max(1, Math.min(1000, parseInt(captureBucketCap) || 10));
+  // v2.2.3 Session 3D (A2): verify-after-action toggle. ON by default since v2.2.3 exists
+  // specifically to make false-ok reporting visible. User can flip off for a 'fast' run
+  // knowingly (verify adds one re-navigation per row, ~5-15s).
+  COORD.verifyAfterAction = (verifyAfterAction === false) ? false : true;
   COORD.active = true;
   coordOpenJournal();  // v2.0.0 resume: start the append-only journal for this run
 
@@ -1635,6 +1643,8 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
   // any resume — you want to keep diagnosing).
   COORD.diagnosticCapture = (meta.diagnosticCapture === false) ? false : true;
   COORD.captureBucketCap = Number.isFinite(meta.captureBucketCap) ? meta.captureBucketCap : 10;
+  // v2.2.3 Session 3D (A2): restore verify-after-action toggle.
+  COORD.verifyAfterAction = (meta.verifyAfterAction === false) ? false : true;
   COORD.active = true;
   // Re-open the SAME journal in append mode (continue the continuous record).
   COORD.poolId = poolId;
@@ -1860,6 +1870,11 @@ function buildPoolWorker(cfg){
     // failure folders go (one per captured row). bucketCap=10 means at most 10 captures per
     // (status, errorCategory) bucket — prevents 10k-row runs from filling the disk.
     diagnosticCapture = true, captureDir = null, captureBucketCap = 10,
+    // v2.2.3 Session 3D (A2): verify-after-action. Re-navigates to the row's primary URL
+    // after each row completes and reads back the fields the flow's write steps tried to set.
+    // Mismatch → reclassify as 'error'. THE headline feature for v2.2.3 — without this every
+    // reported 'ok' remains untrustworthy (see void-flow false-ok pattern in design doc).
+    verifyAfterAction = true,
   } = cfg;
   return `
 'use strict';
@@ -1909,6 +1924,9 @@ const DIAGNOSTIC_CAPTURE = ${diagnosticCapture ? 'true' : 'false'};
 const CAPTURE_DIR = ${captureDir ? JSON.stringify(captureDir) : 'null'};
 const CAPTURE_BUCKET_CAP = ${parseInt(captureBucketCap) || 10};
 const zlib = require('zlib');
+// v2.2.3 Session 3D (A2): verify pass toggle. Worker re-navigates and reads back fields
+// after each row when true.
+const VERIFY_AFTER_ACTION = ${verifyAfterAction ? 'true' : 'false'};
 const LOGIN_STEPS = FLOW_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
 const DATA_STEPS  = FLOW_STEPS.filter(s => !s.locked && s.type !== 'pestpac-logout');
 const LOGOUT_STEP = FLOW_STEPS.find(s => s.type === 'pestpac-logout') || {type:'pestpac-logout'};
@@ -2355,6 +2373,87 @@ async function captureRowDiagnostic(page, row, rowNum, res, durationMs){
   } catch(_outer) { /* outer catch: capture is never allowed to break the run */ }
 }
 
+// v2.2.3 Session 3D (A2): verify-after-action pass. Re-navigates to the row's primary URL
+// (the first navigate step in DATA_STEPS, substituted with row data) and reads back the
+// fields the flow's write steps tried to set. Compares actual-vs-intended on the
+// fresh-navigated page (proves PestPac persistence, not just that the form accepted input).
+// Returns { ok, failedFields, reason? }. failedFields: [{selector, label, expected, actual}].
+// Reason is set when verify could not run (e.g., no navigate step) so the caller can decide
+// whether to treat that as inconclusive.
+async function verifyRow(page, row, creds){
+  if (!VERIFY_AFTER_ACTION) return { ok: true, failedFields: [], reason: 'disabled' };
+  // Re-use the same substitution logic as runStep (kept inline here to avoid hoisting a
+  // closure; r is defined inside runStep with access to that scope).
+  const r = v => { if(!v) return ''; return v.replace(/{{CRED:companyKey}}/g, creds.companyKey||'').replace(/{{CRED:username}}/g, creds.username||'').replace(/{{CRED:password}}/g, creds.password||'').replace(/{{([^}]+)}}/g, function(_,ref){ if(ref==='TODAY') return RUN_CONTEXT.today||''; if(ref==='RUNID') return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME') return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
+  // 1. Find the row's primary navigate step (the first navigate in DATA_STEPS). Without one,
+  //    we can't fresh-navigate, so we report inconclusive rather than fabricating a verdict.
+  const navStep = DATA_STEPS.find(s => s.type === 'navigate' && s.url);
+  if (!navStep) return { ok: true, failedFields: [], reason: 'no-navigate-step' };
+  const url = r(navStep.url);
+  if (!url) return { ok: true, failedFields: [], reason: 'navigate-url-empty' };
+  // 2. Build the expected map: walk DATA_STEPS in order; for each verifiable write step,
+  //    record selector -> {type, expected, label}. Later writes to the same selector overwrite.
+  //    Skip: navigate, click, wait, pestpac-login/logout, fileupload, readfield, dialog,
+  //          textedit (sub-mode complexity — deferred to v2.3), assert (already checked at run
+  //          time), checkbox with checkAction='toggle' (post-run state unknown without probe).
+  const expectedBySel = new Map();
+  for (const s of DATA_STEPS) {
+    if (!s || !s.selector) continue;
+    if (s.type === 'type') {
+      expectedBySel.set(s.selector, { type: 'type', expected: r(s.value), label: s._label || s.selector });
+    } else if (s.type === 'select') {
+      expectedBySel.set(s.selector, { type: 'select', expected: r(s.value), label: s._label || s.selector });
+    } else if (s.type === 'checkbox') {
+      const ca = s.checkAction || 'check';
+      if (ca === 'check' || ca === 'uncheck') {
+        expectedBySel.set(s.selector, { type: 'checkbox', expected: (ca === 'check'), label: s._label || s.selector });
+      }
+    }
+  }
+  if (expectedBySel.size === 0) return { ok: true, failedFields: [], reason: 'no-verifiable-writes' };
+  // 3. Fresh-navigate. Use a SHORTER timeout than the main NAV_TIMEOUT (90s) since this is a
+  //    re-load of a page we just successfully loaded; a long hang here means PestPac is sick
+  //    and verify should bail without polluting the row's status with a fabricated failure.
+  try {
+    await page.goto(url, { waitUntil: PAGE_LOAD_MODE, timeout: 30000 });
+  } catch(navErr) {
+    return { ok: true, failedFields: [], reason: 'reverify-nav-failed: ' + navErr.message };
+  }
+  // Give the page a beat to fully render before reading.
+  try { await page.waitForLoadState('networkidle', { timeout: 5000 }); } catch(_) {}
+  // 4. Read each expected selector. Mismatches go into failedFields.
+  const failed = [];
+  const norm = s => (s == null ? '' : String(s).trim().toLowerCase());
+  for (const [selector, exp] of expectedBySel) {
+    let actual = '';
+    try {
+      const loc = page.locator(selector);
+      await loc.first().waitFor({ state: 'attached', timeout: 5000 });
+      if (exp.type === 'type') {
+        actual = await loc.first().inputValue();
+        if (norm(actual) !== norm(exp.expected)) {
+          failed.push({ selector: selector, label: exp.label, expected: exp.expected, actual: actual });
+        }
+      } else if (exp.type === 'select') {
+        // Read the selected option's textContent (== label since the flow selects by label).
+        actual = await loc.first().evaluate(el => { try { return el.options && el.selectedIndex >= 0 ? (el.options[el.selectedIndex].textContent || '') : ''; } catch(_) { return ''; } });
+        if (norm(actual) !== norm(exp.expected)) {
+          failed.push({ selector: selector, label: exp.label, expected: exp.expected, actual: actual });
+        }
+      } else if (exp.type === 'checkbox') {
+        const checked = await loc.first().isChecked();
+        if (checked !== exp.expected) {
+          failed.push({ selector: selector, label: exp.label, expected: exp.expected ? 'checked' : 'unchecked', actual: checked ? 'checked' : 'unchecked' });
+        }
+      }
+    } catch(readErr) {
+      // A read failure is itself a verify miss: the field we expected to be there isn't.
+      failed.push({ selector: selector, label: exp.label, expected: exp.expected, actual: '(read failed: ' + readErr.message + ')' });
+    }
+  }
+  return { ok: failed.length === 0, failedFields: failed, reason: failed.length ? 'mismatch' : 'verified' };
+}
+
 async function main(){
   const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
   const ALL_ROWS = loadAllRows(SPREADSHEET);
@@ -2512,21 +2611,55 @@ async function main(){
         _currentRowNum = null; _currentRow = null;
         throw e;
       }
+      // v2.2.3 Session 3D (A2): verify-after-action. Re-navigate and read back fields
+      // the flow tried to set. Mismatch → reclassify to 'error' with the offending fields
+      // named. Runs on EVERY row (ok + ok-retry + skip + error) so we catch both directions:
+      //   - false-ok (BUU thought it worked, PestPac shows it didn't): the void-flow pattern.
+      //   - false-error (BUU thought it failed, but PestPac actually saved): less common; we
+      //     don't flip these to ok — keep the original status and add verifyOk:true for
+      //     transparency. The user can scan the journal for that flag during reconciliation.
+      // Skips when VERIFY_AFTER_ACTION=false (toggle), no navigate step, or no verifiable
+      // writes. Verify failures themselves never throw — verifyRow swallows all internal errors.
+      let _verify = null;
+      try { _verify = await verifyRow(page, row, creds); } catch(verifyErr) { _verify = { ok: true, failedFields: [], reason: 'verify-threw: ' + verifyErr.message }; }
+      if (_verify && _verify.failedFields && _verify.failedFields.length > 0) {
+        const fieldList = _verify.failedFields.map(f => f.label + ' expected=' + JSON.stringify(f.expected) + ' got=' + JSON.stringify(f.actual)).join('; ');
+        // Reclassify ok and ok(retry) → error; for already-error/skip rows, append.
+        if (res.status === 'ok' || res.status === 'ok (retry)') {
+          res.status = 'error';
+          res.error = 'Verify failed: ' + fieldList;
+          res.errorCategory = 'verify-mismatch';
+          res.failedStep = '(verify)';
+        } else {
+          res.error = (res.error ? res.error + ' | ' : '') + 'Verify also failed: ' + fieldList;
+        }
+        res.verifyFailedFields = _verify.failedFields.map(f => f.label).join(', ');
+      } else if (_verify && _verify.reason === 'verified' && (res.status === 'error' || res.status === 'skip')) {
+        // Verify SAYS the row is actually fine, but BUU originally reported failure. Don't
+        // change the status (would hide the original signal); flag for the user instead.
+        res.verifyOk = true;
+      }
       const entry={ row:rowNum, timestamp:new Date().toISOString(), url:row.URL||row.url||'', status:res.status, error:res.error||'', failedStep:res.failedStep||'', fieldsWritten:res.fieldsWritten||'', durationMs:Date.now()-t0,
         // v2.2.2 Session 2D: forensic columns from the classifier (populated on failure).
         errorCategory: res.errorCategory || '', phase: res.phase || '',
         // v2.2.3 Session 3A (A3): serialize captured dialogs for the worker xlsx log.
         // Empty string when none; pipe-separated list of messages when present so the
         // xlsx column is readable as a single cell.
-        dialogs: (row.__dialogs && row.__dialogs.length) ? row.__dialogs.map(d => d.dialogType + ': ' + d.message).join(' | ') : '' };
+        dialogs: (row.__dialogs && row.__dialogs.length) ? row.__dialogs.map(d => d.dialogType + ': ' + d.message).join(' | ') : '',
+        // v2.2.3 Session 3D (A2): verify-pass result columns.
+        verifyFailedFields: res.verifyFailedFields || '',
+        verifyOk: res.verifyOk ? 'yes' : '' };
       addLog(entry);
       // v2.2.0: include any read-field values captured this row so the coordinator can write the
       // dedicated results workbook. row.__reads is { colName: {value,label,out} }.
       // v2.2.2 Session 2D: also pass errorCategory/phase so the renderer can show categorized failures.
       // v2.2.3 Session 3A (A3): also pass captured dialogs through to the coordinator/renderer.
+      // v2.2.3 Session 3D (A2): also pass verify result columns.
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null,
         errorCategory: res.errorCategory || '', phase: res.phase || '',
-        dialogs: row.__dialogs || null});
+        dialogs: row.__dialogs || null,
+        verifyFailedFields: res.verifyFailedFields || null,
+        verifyOk: !!res.verifyOk});
       // v2.2.3 Session 3C (A1): diagnostic capture. Awaited inline so the next row's listeners
       // don't overwrite buffers mid-serialization. Bucket-capped + best-effort: a slow capture
       // can add ~1-3s per captured row, but is bounded by CAPTURE_BUCKET_CAP per bucket. The
