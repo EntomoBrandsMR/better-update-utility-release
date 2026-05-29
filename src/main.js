@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.2.3';
+const CURRENT_VERSION = '2.2.4';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -2505,7 +2505,13 @@ async function verifyRow(page, row, creds){
 async function main(){
   const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
   const ALL_ROWS = loadAllRows(SPREADSHEET);
-  const browser = await chromium.launch({ headless:true, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage','--disable-background-timer-throttling'] });
+  // v2.2.4: regression fix from v2.2.2 — when the single-runner was killed and step-by-step
+  // was routed through the pool worker, the worker kept its headless:true setting. That made
+  // step-by-step useless because the user can't watch what's happening. Now we honor
+  // START_MODE: 'step' and 'step-row' launch headed so the user can see the browser; 'run-all'
+  // stays headless for performance (a normal pool run with 10 workers can't open 10 windows).
+  const _isStepMode = (START_MODE === 'step' || START_MODE === 'step-row');
+  const browser = await chromium.launch({ headless: !_isStepMode, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage','--disable-background-timer-throttling'] });
   const page = await (await browser.newContext()).newPage();
 
   // v2.2.3 Session 3A (A3): blanket dialog listener. Logs every dialog (PestPac validation
