@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.2.5';
+const CURRENT_VERSION = '2.2.6';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -854,9 +854,14 @@ ipcMain.handle('list-profiles', async () => readAllProfiles().map(({ id, name, l
 
 ipcMain.handle('save-profile', async (_, profile) => {
   if (keytar) {
-    await keytar.setPassword(SERVICE_NAME, `${profile.id}:companyKey`, profile.companyKey || '');
-    await keytar.setPassword(SERVICE_NAME, `${profile.id}:username`,   profile.username   || '');
-    await keytar.setPassword(SERVICE_NAME, `${profile.id}:password`,   profile.password   || '');
+    // keytar.setPassword rejects an empty string ("Password is required."), so an
+    // empty secret (e.g. companyKey on a Frankware profile) must be DELETED, not set.
+    // Storing empty here is what made Frankware profiles silently fail to save.
+    for (const k of ['companyKey', 'username', 'password']) {
+      const v = profile[k];
+      if (v) await keytar.setPassword(SERVICE_NAME, `${profile.id}:${k}`, v);
+      else   await keytar.deletePassword(SERVICE_NAME, `${profile.id}:${k}`).catch(() => {});
+    }
   }
   const all = readAllProfiles();
   const i = all.findIndex(p => p.id === profile.id);
