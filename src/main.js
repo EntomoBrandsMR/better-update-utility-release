@@ -850,7 +850,7 @@ function readAllProfiles() {
 function writeAllProfiles(arr) { fs.writeFileSync(credFilePath(), encStore(arr)); }
 
 // ── PROFILE IPC ───────────────────────────────────────────────────────────────
-ipcMain.handle('list-profiles', async () => readAllProfiles().map(({ id, name, loginUrl, username }) => ({ id, name, loginUrl, username })));
+ipcMain.handle('list-profiles', async () => readAllProfiles().map(({ id, name, loginUrl, username, platform }) => ({ id, name, loginUrl, username, platform })));
 
 ipcMain.handle('save-profile', async (_, profile) => {
   if (keytar) {
@@ -1015,6 +1015,15 @@ ipcMain.handle('get-worker-caps', async () => {
 // ════════════════════════════════════════════════════════════════════════════
 async function loginToPestPacInPage(page, creds){
   await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  if((creds.platform||'pestpac')==='frankware'){
+    // Frankware: single Rails login page, no company key, submit via Enter.
+    await page.waitForSelector('input[name="session[login]"]',{timeout:20000});
+    await page.fill('input[name="session[login]"]',creds.username||'');
+    await page.fill('input[name="session[password]"]',creds.password||'');
+    await page.press('input[name="session[password]"]','Enter');
+    await page.waitForFunction(()=>!location.pathname.includes('/login'),null,{timeout:30000});
+    return;
+  }
   await page.waitForSelector('input[name="uid"]',{timeout:15000});
   await page.fill('input[name="uid"]',creds.companyKey||'');
   try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
@@ -1033,6 +1042,15 @@ async function loginToPestPacInPage(page, creds){
 // four runner templates). If you edit loginToPestPacInPage above, update this too.
 const LOGIN_TO_PESTPAC_SRC = `async function loginToPestPac(page, creds){
   await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  if((creds.platform||'pestpac')==='frankware'){
+    // Frankware: single Rails login page, no company key, submit via Enter.
+    await page.waitForSelector('input[name="session[login]"]',{timeout:20000});
+    await page.fill('input[name="session[login]"]',creds.username||'');
+    await page.fill('input[name="session[password]"]',creds.password||'');
+    await page.press('input[name="session[password]"]','Enter');
+    await page.waitForFunction(()=>!location.pathname.includes('/login'),null,{timeout:30000});
+    return;
+  }
   await page.waitForSelector('input[name="uid"]',{timeout:15000});
   await page.fill('input[name="uid"]',creds.companyKey||'');
   try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
@@ -1832,20 +1850,10 @@ async function coordLicenseScale(profileId, buffer, hwCap){
     const { chromium } = require('playwright-core');
     browser = await chromium.launch({ headless: true, executablePath: chromiumExe, args: ['--disable-gpu','--disable-dev-shm-usage'] });
     const page = await (await browser.newContext()).newPage();
-    await page.goto(prof.loginUrl || 'https://login.pestpac.com/', { waitUntil: 'load', timeout: 30000 });
-    await page.waitForSelector('input[name="uid"]', { timeout: 15000 });
-    await page.fill('input[name="uid"]', prof.companyKey || '');
-    try { await page.waitForSelector('.MuiBackdrop-root', { state: 'hidden', timeout: 12000 }); } catch {}
-    try { await page.click('button[data-testid="CompanyKeyForm-loginBtn"]', { timeout: 15000 }); }
-    catch { await page.click('button[data-testid="CompanyKeyForm-loginBtn"]', { force: true }); }
-    await page.waitForSelector('input[name="username"]', { timeout: 15000 });
-    await page.fill('input[name="username"]', prof.username || '');
-    await page.fill('input[name="password"]', prof.password || '');
-    // v2.1.1a: wait out the MUI loading backdrop before clicking login (see check-license-cap).
-    try { await page.waitForSelector('.MuiBackdrop-root', { state: 'hidden', timeout: 12000 }); } catch {}
-    try { await page.click('button[data-testid="loginBtn"]', { timeout: 15000 }); }
-    catch { await page.click('button[data-testid="loginBtn"]', { force: true }); }
-    await page.waitForSelector('a[href*="AutoLogin"]', { timeout: 30000 });
+    // Login via the shared canonical helper (drift-proof; also platform-aware).
+    // Replaces the old inline copy the v2.2.2 refactor missed (check-license-cap
+    // was converted, this recheck path was not). Behavior identical for PestPac.
+    await loginToPestPacInPage(page, { loginUrl: prof.loginUrl, companyKey: prof.companyKey, username: prof.username, password: prof.password, platform: prof.platform });
     await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
     // v2.2.1: read the PestPac FREE value from the #div_PestPac panel with an EXACT label match
     // (avoids the old startsWith bug that could read used/total or a Mobile/RouteOp table).
