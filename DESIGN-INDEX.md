@@ -1,7 +1,7 @@
 # BUU DESIGN INDEX
 
 **Purpose:** Single entry point for active design work. Read this first.
-**Last updated:** 2026-05-27 (v2.3.0 agenda locked after Void-debugging session; 2.x history captured).
+**Last updated:** 2026-05-27 (v2.4.0 agenda locked after Void-debugging session; 2.x history captured).
 
 ---
 
@@ -49,7 +49,7 @@ cross-wire. Legacy flows are copied into 2.0 once on first launch (then independ
   for reclaim). See `BUU-v2.2.1-DESIGN.md` if it exists; otherwise see the git tag and the
   v2.2.1 release notes.
 
-**NEXT UP: v2.3.0** — full agenda in `BUU-v2.3.0-DESIGN.md`. Agenda locked 2026-05-27 in a
+**NEXT UP: v2.4.0** — full agenda in `BUU-v2.4.0-DESIGN.md`. Agenda locked 2026-05-27 in a
 long live-debugging session against PestPac's Void Lead flow, then extended after a 9,854-row
 big run revealed concurrency/burn-time issues. **25 items**, anchored on **runtime unification** (item 1, must be done first by itself before anything else lands on
 top). Summary of buckets:
@@ -85,8 +85,8 @@ top). Summary of buckets:
   of rows. Must be a fresh-navigate read (proves persistence), not a same-page inline read
   (only proves the field accepted input pre-Save).
 
-**Deferred from v2.3:**
-- **v2.4** — Field Catalog (persistent observation store of every PestPac field BUU has seen;
+**Deferred from v2.4:**
+- **v2.5** — Field Catalog (persistent observation store of every PestPac field BUU has seen;
   the foundation for required-field auto-discovery without manual prep), parallel multi-flow
   runs.
 - **v3.0 branch** — PestPac API integration / hybrid mode. The Void debugging session made
@@ -166,8 +166,8 @@ All three live in `scripts/` (gitignored). They source `creds.ps1` (also gitigno
 
 | Document | Status | Read this when |
 |---|---|---|
-| **BUU-v2.2.2-DESIGN.md** | Drafted 2026-05-28. **Active.** | Interim release pulled forward after the void-flow-reports-success-when-nothing-persisted finding. Scope: trustworthy reporting (diagnostic capture, verify-after-action, dialog text logging, skip↔error reclassification) + major cleanup (repo, scripts, log retention). Everything else stays in v2.3. |
-| **BUU-v2.3.0-DESIGN.md** | Drafted 2026-05-27. Partially deferred. | The big refactor + 25-item agenda. Trustworthiness items pulled forward into v2.2.2; everything else stays here. Read after v2.2.2 ships. |
+| **BUU-v2.2.2-DESIGN.md** | Drafted 2026-05-28. **Active.** | Interim release pulled forward after the void-flow-reports-success-when-nothing-persisted finding. Scope: trustworthy reporting (diagnostic capture, verify-after-action, dialog text logging, skip↔error reclassification) + major cleanup (repo, scripts, log retention). Everything else stays in v2.4. |
+| **BUU-v2.4.0-DESIGN.md** | Drafted 2026-05-27. Partially deferred. | The big refactor + 25-item agenda. Trustworthiness items pulled forward into v2.2.2; everything else stays here. Read after v2.2.2 ships. |
 | **BUU-v2.0.1-DESIGN.md** | Shipped (v2.0.1 series) | Reference for early BUU 2.0 polish (Auto worker-count + license awareness, toolbar relabeling). |
 | **BUU-v1.2.8-DESIGN.md** | Shipped 2026-05-11 (BUU Legacy) | Reference for setup-and-teardown flow composition / three-phase pipeline. Carried into BUU 2.0. |
 | **RELEASE-NOTES-v1.2.7.md** | Shipped 2026-05-07 (BUU Legacy) | Reference for the dialog-handler crash fix |
@@ -181,7 +181,7 @@ All three live in `scripts/` (gitignored). They source `creds.ps1` (also gitigno
 
 > **Strategic note (2026-05-27):** The earlier "BUUA fork takes over feature work" plan is
 > fully resolved — BUU 2.0 *is* the BUUA architecture. BUU 2.0 has been the active branch
-> through v2.2.1. v2.3.0 is the next release and continues active feature work on BUU 2.0.
+> through v2.2.1. v2.4.0 is the next release and continues active feature work on BUU 2.0.
 > BUU Legacy (v1.x) is in pure maintenance; no further Legacy feature work planned.
 
 ---
@@ -190,7 +190,7 @@ All three live in `scripts/` (gitignored). They source `creds.ps1` (also gitigno
 
 > Frozen Legacy-era snapshot. For current state, see the **CURRENT STATE** section near the
 > top of this doc. The v1.x line below is BUU Legacy, which is frozen at v1.3.5. Active feature
-> work is on BUU 2.0 (v2.0.0-elastic branch), now at v2.2.1, with v2.3.0 in design.
+> work is on BUU 2.0 (v2.0.0-elastic branch), now at v2.2.1, with v2.4.0 in design.
 
 - **v1.2.3 SHIPPED 2026-05-01** — Icon, run guards, heartbeat, live counters, resume-on-launch, log retries.
 - **v1.2.4 SHIPPED 2026-05-01** — Unified runner with start-mode picker (step / step-row / run-all).

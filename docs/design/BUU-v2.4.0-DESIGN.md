@@ -1,4 +1,10 @@
-# BUU v2.3.0 — Design Doc
+# BUU v2.4.0 — Design Doc
+
+> **Renumbered from v2.3.0 on 2026-06-24.** The v2.3.0 slot was consumed by the Frankware
+> platform release shipped as **v2.2.5**, so all planned versions shifted +1: this release
+> v2.3.0 → v2.4.0, and its deferred items (Field Catalog, parallel multi-flow) v2.4 → v2.5.
+> The v3.0 API/hybrid slot is unchanged. Shipped docs (v2.2.2/v2.2.3) keep their original
+> "v2.3" mentions as historical record.
 
 **Status:** Not started. Agenda locked 2026-05-27 in a long live-debugging session against PestPac's Void Lead flow.
 **Predecessor:** v2.2.1 (lossless reclaim on elastic scale-down + license-leak/logout/free-count fixes + colName focus + worker card border). Currently shipped.
@@ -14,7 +20,7 @@
 - **Two apps now, fully separate:** BUU Legacy (branch `v1.3.5-legacy`, `version.json` channel,
   productName "Better Update Utility") and BUU 2.0 (branch `v2.0.0-elastic`, `version-buu2.json`
   channel, productName "BUU 2.0", appId `com.entomobands.buu-2`). Separate userData folders
-  (`%APPDATA%\buu-2` for 2.0). v2.3 work targets BUU 2.0 only.
+  (`%APPDATA%\buu-2` for 2.0). v2.4 work targets BUU 2.0 only.
 - **Workflow:** diff-by-diff sign-off on non-trivial changes; tests after push, not during the
   session; prefers brutal honesty over softened status. Use desktop-commander `edit_block` /
   `write_file` (not Filesystem `edit_file` — EPERM rename locks). PowerShell quote-mangling on
@@ -28,14 +34,14 @@
 
 ---
 
-## v2.3.0 OVERALL SHAPE
+## v2.4.0 OVERALL SHAPE
 
-v2.3 is anchored on **runtime unification**. BUU 2.0 was layered on top of BUU Legacy's
+v2.4 is anchored on **runtime unification**. BUU 2.0 was layered on top of BUU Legacy's
 single-runner without unifying — there are effectively three runtimes in `src/main.js` today
 (single-runner, pool-worker template, sweeper template), each with their own copies of login,
 logout, step execution, dialog handling, and error reporting. Every fix has to be applied
 multiple times. Every divergence (e.g. the sweeper-login `LoginForm-loginBtn` bug fixed in
-v2.2.1) is the cost of that. v2.3 unifies the runtime first, then ships the rest of the
+v2.2.1) is the cost of that. v2.4 unifies the runtime first, then ships the rest of the
 features on top of the cleaner base.
 
 The Void debugging session on 2026-05-27 surfaced two categories of missing primitives:
@@ -52,12 +58,12 @@ lands on the cleaner base. Don't try to combine unification with feature work �
 muddy.
 
 **Sized as a tight, shippable release.** Field Catalog, parallel multi-flow, and PestPac API
-integration are explicitly deferred (Field Catalog and parallel multi-flow to v2.4; API to a
+integration are explicitly deferred (Field Catalog and parallel multi-flow to v2.5; API to a
 v3.0 branch).
 
 ---
 
-## v2.3.0 ITEMS (25 items, in build order)
+## v2.4.0 ITEMS (25 items, in build order)
 
 ### Foundation
 
@@ -90,7 +96,7 @@ validators still pass (`_validate-pool-worker.js`, `_validate-runner.js`,
 `_check-html-js.js`), and a real run against a small flow produces identical journal entries
 to v2.2.1.
 
-**Pay-for-itself property:** almost every other v2.3 item is easier and lower-risk because
+**Pay-for-itself property:** almost every other v2.4 item is easier and lower-risk because
 it's built once instead of two-or-three times. Items 2 (dialog checkboxes), 6 (diagnostic
 capture), 8-12 (wait primitives), and 13 (Run Pool is the only Run) all depend on this
 unification not being a per-runtime patch.
@@ -114,11 +120,11 @@ proceeds normally. Never blocks waiting for a dialog that might not come. **This
 for the "program just sits and waits" bug** Matthew hit on 2026-05-27 — a previous design
 that armed a listener and *waited* for a dialog would hang on actions that didn't trigger one.
 
-**Designed to grow into per-dialog routing later.** v2.3 ships the two-checkbox simple version
+**Designed to grow into per-dialog routing later.** v2.4 ships the two-checkbox simple version
 ("any dialog → accept" or "any dialog → decline"). When per-dialog routing is needed (Matthew
 named the case: yes to one dialog, no to another in the same step), the UI grows from
 checkboxes to a small rules list (`if dialog text matches X → accept; else → decline`), but the
-underlying schema stays compatible. Don't build the rules editor in v2.3 — leave the door open.
+underlying schema stays compatible. Don't build the rules editor in v2.4 — leave the door open.
 
 **3. Remove the Handle Dialog step type.**
 
@@ -321,7 +327,7 @@ most "automated daily routine" use cases without needing a spreadsheet.
 execute in order, sharing the worker pool and login session.
 
 This is the sequential-only version of multi-flow; **parallel multi-flow ("run A and B at the
-same time") is explicitly v2.4**. Sequential is small and contained; parallel introduces
+same time") is explicitly v2.5**. Sequential is small and contained; parallel introduces
 license-sharing, log-namespacing, and worker-allocation concerns that need a real architecture
 pass.
 
@@ -571,7 +577,7 @@ inline-always is not even cheaper in the way it appears, because to be meaningfu
   validation runs where you want ground truth on all rows and knowingly accept the roughly
   doubled per-row time (navigate, write, save, re-navigate, read).
 
-**Scope for v2.3 (tractable):** simple value-equality with basic normalization (trim
+**Scope for v2.4 (tractable):** simple value-equality with basic normalization (trim
 whitespace, case-insensitive). Verifiable step types only — Select, Type, Check (a field with a
 readable value). Skips Click / Navigate / Save (an action has no stable readback; its effect is
 verified indirectly via the field reads). If a flow has zero verifiable fields, the feature
@@ -579,8 +585,8 @@ no-ops for that flow.
 
 **Deferred (the hard 20%):** fields PestPac reformats on save (dates, phone numbers, currency —
 read-back won't string-match the input without normalization rules), multi-value fields,
-conditionally-rendered fields. These likely need the Field Catalog (v2.4) to know what PestPac
-does to each field. Don't block v2.3 on them.
+conditionally-rendered fields. These likely need the Field Catalog (v2.5) to know what PestPac
+does to each field. Don't block v2.4 on them.
 
 **Relationship to other items:** this is the mechanism that makes **item 5 (skip-vs-error
 reclassification)** actually *correct* — item 5 says "classify based on what happened," and the
@@ -600,10 +606,10 @@ coordinator writes the final authoritative status. Decide alongside item 24.
 
 - **Field Catalog as observation store** — persistent record of fields BUU has seen on each
   page (selector / label / type / options / disabled-flag), populated by use, the foundation
-  for required-field discovery without manual prep. Significant work; deferred to **v2.4**.
+  for required-field discovery without manual prep. Significant work; deferred to **v2.5**.
   Needs the unified runtime under it to be sane.
 - **Parallel multi-flow runs** — two flows running concurrently sharing the pool. License-
-  sharing and log-namespacing are real architecture problems. **v2.4**.
+  sharing and log-namespacing are real architecture problems. **v2.5**.
 - **Smaller default batch size + clean-boundary worker retirement** — only if not addressed
   inside the runtime unification (#1). Lower priority now that v2.2.1's lossless reclaim makes
   drops harmless.
