@@ -938,6 +938,7 @@ textarea { resize: vertical; min-height: 60px; }
       <button class="add-opt" onclick="addStep('dialog')">Handle dialog</button>
       <button class="add-opt" onclick="addStep('fileupload')">Upload file</button>
       <button class="add-opt" onclick="addStep('textedit')">Text edit</button>
+      <button class="add-opt" id="addOptFwScrape" onclick="addStep('fw-scrape-orders')" style="display:none">Frankware: scrape orders → CSV</button>
     </div>
     <div class="infobox">
       <strong>Login and logout are handled automatically</strong> — locked steps at the top and bottom handle PestPac authentication. Add a <strong>Navigate</strong> step using <span class="tok">{{URL}}</span> then add your field steps.
@@ -967,6 +968,10 @@ textarea { resize: vertical; min-height: 60px; }
           <option value="skip">Skip</option>
         </select>
         <div class="hint">Retry: try again per retry count, then skip. Skip: log and continue immediately.</div>
+      </div>
+      <div class="fg" id="scrapeCsvFg">
+        <label style="cursor:pointer;display:flex;align-items:center;gap:8px"><input type="checkbox" id="scrapeCsvChk" checked onchange="if(API.setConfig)API.setConfig({scrapeCsvEnabled:this.checked})" style="width:16px;height:16px;cursor:pointer"/>Write Frankware scrape to CSV</label>
+        <div class="hint">Frankware order-scrape runs write one deduped CSV to the run's results folder. Uncheck for a dry run (scrapes but writes no file). Setting persists across runs.</div>
       </div>
       <div class="fg">
         <label>Selector timeout (seconds)</label>
@@ -1303,6 +1308,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     if (API.onAutomationEvent) API.onAutomationEvent(handleRunEvent);
     await loadProfiles();
+    // v2.2.7: restore the persistent "Write Frankware scrape to CSV" run-setting (default on).
+    try { if (API.getConfig) { const _c = await API.getConfig(); const _chk = document.getElementById('scrapeCsvChk'); if (_chk) _chk.checked = (_c.scrapeCsvEnabled !== false); } } catch(e){}
     seedExampleSteps();
     // v1.2.8: initialize flow-meta UI. Default to per-row, populate dropdowns.
     setRunMode('per-row');
@@ -1546,6 +1553,9 @@ const SM = {
     const col = (s.colName||'').trim();
     const mode = s.readMode==='value' ? 'value' : (s.readMode==='text' ? 'text' : 'value+label');
     return 'Read ' + (s.selector||'(no selector)') + ' → ' + (col ? '{{'+col+'}}' : '(name the column)') + ' · ' + mode;
+  }},
+  'fw-scrape-orders': { label:'Frankware orders → CSV', badge:'bd-asr', desc: s => {
+    return 'Scrape Frankware orders → CSV · ' + (s.url ? s.url : '(no URL set)');
   }},
 };
 
@@ -1903,6 +1913,12 @@ function bodyHTML(s) {
     + '<div class="row"><div class="fg"><label>Save as column</label><input type="text" id="fi-' + s.id + '-colName" value="' + esc(s.colName) + '" placeholder="WonStatus" oninput="u(' + s.id + ',\'colName\',this.value)" onblur="renderSteps()"/><div class="hint">Names the output column AND creates a <span class="tok">{{' + (esc(s.colName)||'token') + '}}</span> you can drag into steps <strong>below</strong> this one. Avoid reusing a spreadsheet column name.</div></div>'
     + '<div class="fg"><label>Read what</label><select onchange="u(' + s.id + ',\'readMode\',this.value)"><option ' + (!s.readMode||s.readMode==='both'?'selected':'') + ' value="both">Value + visible label (best for dropdowns)</option><option ' + (s.readMode==='value'?'selected':'') + ' value="value">Value only (e.g. V)</option><option ' + (s.readMode==='text'?'selected':'') + ' value="text">Visible text only (e.g. Void)</option></select><div class="hint">For a &lt;select&gt; like WonStatus, "value+label" captures both the code (V) and the label (Void). For text/spans, use "Visible text".</div></div></div>'
     + '<div class="row"><div class="fg"><label style="cursor:pointer;display:flex;align-items:center;gap:8px"><input type="checkbox" ' + (s.readOnMissing==='error'?'checked':'') + ' onchange="u(' + s.id + ',\'readOnMissing\',this.checked?\'error\':\'blank\')" style="width:16px;height:16px;cursor:pointer"/>Error the row if the field isn\'t found</label><div class="hint">Off (default): records a blank value and continues. On: the row is marked failed when the field is missing.</div></div></div>';
+  if(s.type==='fw-scrape-orders') return tokenBar(s.id,'url')
+    + '<div class="row">' + valField(s.id,'url',s.url||'','https://production-pestnow-docker-76d36437bfc0.herokuapp.com/property/tab/{{Account}}/orders','Orders URL — end with the account-number column token, e.g. {{Account}}') + '</div>'
+    + '<div class="row"><div class="fg"><label>Property # column</label><input type="text" id="fi-' + s.id + '-propCol" value="' + esc(s.propCol) + '" placeholder="Account" oninput="u(' + s.id + ',\'propCol\',this.value)"/><div class="hint">Spreadsheet column with the Frankware property/account number (the same value used in the URL token).</div></div>'
+    + '<div class="fg"><label>PP Location Code column</label><input type="text" id="fi-' + s.id + '-locCol" value="' + esc(s.locCol) + '" placeholder="LocationCode" oninput="u(' + s.id + ',\'locCol\',this.value)"/></div>'
+    + '<div class="fg"><label>PP Invoice # column</label><input type="text" id="fi-' + s.id + '-invCol" value="' + esc(s.invCol) + '" placeholder="InvoiceNumber" oninput="u(' + s.id + ',\'invCol\',this.value)"/></div></div>'
+    + '<div class="infobox" style="margin-top:8px"><strong>Frankware only.</strong> Scrapes every order across all pages — one CSV row per order, balance keeps its sign (negative = owed). Output is a CSV in the run\'s <strong>results</strong> folder, deduped on property&nbsp;+&nbsp;order id.</div>';
   if(s.type==='textedit') {
     const mode = s.editMode||'find-replace';
     const modeOpts = [
@@ -2058,6 +2074,13 @@ function runValidation() {
       else if(cols.some(c=>c===cn)){issues.push({t:'warn',msg:'Column "'+cn+'" matches a spreadsheet column — the read value will define a separate output column with the same name, which can be confusing.'});warns++;}
       // duplicate read-field column name earlier in the flow
       if(cn){ const dup=all.filter(x=>x.type==='readfield'&&(x.colName||'').trim()===cn); if(dup.length>1 && all.indexOf(dup[0])!==i){ issues.push({t:'warn',msg:'Another Read field step already defines "'+cn+'".'});warns++; } }
+    }
+    if(s.type==='fw-scrape-orders'){
+      if(!(s.url||'').trim()){issues.push({t:'err',msg:'No orders URL set.'});errs++;}
+      else if(!/{{[^}]+}}/.test(s.url)){issues.push({t:'warn',msg:'Orders URL has no {{column}} token — every account would scrape the same page.'});warns++;}
+      if(!(s.propCol||'').trim()){issues.push({t:'err',msg:'Set the Property # column (used to stamp rows and dedupe the CSV).'});errs++;}
+      if(!(s.locCol||'').trim()){issues.push({t:'warn',msg:'No PP Location Code column set — that output column will be blank.'});warns++;}
+      if(!(s.invCol||'').trim()){issues.push({t:'warn',msg:'No PP Invoice # column set — that output column will be blank.'});warns++;}
     }
     // v2.2.0: read-field token ORDERING backstop. A {{token}} that matches a read-field column
     // name is only valid if that read step is positioned BEFORE this step. Catch hand-typed
@@ -3609,8 +3632,12 @@ async function loadProfiles(){
   }
   renderProfiles();
 }
-function renderProfiles(){document.getElementById('nb-profiles').textContent=profiles.length;const list=document.getElementById('profileList');if(!profiles.length){list.innerHTML='<div class="empty">No profiles yet. Click "Add profile" to get started.</div>';document.getElementById('activeProfileLbl').textContent='None — add a profile first';return;}list.innerHTML=profiles.map(p=>'<div class="profile-card ' + (activeProfileId===p.id?'active-p':'') + '"><div class="profile-hd"><div class="profile-icon">' + (p.name||'?').slice(0,2).toUpperCase() + '</div><div><div style="font-size:13px;font-weight:600;color:var(--tx)">' + (p.name||'Unnamed') + '</div><div style="font-size:11px;color:var(--t2)">' + (p.loginUrl||'https://login.pestpac.com/') + '</div></div><div style="margin-left:auto;display:flex;gap:6px">' + (activeProfileId===p.id?'<span style="font-size:11px;font-weight:600;color:var(--green);padding:4px 8px">✓ Active</span>':'<button class="btn grn sm" onclick="setActiveProfile(\'' + p.id + '\')">Use this</button>') + '<button class="btn sm" onclick="editProfile(\'' + p.id + '\')">Edit</button></div></div><div style="font-size:11px;color:var(--t2)">Company key: <span style="font-family:monospace">••••••</span> &nbsp;·&nbsp; Username: <span style="font-family:monospace">' + (p.username||'(not set)') + '</span></div></div>').join('');const active=profiles.find(p=>p.id===activeProfileId);document.getElementById('activeProfileLbl').textContent=active?active.name:'None selected';document.getElementById('newProfileBtn').disabled=profiles.length>=10;}
+function renderProfiles(){document.getElementById('nb-profiles').textContent=profiles.length;const list=document.getElementById('profileList');if(!profiles.length){list.innerHTML='<div class="empty">No profiles yet. Click "Add profile" to get started.</div>';document.getElementById('activeProfileLbl').textContent='None — add a profile first';return;}list.innerHTML=profiles.map(p=>'<div class="profile-card ' + (activeProfileId===p.id?'active-p':'') + '"><div class="profile-hd"><div class="profile-icon">' + (p.name||'?').slice(0,2).toUpperCase() + '</div><div><div style="font-size:13px;font-weight:600;color:var(--tx)">' + (p.name||'Unnamed') + '</div><div style="font-size:11px;color:var(--t2)">' + (p.loginUrl||'https://login.pestpac.com/') + '</div></div><div style="margin-left:auto;display:flex;gap:6px">' + (activeProfileId===p.id?'<span style="font-size:11px;font-weight:600;color:var(--green);padding:4px 8px">✓ Active</span>':'<button class="btn grn sm" onclick="setActiveProfile(\'' + p.id + '\')">Use this</button>') + '<button class="btn sm" onclick="editProfile(\'' + p.id + '\')">Edit</button></div></div><div style="font-size:11px;color:var(--t2)">Company key: <span style="font-family:monospace">••••••</span> &nbsp;·&nbsp; Username: <span style="font-family:monospace">' + (p.username||'(not set)') + '</span></div></div>').join('');const active=profiles.find(p=>p.id===activeProfileId);document.getElementById('activeProfileLbl').textContent=active?active.name:'None selected';document.getElementById('newProfileBtn').disabled=profiles.length>=10;syncFrankwareStepVisibility();}
 function setActiveProfile(id){activeProfileId=id;if(API.setConfig)API.setConfig({lastProfileId:id});renderProfiles();refreshRunBtn();}
+// v2.2.7: the Frankware scrape step only makes sense with a Frankware login, so its add-menu
+// button shows only when the active profile is Frankware. Called from renderProfiles (the one
+// choke point hit on both initial load and profile switches).
+function syncFrankwareStepVisibility(){ const b=document.getElementById('addOptFwScrape'); if(!b) return; const ap=profiles.find(p=>p.id===activeProfileId); b.style.display=(ap&&ap.platform==='frankware')?'':'none'; }
 const FRANKWARE_LOGIN_URL='https://production-pestnow-docker-76d36437bfc0.herokuapp.com/login';
 const PESTPAC_LOGIN_URL='https://login.pestpac.com/';
 // applyPlatformUI: sync the toggle + form to a platform WITHOUT touching the URL

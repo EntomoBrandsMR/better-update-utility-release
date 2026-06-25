@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.2.6';
+const CURRENT_VERSION = '2.2.7';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -571,6 +571,15 @@ function coordHandleWorkerMessage(workerId, msg){
         for(const cn of Object.keys(msg.reads)){ if(!job.readColumns.includes(cn)) job.readColumns.push(cn); }
         job.readResults.push({ row: msg.row, reads: msg.reads });
       }
+      // v2.2.7: Frankware order scrape -> stream to the run CSV as results arrive (crash-safe).
+      // An empty array means the scrape step ran but the account had no orders -> note it.
+      // The persistent run-setting "scrapeCsvEnabled" (config) gates the WRITE only — the scrape
+      // still runs either way, so unchecking it is a dry run. Read once per job and cached.
+      if(job && Array.isArray(msg.scrape)){
+        if(job.scrapeCsvEnabled===undefined){ try{ const c=readConfig(); job.scrapeCsvEnabled = !(c && c.scrapeCsvEnabled===false); }catch(e){ job.scrapeCsvEnabled=true; } }
+        if(msg.scrape.length){ if(job.scrapeCsvEnabled) coordAppendScrape(job, msg.scrape); }
+        else console.warn('[coord] Frankware scrape: row '+msg.row+' returned 0 orders');
+      }
       break;
     }
     case 'retired':
@@ -700,6 +709,42 @@ function loadRowsForJob(spreadsheetPath){
   }
   const wb = XLSX.readFile(spreadsheetPath);
   return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' });
+}
+
+// v2.2.7: Frankware order scrape -> streaming CSV. Appended as each row-result arrives so a
+// crash keeps everything already written to disk. Dedupe on Property # + Order ID (an order
+// can't legitimately repeat for the same property). Header written once. Columns: PP data
+// (stamped from the run sheet) first, then the scraped Frankware fields. Path/timestamp/flow
+// naming mirrors the read-results workbook; computed once per job and reused for every append.
+function coordAppendScrape(job, rows){
+  if(!job || !Array.isArray(rows) || !rows.length) return;
+  try{
+    if(!job.scrapeCsvPath){
+      const RESULTS_DIR = path.join(path.dirname(job.spreadsheetPath || process.cwd()), 'results');
+      try{ fs.mkdirSync(RESULTS_DIR, { recursive:true }); }catch(e){}
+      const now = new Date();
+      const mm = String(now.getMonth()+1).padStart(2,'0'), dd = String(now.getDate()).padStart(2,'0'), yyyy = now.getFullYear();
+      const hh = String(now.getHours()).padStart(2,'0'), mi = String(now.getMinutes()).padStart(2,'0');
+      const safeFlow = String(job.label || 'flow').replace(/[\\/:*?"<>|]/g,'_').replace(/\.xlsx?$/i,'').slice(0,60);
+      job.scrapeCsvPath = path.join(RESULTS_DIR, `${mm}${dd}${yyyy}_${hh}${mi}_${safeFlow}_frankware-orders.csv`);
+      job.scrapeSeen = new Set();
+      job.scrapeCount = 0;
+      job.scrapeDupes = 0;
+    }
+    const esc = v => { const s = (v==null ? '' : String(v)); return /[",\n\r]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    let out = '';
+    if(!fs.existsSync(job.scrapeCsvPath)){
+      out += ['PP Location Code','PP Invoice #','Frankware Property #','Frankware Order ID','Frankware Service','Frankware Status','Frankware Price','Frankware Balance','Frankware Write-off'].map(esc).join(',') + '\r\n';
+    }
+    for(const o of rows){
+      const key = (o.prop||'') + '|' + (o.orderId||'');
+      if(o.orderId && job.scrapeSeen.has(key)){ job.scrapeDupes++; console.warn('[coord] Frankware scrape: duplicate skipped property='+(o.prop||'')+' order='+(o.orderId||'')); continue; }
+      if(o.orderId) job.scrapeSeen.add(key);
+      out += [o.loc, o.inv, o.prop, o.orderId, o.service, o.status, (o.price===''?'':o.price), (o.balance===''?'':o.balance), o.writeOff].map(esc).join(',') + '\r\n';
+      job.scrapeCount++;
+    }
+    if(out) fs.appendFileSync(job.scrapeCsvPath, out, 'utf8');
+  }catch(e){ console.error('[coord] Frankware scrape CSV append failed for job', job && job.label, e.message); }
 }
 
 // v1.3.4 Phase 3: license-aware cap. Launches a headless browser with the given profile,
@@ -2201,6 +2246,51 @@ async function runStep(page, step, row, creds){
       row.__reads[colName]={ value:(value||''), label:(label||''), out:out };
       break;
     }
+    case 'fw-scrape-orders':{
+      // Frankware-only: scrape the full paginated Orders table for ONE account and stash one
+      // record per order in row.__scrape (the coordinator appends them to the run CSV, deduped).
+      // Frankware's "entries" count and Next button are unreliable, so termination is the EMPTY
+      // PAGE. Balance is rendered NEGATIVE when owed; we keep the sign and parse to a number.
+      const url=r(step.url); if(!url) throw new Error('Frankware scrape: orders URL is empty');
+      const prop = (step.propCol && row[step.propCol]!==undefined) ? String(row[step.propCol]) : '';
+      const loc  = (step.locCol  && row[step.locCol]!==undefined)  ? String(row[step.locCol])  : '';
+      const inv  = (step.invCol  && row[step.invCol]!==undefined)  ? String(row[step.invCol])  : '';
+      await page.goto(url,{waitUntil:'domcontentloaded',timeout:NAV_TIMEOUT});
+      const rowSel='#tab-orders .dataTables_scrollBody table.dataTable tbody tr';
+      const num=s=>{ const t=(s==null?'':String(s)).replace(/[$,]/g,'').trim(); if(t===''||t==='-') return ''; const n=parseFloat(t); return isNaN(n)?'':n; };
+      const settle=async()=>{ try{ await page.waitForFunction(()=>{ var p=document.querySelector('#tab-orders .dataTables_processing'); var b=document.getElementById('busy'); var ph=!p||getComputedStyle(p).visibility==='hidden'; var bh=!b||getComputedStyle(b).display==='none'; return ph&&bh; },null,{timeout:20000}); }catch(e){} };
+      let hasAny=true;
+      try{ await page.waitForSelector(rowSel,{timeout:20000}); }catch(e){ hasAny=false; }
+      const orders=[]; const seen={}; let prevFirst=null; const MAX_PAGES=500;
+      if(hasAny){
+        for(let pg=0; pg<MAX_PAGES; pg++){
+          await settle();
+          const pageRows=await page.$$eval(rowSel, trs => trs.map(tr => {
+            const td=tr.querySelectorAll('td');
+            const cell=i => td[i] ? (td[i].textContent||'').trim() : '';
+            return { orderId:cell(0), service:cell(1), status:cell(2), price:cell(4), balance:cell(5), writeOff: tr.classList.contains('write-off') ? 'Yes':'No' };
+          }));
+          if(!pageRows.length) break;                 // empty page = end of data
+          const firstId=pageRows[0].orderId;
+          if(prevFirst!==null && firstId===prevFirst) break;   // page did not advance
+          prevFirst=firstId;
+          let added=0;
+          for(const pr of pageRows){
+            if(pr.orderId && seen[pr.orderId]) continue;       // intra-account dupe guard
+            if(pr.orderId) seen[pr.orderId]=1;
+            added++;
+            orders.push({ prop:prop, loc:loc, inv:inv, orderId:pr.orderId, service:pr.service, status:pr.status, price:num(pr.price), balance:num(pr.balance), writeOff:pr.writeOff });
+          }
+          if(!added) break;                           // whole page already seen
+          const next=await page.$('#tab-orders .dataTables_paginate a.next.paginate_button');
+          if(!next) break;
+          try{ await next.click(); }catch(e){ break; }
+          await page.waitForTimeout(300);
+        }
+      }
+      row.__scrape=orders;
+      break;
+    }
     // v2.2.2 Session 2B: textedit ported from buildRunner. Multi-mode in-place text manipulation
     // on the field at step.selector. Reads current value, transforms per editMode, writes back.
     // editModes: find-replace / exact-remove / partial-remove-word / partial-remove-piece /
@@ -2723,6 +2813,7 @@ async function main(){
       // v2.2.3 Session 3A (A3): also pass captured dialogs through to the coordinator/renderer.
       // v2.2.3 Session 3D (A2): also pass verify result columns.
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null,
+        scrape: row.__scrape||null,
         errorCategory: res.errorCategory || '', phase: res.phase || '',
         dialogs: row.__dialogs || null,
         verifyFailedFields: res.verifyFailedFields || null,
