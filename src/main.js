@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.2.7';
+const CURRENT_VERSION = '2.2.8';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -2252,9 +2252,13 @@ async function runStep(page, step, row, creds){
       // Frankware's "entries" count and Next button are unreliable, so termination is the EMPTY
       // PAGE. Balance is rendered NEGATIVE when owed; we keep the sign and parse to a number.
       const url=r(step.url); if(!url) throw new Error('Frankware scrape: orders URL is empty');
-      const prop = (step.propCol && row[step.propCol]!==undefined) ? String(row[step.propCol]) : '';
-      const loc  = (step.locCol  && row[step.locCol]!==undefined)  ? String(row[step.locCol])  : '';
-      const inv  = (step.invCol  && row[step.invCol]!==undefined)  ? String(row[step.invCol])  : '';
+      // Stamp values accept {{Token}} syntax (resolved through r(), exactly like the URL field)
+      // OR a bare column name. The v2.2.7 bug read row['{{Old Acct #}}'] literally; now a token
+      // is resolved via r() and a bare name falls back to a direct row[column] lookup.
+      const stampVal = function(f){ if(!f) return ''; var t=String(f).trim(); if(t.indexOf('{{')>=0) return r(t); return (row[t]!==undefined ? String(row[t]) : ''); };
+      const prop = stampVal(step.propCol);
+      const loc  = stampVal(step.locCol);
+      const inv  = stampVal(step.invCol);
       await page.goto(url,{waitUntil:'domcontentloaded',timeout:NAV_TIMEOUT});
       const rowSel='#tab-orders .dataTables_scrollBody table.dataTable tbody tr';
       const num=s=>{ const t=(s==null?'':String(s)).replace(/[$,]/g,'').trim(); if(t===''||t==='-') return ''; const n=parseFloat(t); return isNaN(n)?'':n; };

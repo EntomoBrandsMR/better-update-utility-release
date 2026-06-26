@@ -1915,9 +1915,9 @@ function bodyHTML(s) {
     + '<div class="row"><div class="fg"><label style="cursor:pointer;display:flex;align-items:center;gap:8px"><input type="checkbox" ' + (s.readOnMissing==='error'?'checked':'') + ' onchange="u(' + s.id + ',\'readOnMissing\',this.checked?\'error\':\'blank\')" style="width:16px;height:16px;cursor:pointer"/>Error the row if the field isn\'t found</label><div class="hint">Off (default): records a blank value and continues. On: the row is marked failed when the field is missing.</div></div></div>';
   if(s.type==='fw-scrape-orders') return tokenBar(s.id,'url')
     + '<div class="row">' + valField(s.id,'url',s.url||'','https://production-pestnow-docker-76d36437bfc0.herokuapp.com/property/tab/{{Account}}/orders','Orders URL — end with the account-number column token, e.g. {{Account}}') + '</div>'
-    + '<div class="row"><div class="fg"><label>Property # column</label><input type="text" id="fi-' + s.id + '-propCol" value="' + esc(s.propCol) + '" placeholder="Account" oninput="u(' + s.id + ',\'propCol\',this.value)"/><div class="hint">Spreadsheet column with the Frankware property/account number (the same value used in the URL token).</div></div>'
-    + '<div class="fg"><label>PP Location Code column</label><input type="text" id="fi-' + s.id + '-locCol" value="' + esc(s.locCol) + '" placeholder="LocationCode" oninput="u(' + s.id + ',\'locCol\',this.value)"/></div>'
-    + '<div class="fg"><label>PP Invoice # column</label><input type="text" id="fi-' + s.id + '-invCol" value="' + esc(s.invCol) + '" placeholder="InvoiceNumber" oninput="u(' + s.id + ',\'invCol\',this.value)"/></div></div>'
+    + '<div class="row">' + valField(s.id,'propCol',s.propCol||'','{{Old Acct #}}','Frankware Property # — drag the column chip here (same value the URL uses)') + '</div>'
+    + '<div class="row">' + valField(s.id,'locCol',s.locCol||'','{{Location Code}}','PP Location Code — drag the column chip here') + '</div>'
+    + '<div class="row">' + valField(s.id,'invCol',s.invCol||'','{{Invoice #}}','PP Invoice # — drag the column chip here') + '</div>'
     + '<div class="infobox" style="margin-top:8px"><strong>Frankware only.</strong> Scrapes every order across all pages — one CSV row per order, balance keeps its sign (negative = owed). Output is a CSV in the run\'s <strong>results</strong> folder, deduped on property&nbsp;+&nbsp;order id.</div>';
   if(s.type==='textedit') {
     const mode = s.editMode||'find-replace';
