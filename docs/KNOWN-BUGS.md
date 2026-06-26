@@ -63,10 +63,16 @@ A Frankware run has no PestPac license concept, but the PestPac-era machinery st
   via the shared platform-aware login — so for Frankware it would re-login to Frankware (not
   PestPac). Not wrong, but usually unnecessary for an active scrape (Frankware's timeout is
   5-min INACTIVITY and an active worker keeps resetting it). Gated by the reauth interval (0 = off).
+- **Manual "Auto" worker-cap button (`check-license-cap` path):** same root cause, different entry
+  point. Hitting "Auto" on a Frankware profile tries to read PestPac licenses, waits for the
+  PestPac login field `input[name="uid"]` (absent on Frankware), times out after 15s with
+  "Could not read licenses", and falls back to the hardware cap. The fallback number is correct,
+  but the error is confusing and the 15s hang is avoidable. Confirmed on the AWS VM 2026-06-26.
 
 **Fix direction:** for Frankware profiles, skip the elastic license loop entirely (no license
 signal to read) and default reauth off / make it Frankware-aware. Gate both on
-`profile.platform === 'pestpac'`.
+`profile.platform === 'pestpac'`. The same gate should make "Auto" skip the license read for
+Frankware and go straight to the hardware cap (no 15s timeout, no error dialog).
 
 **Workaround now:** for Frankware runs, leave elastic license mode OFF and reauth interval at 0.
 
