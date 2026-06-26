@@ -48,22 +48,53 @@ already exists and calls `checkForUpdates(true)`).
 
 ---
 
+### 2. Frankware runs invoke PestPac-only license/reauth machinery
+**Status:** open. Diagnosed 2026-06-26. Medium impact (wasted resources; bad on small hosts).
+
+A Frankware run has no PestPac license concept, but the PestPac-era machinery still fires:
+- **Elastic license scale (`coordLicenseScale`, src/main.js ~1886):** when elastic mode is on,
+  the timer logs in with the (Frankware) profile — login is platform-aware — but then hardcodes
+  `page.goto('https://app.pestpac.com/license.asp?Mode=View')`, which the Frankware session isn't
+  authed for. It reads no free-license value, `freeText == null`, and returns early WITHOUT
+  scaling. So it does NOT change the worker count, but every interval it launches an extra
+  headless Chromium + a fresh Frankware login, reads nothing, and closes — pure waste, and on a
+  RAM-starved host it competes for the memory workers need.
+- **Reauth (worker `REAUTH_INTERVAL`):** re-logs-in at row boundaries when the timer elapses,
+  via the shared platform-aware login — so for Frankware it would re-login to Frankware (not
+  PestPac). Not wrong, but usually unnecessary for an active scrape (Frankware's timeout is
+  5-min INACTIVITY and an active worker keeps resetting it). Gated by the reauth interval (0 = off).
+
+**Fix direction:** for Frankware profiles, skip the elastic license loop entirely (no license
+signal to read) and default reauth off / make it Frankware-aware. Gate both on
+`profile.platform === 'pestpac'`.
+
+**Workaround now:** for Frankware runs, leave elastic license mode OFF and reauth interval at 0.
+
+**NOTE — this is NOT why a Frankware run shows few workers.** That's the hardware cap
+(`computeHardwareCap`, src/main.js ~36): spawned workers = `min(configured, cores×6,
+floor(freeRAM×0.70 / 150MB))`. On a small VM with little free RAM the RAM term collapses to 1-2
+and clamps the pool regardless of the configured count. Budget ~150MB free RAM per worker
+(~214MB with headroom) → ~2GB+ free RAM for 10 workers. Run-all spawns all workers at once, so
+"stuck at 1" is the cap, not slow ramp-up.
+
+---
+
 ## OPEN (carried from prior sessions — not yet root-caused this pass)
 
-### 2. `verifyAfterAction` false-mismatch on Add Billing Note / chargeback flows
+### 3. `verifyAfterAction` false-mismatch on Add Billing Note / chargeback flows
 Reads form fields AFTER the save button has navigated away and destroyed them, producing false
 "mismatch" errors. Fix: verify must fresh-navigate and read, not re-read the post-save DOM.
 
-### 3. Step-through / validation mode spawns extra live-browser workers
+### 4. Step-through / validation mode spawns extra live-browser workers
 The pool scales up even during a paused single-step session; with `setupScope:"per-worker"`
 each spawned worker runs a full PestPac login (burns licenses). Step mode should not scale the
 pool.
 
-### 4. Phantom "Do you want to delete this note?" confirm dialog during add-note flows
+### 5. Phantom "Do you want to delete this note?" confirm dialog during add-note flows
 A confirm dialog appears during add-note flows that shouldn't. Needs source-level investigation
 of the add-note step path.
 
-### 5. Modal overlay covers the Add Profile modal (secondary machine)
+### 6. Modal overlay covers the Add Profile modal (secondary machine)
 `setupOverlay` / `resumeOverlay` / `pasteModal` overlays sit on top of the Add Profile modal.
 Workaround: hide overlays via DevTools console. Real fix: overlays default to `display:none`
 and are shown explicitly. Must ship from the main machine.
