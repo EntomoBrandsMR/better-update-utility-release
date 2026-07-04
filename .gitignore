@@ -37,3 +37,8 @@ error-log.txt
 _skip-analysis.json
 _commitmsg-*.txt
 
+
+# Build-critical files that must travel with the repo (learned 2026-07-04: repo couldn't rebuild itself)
+!build/installer.nsh
+!scripts/_validate-pool-worker.js
+!scripts/_check-html-js.js
