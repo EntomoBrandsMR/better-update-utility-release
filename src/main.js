@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '2.2.8';
+const CURRENT_VERSION = '2.2.9';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -2135,6 +2135,7 @@ function resolvePreview(step, row, creds){
   else if(step.type === 'navigate') value = r(step.url || '');
   else if(step.type === 'textedit') value = '(textedit: ' + (step.editMode || 'find-replace') + ')';
   else if(step.type === 'checkbox') value = '(' + (step.checkAction || 'check') + ')';
+  else if(step.type === 'ifclick') value = '(click if present within ' + (step.presenceSec || 1) + 's, else continue)';
   else if(step.type === 'wait') value = '(' + (step.waitType || 'fixed') + ')';
   let selectorOut = step.selector || '';
   if(step.findByText){
@@ -2199,6 +2200,18 @@ async function runStep(page, step, row, creds){
   switch(step.type){
     case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:NAV_TIMEOUT}); break;}
     case 'click':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().click(); if(step.waitFor){ const wl=await findLocator(page,step.waitFor,{timeout:SELECTOR_TIMEOUT}); await wl.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); } break; }
+    case 'ifclick':{
+      // v2.2.9: conditional click — if the element shows up within the presence window, click it;
+      // otherwise continue silently. Branch taken is recorded on the row (__stepNote) so it lands
+      // in the step trail + fieldsWritten — never silent (per TODO item, minimal slice of IF logic).
+      const presenceMs=Math.max(250,Math.round(parseFloat(step.presenceSec||1)*1000));
+      let loc=null;
+      try{ loc=await findLocator(page,step.selector,{timeout:presenceMs}); }catch(e){ loc=null; }
+      if(loc){ try{ await loc.first().waitFor({state:'visible',timeout:1000}); }catch(e){ loc=null; } }
+      if(loc){ await loc.first().click(); row.__stepNote='clicked'; }
+      else { row.__stepNote='not present'; }
+      break;
+    }
     case 'type':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.clearFirst!=='no') await loc.first().fill(''); const val=r(step.value); const delay=parseInt(step.typeDelay||0); if(delay>0) await loc.first().pressSequentially(val,{delay:delay}); else await loc.first().fill(val); break; }
     case 'select':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().selectOption({label:r(step.value)}); break; }
     case 'checkbox':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.checkAction==='check')await loc.first().check(); else if(step.checkAction==='uncheck')await loc.first().uncheck(); else if(step.checkAction==='toggle')await loc.first().click(); else if(step.checkAction==='conditional'){ const tv=(step.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase()); if(tv.includes(String(r(step.condCol)).trim().toLowerCase()))await loc.first().check(); else await loc.first().uncheck(); } break; }
@@ -2398,14 +2411,19 @@ async function processRow(page, row, creds, rowNum){
         // 'next-step' / 'run-all' / 'auto' fall through.
       }
       const _stepStart = Date.now();
+      // v2.2.9: steps may leave a branch note on the row (ifclick: 'clicked' / 'not present').
+      // Captured into the trail + the done label so the branch taken is visible per row.
+      let _note;
       try {
         await runStep(page, s, row, creds);
-        row.__stepTrail.push({ index: si, label: s._label || s.type, type: s.type, ok: true, ms: Date.now() - _stepStart, ts: new Date().toISOString() });
+        _note = row.__stepNote; delete row.__stepNote;
+        row.__stepTrail.push({ index: si, label: s._label || s.type, type: s.type, ok: true, note: _note || undefined, ms: Date.now() - _stepStart, ts: new Date().toISOString() });
       } catch (stepErr) {
+        delete row.__stepNote;
         row.__stepTrail.push({ index: si, label: s._label || s.type, type: s.type, ok: false, error: stepErr.message, ms: Date.now() - _stepStart, ts: new Date().toISOString() });
         throw stepErr;
       }
-      done.push(s._label||s.type);
+      done.push((s._label||s.type) + (_note ? ' ['+_note+']' : ''));
     }
   };
   try{ await attempt(); return {status:'ok', fieldsWritten:done.join(' | ')}; }

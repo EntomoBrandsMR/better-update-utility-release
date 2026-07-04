@@ -928,6 +928,7 @@ textarea { resize: vertical; min-height: 60px; }
     <div class="add-menu" id="addMenu">
       <button class="add-opt" onclick="addStep('navigate')">Navigate</button>
       <button class="add-opt" onclick="addStep('click')">Click</button>
+      <button class="add-opt" onclick="addStep('ifclick')">If-click (click if present)</button>
       <button class="add-opt" onclick="addStep('type')">Type text</button>
       <button class="add-opt" onclick="addStep('select')">Select dropdown</button>
       <button class="add-opt" onclick="addStep('checkbox')">Checkbox</button>
@@ -1517,6 +1518,7 @@ function applyPaste() {
 const SM = {
   navigate: { label:'Navigate', badge:'bd-nav', desc: s => s._label || (s.url ? 'Navigate to ' + s.url : 'Navigate to URL') },
   click:    { label:'Click',    badge:'bd-clk', desc: s => s._label || (s.selector ? 'Click ' + s.selector : 'Click an element') },
+  ifclick:  { label:'If-click', badge:'bd-clk', desc: s => s._label || (s.selector ? 'If present, click ' + s.selector + ' (wait ' + (s.presenceSec||1) + 's)' : 'Click an element only if it appears') },
   type:     { label:'Type',     badge:'bd-typ', desc: s => s._label || (s.value ? 'Type "' + s.value + '" → ' + (s.selector||'?') : 'Type into a field') },
   select:   { label:'Select',   badge:'bd-sel', desc: s => s.value ? 'Select "' + s.value + '" in ' + (s.selector||'?') : 'Select dropdown' },
   checkbox: { label:'Checkbox', badge:'bd-chk', desc: s => { const a = s.checkAction||'check'; if(a==='conditional') return 'Checkbox ' + (s.selector||'?') + ' — from ' + (s.condCol||'column'); return (a==='check'?'Check':a==='uncheck'?'Uncheck':'Toggle') + ' ' + (s.selector||'?'); } },
@@ -1886,6 +1888,8 @@ function bodyHTML(s) {
 
   if(s.type==='click') return '<div class="row">' + selField(s.id,'selector',s.selector||'','button[type="submit"]','CSS selector') + '<div class="fg"><label>Wait for element after click (optional)</label><div class="sel-wrap"><input type="text" id="fi-' + s.id + '-waitFor" value="' + esc(s.waitFor) + '" placeholder=".success-toast" oninput="u(' + s.id + ',\'waitFor\',this.value)" onfocus="pendingInsertId=' + s.id + ';pendingInsertField=\'waitFor\'"/><button class="paste-btn" onclick="openPasteModal(' + s.id + ',\'waitFor\')">Paste HTML</button></div></div></div>' + findByTextBlock(s) + '<div class="row"><div class="fg"><label style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;color:var(--amber)"><input type="checkbox" ' + (s.debugClick?'checked':'') + ' onchange="u(' + s.id + ',\'debugClick\',this.checked)" style="width:16px;height:16px;cursor:pointer"/>🐛 Debug this click step</label><div class="hint">When checked, the runner dumps Playwright\'s view of the selector before attempting it (top-frame match count, visibility, bounding box, all iframes scanned). Output goes to the runner.log. Useful when a click stalls or fails for unclear reasons. Turn off after debugging — adds a small per-step overhead.</div></div></div>';
 
+  if(s.type==='ifclick') return '<div class="row">' + selField(s.id,'selector',s.selector||'','button.popup-ok','CSS selector') + '<div class="fg"><label>Check for up to (seconds)</label><input type="number" value="' + (s.presenceSec||1) + '" min="0.25" step="0.25" oninput="u(' + s.id + ',\'presenceSec\',this.value)"/><div class="hint">If the element appears within this window, it gets clicked. If not, the flow continues — no error. The branch taken (clicked / not present) is logged for every row.</div></div></div>';
+
   if(s.type==='type') return tokenBar(s.id,'value') + '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="firstName"]','CSS selector') + valField(s.id,'value',s.value||'','{{First name}}','Value to type') + '</div><div class="row"><div class="fg"><label>Clear field first?</label><select onchange="u(' + s.id + ',\'clearFirst\',this.value)"><option ' + (s.clearFirst!=='no'?'selected':'') + ' value="yes">Yes — clear before typing</option><option ' + (s.clearFirst==='no'?'selected':'') + ' value="no">No — append</option></select></div><div class="fg"><label>Typing delay (ms/char)</label><input type="number" value="' + (s.typeDelay||0) + '" min="0" max="300" oninput="u(' + s.id + ',\'typeDelay\',this.value)"/><div class="hint">0 = instant. 50–100ms simulates human typing.</div></div></div>' + findByTextBlock(s);
 
   if(s.type==='select') return tokenBar(s.id,'value') + '<div class="row">' + selField(s.id,'selector',s.selector||'','select[name="status"]','CSS selector') + valField(s.id,'value',s.value||'','{{Status}} or Active','Option to select') + '</div>' + findByTextBlock(s);
@@ -1977,7 +1981,7 @@ function toggleStep(id) { const s=steps.find(x=>x.id===id); if(s){s.open=!s.open
 function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s) s[f]=v; scheduleValidationRefresh(); }
 function delStep(e,id) { e.stopPropagation(); steps=steps.filter(s=>s.id!==id); renderSteps(); }
 function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id); const ni=i+d; if(ni<0||ni>=steps.length)return; [steps[i],steps[ni]]=[steps[ni],steps[i]]; renderSteps(); }
-function addStep(type) { const st={id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}; if(type==='readfield'){ st.readMode='both'; st.readOnMissing='blank'; } steps.push(st); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
+function addStep(type) { const st={id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}; if(type==='readfield'){ st.readMode='both'; st.readOnMissing='blank'; } if(type==='ifclick'){ st.presenceSec=1; } steps.push(st); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
 function toggleAddMenu() { document.getElementById('addMenu').classList.toggle('open'); }
 function syncDelayMax() {
   const min = parseFloat(document.getElementById('rowDelayMin').value||0);
@@ -2060,6 +2064,7 @@ function runValidation() {
     const i=all.indexOf(s);const n=i+1;const issues=[];
     if(s.type==='navigate'&&!s.url){issues.push({t:'err',msg:'No URL.'});errs++;}
     if(s.type==='click'&&!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
+    if(s.type==='ifclick'&&!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
     if(s.type==='type'){if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}if(!s.value){issues.push({t:'warn',msg:'Value is empty.'});warns++;}}
     if(s.type==='select'){if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}if(!s.value){issues.push({t:'warn',msg:'No option value.'});warns++;}}
     if(s.type==='checkbox'&&!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
