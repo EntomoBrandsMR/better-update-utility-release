@@ -139,6 +139,11 @@ Handle Dialog step removed w/ auto-migration.
 
 **R5. Step debugger (step mode).** Buttons: Next step · Redo step · Last step (cursor
 only, no undo) · Skip step · Restart row · Skip row (row logged error, reason=manual).
+PANE IS PERSISTENT (observed on 2.2.9: pane disappears while a step executes and only
+reappears when ready for the next click — a stall is invisible): pane stays visible
+from step-mode launch until Stop or Release; buttons disable while a step executes;
+live status line shows the currently-executing step (n · type · selector) so stalls
+are identifiable at a glance.
 Live flow reload at every pause boundary (edits apply from cursor forward; flow-shape-
 changed-above-cursor warns, pick "continue from step N"). Constraint (KB4): step mode
 never scales, never spawns extra logins — one worker, one license until Release.
@@ -255,6 +260,10 @@ refactor.
 - bigma box (hostname unknown — record when next seen) = older machine, repo at
   C:\Users\bigma\OneDrive\Desktop\Better Update Utility. Status/role: confirm with Matthew.
 
+**NOTIFY MATTHEW'S PHONE when stopping/blocked/done with a batch:** POST to ntfy —
+`Invoke-RestMethod -Method Post -Uri ("https://ntfy.sh/" + (Get-Content .ntfy-topic)) -Body "<short generic message>" -Headers @{Title="BUU"; Priority="high"}`
+(topic in .ntfy-topic at repo root, gitignored; keep message content generic — topic is public-guessable). Fire it as the LAST action of a working turn.
+
 **Who/where:** Matthew, sole dev + user. Machine: main rig CORP-5QD5QJ4 (see table). Repo:
 C:\Users\Matt Ruckman\projects\Better Update Utility, branch v2.0.0-elastic, remote
 EntomoBrandsMR/better-update-utility-release. Toolchain installed this week: git,
@@ -262,9 +271,25 @@ node 24, npm 11, gh (authed). NODE_ENV=production is set machine-wide — ALWAYS
 $env:NODE_ENV="" and npm --include=dev. Chromium for extraResources lives at
 .\chromium (copied from the installed app). Current shipped: 2.2.9.
 
-**State:** Planning is COMPLETE (this file is the locked plan — do not re-litigate
-decided items). Phase 1 diagnosis is COMPLETE — read docs/DIAGNOSIS-2026-07.md
-(D1-D8 root causes, all verified in source with line refs).
+**State:** Planning COMPLETE (this file is the locked plan — do not re-litigate decided
+items). Phase 1 diagnosis COMPLETE — read docs/DIAGNOSIS-2026-07.md.
+**Phase 2 module extraction COMPLETE (2026-07-10, commits f3cbe05..46116f2, pushed):**
+engine/login.js, engine/locate.js, engine/steps.js, pool/worker.js (real file + marker
+assembly in buildPoolWorker), pool/coordinator.js (wireCoordinator(ctx) at main.js EOF;
+mainWindow/keytar read live via ctx getters), journal.js (initJournal({COORD})).
+Every extraction: validators green + scripts/_emit-worker-diff.js proves the assembled
+worker EQUIVALENT to v2.2.9's emitted template (comments/blanks/export-guards ignored).
+Dev boot smoke-tested (electron . loads, window up, no stderr). Golden baseline frozen
+in docs/golden/ (READ ITS README — Test.xlsx is DO-NOT-RERUN as-is).
+**Phase 2 remaining:** (1) teardown pass — extractions were done VERBATIM to preserve
+golden comparability; breaker/batching/skip/verifyAfterAction/Run-Log/no-URL-prompt
+still exist and come out in a dedicated pass AFTER the checkpoint run verifies the move
+(If-click + Handle Dialog ride R2/R3 as planned). (2) CHECKPOINT GOLDEN RUN — needs
+Matthew: safe test LocationID (rebuild all 10 Test.xlsx URLs on it) + flow step 17
+matchText BILLING→BALFWD; then run, compare via scripts/_compare-golden.js.
+(3) unused-step-type flow audit (this rig has the flows). Also: 2026-07-10 incident —
+drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
+Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
 
 **Next up: PHASE 2 — the refactor.** First moves, in order:
 1. ACCEPTANCE BASELINE before touching anything: run a small real flow on current
