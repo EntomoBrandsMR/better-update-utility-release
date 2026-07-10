@@ -1,49 +1,47 @@
-// Recreated 2026-07-04 (work machine) — original lives only on the bigma box (scripts/ is
-// gitignored). Purpose: the pool worker executor lives inside a template literal returned by
-// buildPoolWorker(), so `node --check src/main.js` passes even when the worker source itself
-// is broken. This extracts the template, stubs every ${...} interpolation, and syntax-checks
-// the resulting worker source.
+// _validate-pool-worker.js — v2 (Phase 2): the pool worker shell is now a real file
+// (src/pool/worker.js) assembled at spawn by buildPoolWorker via marker substitution.
+// This validator performs the SAME assembly (engine files + string-constant helpers
+// spliced at __BUU_INLINE markers; __BUU_CFG markers left as their valid null defaults)
+// and syntax-checks the assembled child source.
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const root = path.join(__dirname, '..');
 
-const mainPath = path.join(__dirname, '..', 'src', 'main.js');
-const src = fs.readFileSync(mainPath, 'utf8');
-
-const fnIdx = src.indexOf('function buildPoolWorker(cfg)');
-if (fnIdx < 0) { console.error('FAIL: buildPoolWorker not found'); process.exit(1); }
-const retIdx = src.indexOf('return `', fnIdx);
-if (retIdx < 0) { console.error('FAIL: return template not found'); process.exit(1); }
-
-// Scan the template literal honoring escapes and nested ${ } braces.
-let i = retIdx + 'return `'.length;
-let out = '';
-let depth = 0; // ${ } nesting depth; content inside is replaced with a stub
-while (i < src.length) {
-  const c = src[i];
-  if (depth === 0) {
-    if (c === '\\') { out += c + (src[i + 1] || ''); i += 2; continue; }
-    if (c === '`') break; // end of template
-    if (c === '$' && src[i + 1] === '{') { depth = 1; i += 2; out += '0'; continue; }
-    out += c; i++;
-  } else {
-    if (c === '{') depth++;
-    else if (c === '}') depth--;
-    i++;
-  }
+const mainSrc = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
+function constValue(name) {
+  const d = mainSrc.indexOf('const ' + name + ' = `');
+  if (d < 0) { console.error('FAIL: const ' + name + ' not found in main.js'); process.exit(1); }
+  const open = mainSrc.indexOf('`', d) + 1;
+  const close = mainSrc.indexOf('`;', open);
+  return mainSrc.slice(open, close).replace(/\\`/g, '`').replace(/\\\$/g, '$').replace(/\\\\/g, '\\');
 }
-if (i >= src.length) { console.error('FAIL: template literal never closed'); process.exit(1); }
+const inline = {
+  REQUIRE_FN_SRC: constValue('REQUIRE_FN_SRC'),
+  LOGIN_TO_PESTPAC_SRC: fs.readFileSync(path.join(root, 'src', 'engine', 'login.js'), 'utf8'),
+  LOCATE_STACK_SRC: fs.readFileSync(path.join(root, 'src', 'engine', 'locate.js'), 'utf8'),
+  STEPS_SRC: fs.readFileSync(path.join(root, 'src', 'engine', 'steps.js'), 'utf8'),
+  PROBE_NETWORK_FN_SRC: constValue('PROBE_NETWORK_FN_SRC'),
+  WAIT_FOR_NETWORK_FN_SRC: constValue('WAIT_FOR_NETWORK_FN_SRC'),
+  CLASSIFY_ERROR_FN_SRC: constValue('CLASSIFY_ERROR_FN_SRC'),
+  CLASSIFY_PHASE_FN_SRC: constValue('CLASSIFY_PHASE_FN_SRC'),
+};
 
-// Unescape template-literal escapes so the worker source reads as it would at runtime.
-const workerSrc = out.replace(/\\`/g, '`').replace(/\\\$/g, '$').replace(/\\\\/g, '\\');
+let shell = fs.readFileSync(path.join(root, 'src', 'pool', 'worker.js'), 'utf8');
+shell = shell.replace(/\/\*__BUU_INLINE ([A-Z_]+)__\*\//g, (_, n) => {
+  if (!(n in inline)) { console.error('FAIL: unknown inline marker ' + n); process.exit(1); }
+  return inline[n];
+});
+if (/\/\*__BUU_INLINE [A-Z_]+__\*\//.test(shell)) { console.error('FAIL: unresolved inline marker'); process.exit(1); }
+const cfgCount = (shell.match(/\/\*__BUU_CFG_\d+__\*\/null/g) || []).length;
 
 const tmp = path.join(require('os').tmpdir(), '_buu_pool_worker_check.js');
-fs.writeFileSync(tmp, workerSrc, 'utf8');
+fs.writeFileSync(tmp, shell, 'utf8');
 const res = spawnSync(process.execPath, ['--check', tmp], { encoding: 'utf8' });
 if (res.status !== 0) {
-  console.error('FAIL: pool worker template has a syntax error:');
+  console.error('FAIL: assembled pool worker has a syntax error:');
   console.error(res.stderr);
   process.exit(1);
 }
-console.log('OK: pool worker template parses cleanly (' + workerSrc.length + ' chars checked)');
+console.log('OK: assembled pool worker parses cleanly (' + shell.length + ' chars, ' + cfgCount + ' cfg markers)');

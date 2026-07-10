@@ -38,6 +38,17 @@ function constValue(src, name) { // parse `const NAME = \`...\`;` literal into i
 }
 
 function emit(src, fileReads) {
+  if (src.indexOf('__POOL_INLINE_SRC') >= 0) {
+    // New shape: shell file + marker assembly (Phase 2 E4+).
+    let shell = fs.readFileSync(path.join(root, 'src', 'pool', 'worker.js'), 'utf8');
+    shell = shell.replace(/\/\*__BUU_INLINE ([A-Z_]+)__\*\//g, (_, n) => {
+      if (fileReads && fileReads[n] !== undefined) return fileReads[n];
+      const v = constValue(src, n);
+      if (v === null) throw new Error('inline source missing: ' + n);
+      return v;
+    });
+    return shell.replace(/\/\*__BUU_CFG_\d+__\*\/null/g, '@@CFG@@');
+  }
   const { text, exprs } = template(src);
   let out = text.replace(/\\`/g, '`').replace(/\\\$/g, '$').replace(/\\\\/g, '\\');
   return out.replace(/\u0000(\d+)\u0000/g, (_, n) => {
