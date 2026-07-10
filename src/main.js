@@ -1044,76 +1044,11 @@ ipcMain.handle('get-worker-caps', async () => {
   };
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// v2.2.2 — SHARED LOGIN HELPER (canonical, hardened, drift-proof)
-// ────────────────────────────────────────────────────────────────────────────
-// Single source of truth for "log into PestPac". Used in TWO contexts:
-//   1. Main process directly (check-license-cap IPC handler) — calls
-//      loginToPestPacInPage(page, creds) as a normal JS function.
-//   2. Spawned child template runners (buildRunner, buildPoolWorker,
-//      buildLogoutSweeper, buildOnceFlowRunner) — interpolate LOGIN_TO_PESTPAC_SRC
-//      into the emitted JS so the same function is available in the child.
-// LOGIN_TO_PESTPAC_SRC is the EXACT textual source of loginToPestPacInPage with
-// the name `loginToPestPacInPage` rewritten to `loginToPestPac` for compatibility
-// with the existing template call sites. Keep them in sync; they MUST never drift.
-// (If you edit one and not the other, you'll reintroduce the exact class of bug
-// that v2.2.1 had to fix: the sweeper's login was missed when the worker's was
-// updated. That's why this is a single string derived from a single function.)
-// The hardened body includes the `LoginForm-loginBtn` triple-fallback that the
-// sweeper/once-flow templates carried; the previous buildRunner/buildPoolWorker
-// copies were missing this fallback. Now ALL five call sites get it.
-// ════════════════════════════════════════════════════════════════════════════
-async function loginToPestPacInPage(page, creds){
-  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
-  if((creds.platform||'pestpac')==='frankware'){
-    // Frankware: single Rails login page, no company key, submit via Enter.
-    await page.waitForSelector('input[name="session[login]"]',{timeout:20000});
-    await page.fill('input[name="session[login]"]',creds.username||'');
-    await page.fill('input[name="session[password]"]',creds.password||'');
-    await page.press('input[name="session[password]"]','Enter');
-    await page.waitForFunction(()=>!location.pathname.includes('/login'),null,{timeout:30000});
-    return;
-  }
-  await page.waitForSelector('input[name="uid"]',{timeout:15000});
-  await page.fill('input[name="uid"]',creds.companyKey||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
-  await page.waitForSelector('input[name="username"]',{timeout:15000});
-  await page.fill('input[name="username"]',creds.username||'');
-  await page.fill('input[name="password"]',creds.password||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }
-  catch(e){ try{ await page.click('button[data-testid="loginBtn"]',{force:true,timeout:8000}); }
-            catch(_){ try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true,timeout:8000}); }catch(__){} } }
-  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
-}
-// String form used by spawned-child templates. Stays identical to loginToPestPacInPage
-// except the function is named `loginToPestPac` (matching every existing call site in the
-// four runner templates). If you edit loginToPestPacInPage above, update this too.
-const LOGIN_TO_PESTPAC_SRC = `async function loginToPestPac(page, creds){
-  await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
-  if((creds.platform||'pestpac')==='frankware'){
-    // Frankware: single Rails login page, no company key, submit via Enter.
-    await page.waitForSelector('input[name="session[login]"]',{timeout:20000});
-    await page.fill('input[name="session[login]"]',creds.username||'');
-    await page.fill('input[name="session[password]"]',creds.password||'');
-    await page.press('input[name="session[password]"]','Enter');
-    await page.waitForFunction(()=>!location.pathname.includes('/login'),null,{timeout:30000});
-    return;
-  }
-  await page.waitForSelector('input[name="uid"]',{timeout:15000});
-  await page.fill('input[name="uid"]',creds.companyKey||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{timeout:15000}); }catch(e){ await page.click('button[data-testid="CompanyKeyForm-loginBtn"]',{force:true}); }
-  await page.waitForSelector('input[name="username"]',{timeout:15000});
-  await page.fill('input[name="username"]',creds.username||'');
-  await page.fill('input[name="password"]',creds.password||'');
-  try{ await page.waitForSelector('.MuiBackdrop-root',{state:'hidden',timeout:12000}); }catch(e){}
-  try{ await page.click('button[data-testid="loginBtn"]',{timeout:15000}); }
-  catch(e){ try{ await page.click('button[data-testid="loginBtn"]',{force:true,timeout:8000}); }
-            catch(_){ try{ await page.click('button[data-testid="LoginForm-loginBtn"]',{force:true,timeout:8000}); }catch(__){} } }
-  await page.waitForSelector('a[href*="AutoLogin"]',{timeout:30000});
-}`;
+// Phase 2 refactor: canonical login moved to src/engine/login.js (single source; the
+// v2.2.2 dual-copy + hand-sync rule is dead). File is read VERBATIM for template
+// interpolation and require()'d for main-process use; alias preserves call sites.
+const LOGIN_TO_PESTPAC_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'login.js'), 'utf8');
+const { loginToPestPac: loginToPestPacInPage } = require('./engine/login');
 
 // ════════════════════════════════════════════════════════════════════════════
 // v2.2.2 (Session 2A) — SHARED RUNTIME HELPERS (drift-proof, template-interpolated)
