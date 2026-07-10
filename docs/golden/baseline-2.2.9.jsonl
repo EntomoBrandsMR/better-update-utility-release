@@ -1,0 +1,36 @@
+{"t":"dlg","j":"job1783708420963-879","r":1,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:34:06.461Z"}
+{"t":"dlg","j":"job1783708420963-879","r":1,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:34:34.103Z"}
+{"j":"job1783708420963-879","r":1,"s":"ok"}
+{"t":"dlg","j":"job1783708420963-879","r":2,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:34:42.039Z"}
+{"t":"dlg","j":"job1783708420963-879","r":2,"m":"Do you want to delete this Renewal?","k":"confirm","ts":"2026-07-10T18:34:52.969Z"}
+{"j":"job1783708420963-879","r":2,"s":"ok"}
+{"t":"dlg","j":"job1783708420963-879","r":3,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:35:01.660Z"}
+{"t":"dlg","j":"job1783708420963-879","r":3,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:35:14.315Z"}
+{"j":"job1783708420963-879","r":3,"s":"ok"}
+{"t":"dlg","j":"job1783708420963-879","r":4,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:35:22.023Z"}
+{"t":"dlg","j":"job1783708420963-879","r":4,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:35:34.655Z"}
+{"j":"job1783708420963-879","r":4,"s":"ok"}
+{"t":"dlg","j":"job1783708420963-879","r":5,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:35:42.373Z"}
+{"t":"dlg","j":"job1783708420963-879","r":5,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:35:54.979Z"}
+{"t":"dlg","j":"job1783708420963-879","r":5,"m":"Would you like to cancel all open Orders associated with this Service Setup?","k":"confirm","ts":"2026-07-10T18:35:54.995Z"}
+{"t":"dlg","j":"job1783708420963-879","r":5,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:36:29.252Z"}
+{"t":"dlg","j":"job1783708420963-879","r":5,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:36:40.736Z"}
+{"j":"job1783708420963-879","r":5,"s":"ok (retry)"}
+{"t":"dlg","j":"job1783708420963-879","r":6,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:36:48.513Z"}
+{"t":"dlg","j":"job1783708420963-879","r":6,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:37:01.080Z"}
+{"j":"job1783708420963-879","r":6,"s":"ok"}
+{"t":"dlg","j":"job1783708420963-879","r":7,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:37:08.778Z"}
+{"t":"dlg","j":"job1783708420963-879","r":7,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:37:21.410Z"}
+{"j":"job1783708420963-879","r":7,"s":"ok"}
+{"t":"dlg","j":"job1783708420963-879","r":8,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:37:28.175Z"}
+{"t":"dlg","j":"job1783708420963-879","r":8,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:37:40.706Z"}
+{"j":"job1783708420963-879","r":8,"s":"ok"}
+{"t":"dlg","j":"job1783708420963-879","r":9,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:37:55.636Z"}
+{"t":"dlg","j":"job1783708420963-879","r":9,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:38:09.190Z"}
+{"j":"job1783708420963-879","r":9,"s":"ok"}
+{"t":"dlg","j":"job1783708420963-879","r":10,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:38:17.919Z"}
+{"t":"dlg","j":"job1783708420963-879","r":10,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:38:30.535Z"}
+{"t":"dlg","j":"job1783708420963-879","r":10,"m":"Would you like to cancel all open Orders associated with this Service Setup?","k":"confirm","ts":"2026-07-10T18:38:30.550Z"}
+{"t":"dlg","j":"job1783708420963-879","r":10,"m":"Do you want to make this Service Setup inactive?","k":"confirm","ts":"2026-07-10T18:39:05.830Z"}
+{"t":"dlg","j":"job1783708420963-879","r":10,"m":"Do you want to delete this Service Setup?","k":"confirm","ts":"2026-07-10T18:39:19.341Z"}
+{"j":"job1783708420963-879","r":10,"s":"ok (retry)"}
