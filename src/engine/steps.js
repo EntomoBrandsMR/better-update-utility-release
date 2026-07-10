@@ -1,0 +1,191 @@
+// engine/steps.js — pool worker step handlers (runStep). SINGLE SOURCE, interpolated
+// VERBATIM into the pool worker child script via ${STEPS_SRC}.
+// SCOPE CONTRACT — the host that inlines this file must define, before this point:
+//   RUN_CONTEXT, PAGE_LOAD_MODE, NAV_TIMEOUT, SELECTOR_TIMEOUT (config globals),
+//   resolveStepLocator/findLocator (engine/locate.js), loginToPestPac (engine/login.js),
+//   fs (node builtin, used by fileupload).
+// Extracted verbatim from buildPoolWorker template — Phase 2 refactor, 2026-07-10.
+// ifclick + dialog handlers intentionally survive Phase 2; they die with R2/R3.
+async function runStep(page, step, row, creds){
+  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
+  const ms=s=>Math.round(parseFloat(s||1)*1000);
+  switch(step.type){
+    case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:NAV_TIMEOUT}); break;}
+    case 'click':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().click(); if(step.waitFor){ const wl=await findLocator(page,step.waitFor,{timeout:SELECTOR_TIMEOUT}); await wl.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); } break; }
+    case 'ifclick':{
+      // v2.2.9: conditional click — if the element shows up within the presence window, click it;
+      // otherwise continue silently. Branch taken is recorded on the row (__stepNote) so it lands
+      // in the step trail + fieldsWritten — never silent (per TODO item, minimal slice of IF logic).
+      const presenceMs=Math.max(250,Math.round(parseFloat(step.presenceSec||1)*1000));
+      let loc=null;
+      try{ loc=await findLocator(page,step.selector,{timeout:presenceMs}); }catch(e){ loc=null; }
+      if(loc){ try{ await loc.first().waitFor({state:'visible',timeout:1000}); }catch(e){ loc=null; } }
+      if(loc){ await loc.first().click(); row.__stepNote='clicked'; }
+      else { row.__stepNote='not present'; }
+      break;
+    }
+    case 'type':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.clearFirst!=='no') await loc.first().fill(''); const val=r(step.value); const delay=parseInt(step.typeDelay||0); if(delay>0) await loc.first().pressSequentially(val,{delay:delay}); else await loc.first().fill(val); break; }
+    case 'select':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().selectOption({label:r(step.value)}); break; }
+    case 'checkbox':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.checkAction==='check')await loc.first().check(); else if(step.checkAction==='uncheck')await loc.first().uncheck(); else if(step.checkAction==='toggle')await loc.first().click(); else if(step.checkAction==='conditional'){ const tv=(step.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase()); if(tv.includes(String(r(step.condCol)).trim().toLowerCase()))await loc.first().check(); else await loc.first().uncheck(); } break; }
+    case 'clear':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().fill(''); break; }
+    case 'wait':if(step.waitType==='random'){const mn=ms(step.waitMin||1),mx=ms(step.waitMax||3);await page.waitForTimeout(Math.floor(Math.random()*(mx-mn+1))+mn);}else if(step.waitType==='element'){const loc=await findLocator(page,step.waitSel||'',{timeout:30000});await loc.first().waitFor({state:'visible',timeout:30000});}else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
+    case 'assert':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.expected){ const t=await loc.first().textContent(); if(!t||!t.includes(step.expected)) throw new Error('Assert failed: expected "'+step.expected+'"'); } break; }
+    case 'pestpac-login':{ await loginToPestPac(page,creds); break; }
+    case 'pestpac-logout':{ await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000}); await page.waitForSelector('div.select',{timeout:10000}); await page.click('div.select'); await page.waitForSelector('a.logout',{timeout:5000}); await page.click('a.logout'); await page.waitForTimeout(1500); break; }
+    case 'fileupload':{
+      // Resolve the file path for this row (column path, or fixed folder + filename column).
+      let filePath='';
+      if(step.pathSource==='fixed'){ const base=(step.baseFolder||'').replace(/[\\/]+$/,''); const fn=r(step.fileNameColumn||''); filePath = fn ? (base + '\\' + fn) : ''; }
+      else { filePath = r(step.pathColumn||''); }
+      if(!filePath){ throw new Error('File upload: no file path resolved for this row'); }
+      if(!fs.existsSync(filePath)){ throw new Error('File upload: file not found: '+filePath); }
+      const loc=await resolveStepLocator(page,step,r); await loc.first().setInputFiles(filePath); break;
+    }
+    case 'readfield':{
+      // v2.2.0: read a field's current value/label and store it under step.colName so (a) later
+      // steps can use {{colName}} via the row resolver and (b) the coordinator can write it to the
+      // dedicated results workbook. value+label for <select>; text for inputs/spans.
+      const colName=(step.colName||'').trim(); if(!colName) break;
+      const mode=step.readMode||'both';
+      let value=null, label=null, found=false;
+      const sel=step.selector||'';
+      for(const f of page.frames()){
+        try{
+          const handle=await f.$(sel); if(!handle) continue;
+          const info=await f.evaluate(el=>{
+            const tag=(el.tagName||'').toLowerCase();
+            if(tag==='select'){ const o=el.options&&el.selectedIndex>=0?el.options[el.selectedIndex]:null; return {value:el.value, label:o?(o.textContent||'').trim():''}; }
+            if(tag==='input'||tag==='textarea'){ return {value:el.value, label:el.value}; }
+            const t=(el.textContent||'').trim(); return {value:t, label:t};
+          }, handle);
+          value=info.value; label=info.label; found=true; break;
+        }catch(e){ /* not in this frame */ }
+      }
+      if(!found){ if(step.readOnMissing==='error') throw new Error('Read field: selector not found: '+sel); value=''; label=''; }
+      const out = mode==='value' ? (value||'') : (mode==='text' ? (label||'') : (label||value||''));
+      // Store for later-step token use and for reporting.
+      row[colName]=out;
+      row[colName+'__raw']=(value||'');
+      row[colName+'__label']=(label||'');
+      if(!row.__reads) row.__reads={};
+      row.__reads[colName]={ value:(value||''), label:(label||''), out:out };
+      break;
+    }
+    case 'fw-scrape-orders':{
+      // Frankware-only: scrape the full paginated Orders table for ONE account and stash one
+      // record per order in row.__scrape (the coordinator appends them to the run CSV, deduped).
+      // Frankware's "entries" count and Next button are unreliable, so termination is the EMPTY
+      // PAGE. Balance is rendered NEGATIVE when owed; we keep the sign and parse to a number.
+      const url=r(step.url); if(!url) throw new Error('Frankware scrape: orders URL is empty');
+      // Stamp values accept {{Token}} syntax (resolved through r(), exactly like the URL field)
+      // OR a bare column name. The v2.2.7 bug read row['{{Old Acct #}}'] literally; now a token
+      // is resolved via r() and a bare name falls back to a direct row[column] lookup.
+      const stampVal = function(f){ if(!f) return ''; var t=String(f).trim(); if(t.indexOf('{{')>=0) return r(t); return (row[t]!==undefined ? String(row[t]) : ''); };
+      const prop = stampVal(step.propCol);
+      const loc  = stampVal(step.locCol);
+      const inv  = stampVal(step.invCol);
+      await page.goto(url,{waitUntil:'domcontentloaded',timeout:NAV_TIMEOUT});
+      const rowSel='#tab-orders .dataTables_scrollBody table.dataTable tbody tr';
+      const num=s=>{ const t=(s==null?'':String(s)).replace(/[$,]/g,'').trim(); if(t===''||t==='-') return ''; const n=parseFloat(t); return isNaN(n)?'':n; };
+      const settle=async()=>{ try{ await page.waitForFunction(()=>{ var p=document.querySelector('#tab-orders .dataTables_processing'); var b=document.getElementById('busy'); var ph=!p||getComputedStyle(p).visibility==='hidden'; var bh=!b||getComputedStyle(b).display==='none'; return ph&&bh; },null,{timeout:20000}); }catch(e){} };
+      let hasAny=true;
+      try{ await page.waitForSelector(rowSel,{timeout:20000}); }catch(e){ hasAny=false; }
+      const orders=[]; const seen={}; let prevFirst=null; const MAX_PAGES=500;
+      if(hasAny){
+        for(let pg=0; pg<MAX_PAGES; pg++){
+          await settle();
+          const pageRows=await page.$$eval(rowSel, trs => trs.map(tr => {
+            const td=tr.querySelectorAll('td');
+            const cell=i => td[i] ? (td[i].textContent||'').trim() : '';
+            return { orderId:cell(0), service:cell(1), status:cell(2), price:cell(4), balance:cell(5), writeOff: tr.classList.contains('write-off') ? 'Yes':'No' };
+          }));
+          if(!pageRows.length) break;                 // empty page = end of data
+          const firstId=pageRows[0].orderId;
+          if(prevFirst!==null && firstId===prevFirst) break;   // page did not advance
+          prevFirst=firstId;
+          let added=0;
+          for(const pr of pageRows){
+            if(pr.orderId && seen[pr.orderId]) continue;       // intra-account dupe guard
+            if(pr.orderId) seen[pr.orderId]=1;
+            added++;
+            orders.push({ prop:prop, loc:loc, inv:inv, orderId:pr.orderId, service:pr.service, status:pr.status, price:num(pr.price), balance:num(pr.balance), writeOff:pr.writeOff });
+          }
+          if(!added) break;                           // whole page already seen
+          const next=await page.$('#tab-orders .dataTables_paginate a.next.paginate_button');
+          if(!next) break;
+          try{ await next.click(); }catch(e){ break; }
+          await page.waitForTimeout(300);
+        }
+      }
+      row.__scrape=orders;
+      break;
+    }
+    // v2.2.2 Session 2B: textedit ported from buildRunner. Multi-mode in-place text manipulation
+    // on the field at step.selector. Reads current value, transforms per editMode, writes back.
+    // editModes: find-replace / exact-remove / partial-remove-word / partial-remove-piece /
+    //            partial-replace-piece / remove-after / remove-before / trim /
+    //            remove-extra-spaces / regex. Bug fix on port: the regex editMode previously
+    //            referenced undefined "replace" — corrected to "replaceStr".
+    case 'textedit':{
+      await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});
+      const currentVal = await page.$eval(step.selector, el => el.value || el.textContent || el.innerText || '');
+      const search = r(step.searchVal||'');
+      const replaceStr = r(step.replaceVal||'');
+      const tch = step.charVal||'@';
+      const flags = (step.regexFlags||'gi');
+      let newVal = currentVal;
+      switch(step.editMode||'find-replace'){
+        case 'find-replace':
+          if(step.caseSensitive==='yes'){
+            newVal = currentVal.split(search).join(replaceStr);
+          } else {
+            const searchLower = search.toLowerCase();
+            let result=''; let i=0;
+            while(i<currentVal.length){
+              if(currentVal.substring(i,i+search.length).toLowerCase()===searchLower){ result+=replaceStr; i+=search.length; }
+              else { result+=currentVal[i]; i++; }
+            }
+            newVal = result;
+          }
+          break;
+        case 'exact-remove':
+          newVal = currentVal.split(search).join('');
+          break;
+        case 'partial-remove-word':
+          newVal = currentVal.split(/\s+/).filter(w => !(step.caseSensitive==='yes' ? w.includes(search) : w.toLowerCase().includes(search.toLowerCase()))).join(' ').trim();
+          break;
+        case 'partial-remove-piece':
+          newVal = currentVal.split(/\s+/).map(w => { const idx = step.caseSensitive==='yes' ? w.indexOf(search) : w.toLowerCase().indexOf(search.toLowerCase()); if(idx<0) return w; return w.slice(0,idx) + w.slice(idx+search.length); }).join(' ').trim();
+          break;
+        case 'partial-replace-piece':
+          newVal = currentVal.split(/\s+/).map(w => { const idx = step.caseSensitive==='yes' ? w.indexOf(search) : w.toLowerCase().indexOf(search.toLowerCase()); if(idx<0) return w; return w.slice(0,idx) + replaceStr + w.slice(idx+search.length); }).join(' ').trim();
+          break;
+        case 'remove-after':
+          { const idx=currentVal.indexOf(tch); if(idx>=0) newVal=currentVal.slice(0,idx); }
+          break;
+        case 'remove-before':
+          { const idx=currentVal.indexOf(tch); if(idx>=0) newVal=currentVal.slice(idx+tch.length); }
+          break;
+        case 'trim':
+          newVal = currentVal.trim();
+          break;
+        case 'remove-extra-spaces':
+          newVal = currentVal.trim().replace(/  +/g,' ');
+          break;
+        case 'regex':
+          try{ newVal = currentVal.replace(new RegExp(search, flags), replaceStr); }
+          catch(e){ throw new Error('Invalid regex pattern: '+search+' — '+e.message); }
+          break;
+      }
+      const tag = await page.$eval(step.selector, el => el.tagName.toLowerCase());
+      if(tag==='input'||tag==='textarea'){
+        await page.fill(step.selector, newVal);
+      } else {
+        await page.$eval(step.selector, (el,v) => { el.textContent=v; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }, newVal);
+      }
+      break;
+    }
+    case 'dialog':{ const matchText=step.dialogMatch||''; const dialogAction=step.dialogAction||'accept'; if(page._buuDialogListener){ try{page.off('dialog',page._buuDialogListener);}catch(_){} page._buuDialogListener=null; } const handler=async dialog=>{ try{page.off('dialog',handler);}catch(_){} if(page._buuDialogListener===handler)page._buuDialogListener=null; const msg=dialog.message(); const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase()); try{ if(matches){ if(dialogAction==='dismiss')await dialog.dismiss(); else await dialog.accept(); } else { await dialog.dismiss(); } }catch(e){} }; page._buuDialogListener=handler; page.on('dialog',handler); break; }
+  }
+}
+if (typeof module !== "undefined" && module.exports) { module.exports = { runStep }; }
