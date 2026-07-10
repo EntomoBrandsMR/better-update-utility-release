@@ -260,7 +260,9 @@ refactor.
 - bigma box (hostname unknown — record when next seen) = older machine, repo at
   C:\Users\bigma\OneDrive\Desktop\Better Update Utility. Status/role: confirm with Matthew.
 
-**NOTIFY MATTHEW'S PHONE when stopping/blocked/done with a batch:** POST to ntfy —
+**NOTIFY MATTHEW'S PHONE on EVERY stop — needing input, blocked, batch done, OR pausing
+because the working turn ran long / hit limits (he may be away; the ping is what tells
+him to come nudge the session):** POST to ntfy —
 `Invoke-RestMethod -Method Post -Uri ("https://ntfy.sh/" + (Get-Content .ntfy-topic)) -Body "<short generic message>" -Headers @{Title="BUU"; Priority="high"}`
 (topic in .ntfy-topic at repo root, gitignored; keep message content generic — topic is public-guessable). Fire it as the LAST action of a working turn.
 
