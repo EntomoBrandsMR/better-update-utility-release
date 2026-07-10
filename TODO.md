@@ -248,8 +248,14 @@ refactor.
 
 ## HANDOFF — for the next session (written 2026-07-10, end of planning + Phase 1)
 
-**Who/where:** Matthew, sole dev + user. Machine: Matt Ruckman work box / VM (freshly
-RAM-upgraded, no BUU install used yet — clean testbed for the rebuild). Repo:
+**MACHINES (check DC hostname via get_config FIRST THING every session):**
+- `CORP-5QD5QJ4` = **MAIN RIG** (Windows user "Matt Ruckman", RAM-upgraded, BUU 2.2.9
+  installed, real flows at %APPDATA%\buu-2\flows, repo at
+  C:\Users\Matt Ruckman\projects\Better Update Utility). This is where dev + runs happen.
+- bigma box (hostname unknown — record when next seen) = older machine, repo at
+  C:\Users\bigma\OneDrive\Desktop\Better Update Utility. Status/role: confirm with Matthew.
+
+**Who/where:** Matthew, sole dev + user. Machine: main rig CORP-5QD5QJ4 (see table). Repo:
 C:\Users\Matt Ruckman\projects\Better Update Utility, branch v2.0.0-elastic, remote
 EntomoBrandsMR/better-update-utility-release. Toolchain installed this week: git,
 node 24, npm 11, gh (authed). NODE_ENV=production is set machine-wide — ALWAYS
