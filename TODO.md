@@ -1,115 +1,237 @@
-# BUU TODO — consolidated master list
+# BUU TEARDOWN/REBUILD — build plan + pending pool
 
-**Created 2026-07-04** by merging three sources: the 27-item chat agenda (captured 2026-07-03,
-never previously written to disk), the v2.4.0 design doc's 25-item locked agenda
-(`docs/design/BUU-v2.4.0-DESIGN.md`), and `docs/KNOWN-BUGS.md`. Overlaps deduped; each item
-notes its origin (C# = chat item, D# = v2.4.0 design item, KB# = known bug).
-Current shipped: **v2.2.9** (If-click step).
+**Planned 2026-07-10 in a full planning session. This file is the single source of truth
+for pending work.** Per-version design docs are retired; version numbers get decided at ship
+time. Old docs in docs/design/ are historical reference only.
+
+**Build order (locked): DIAGNOSE → REFACTOR → BUG FIX → REBUILD**
+Validation gate between refactor and bug-fix: acceptance test = same real flow produces an
+identical journal before/after refactor, plus full validator suite.
 
 ---
 
-## TOP PRIORITY (next release candidates)
+## PHASE 1 — DIAGNOSE (read-only, root causes written down, no fixes)
 
-1. **Dynamic / adaptive worker scaling** (C10 + C27 + D22 — same umbrella).
-   Three caps (license / PestPac response / local RAM+CPU), three signals (duration p75,
-   wall-vs-Playwright time ratio, skip rate), ramped wave startup, Auto = ceiling not launch
-   target, hardware formula includes RAM. Evidence: 2,823 `page.goto: Page crashed` renderer
-   OOMs on the ATI run; 119-worker near-crash 2026-05-27. Full spec in D22.
-2. **Reauth doesn't work on long runs** (C25). 3,557 rows failed through on a session drop
-   without recovery. Same session-state machine as C24 (stop-hang re-login).
-3. **Logging rework** (C11 + C15 + C16 + D24 + D4 — one umbrella).
-   - Journal must exist and be usable on partial/aborted runs, not only clean finishes (C11).
-   - Per-row terminal logging must be atomic — rows 568-570 vanished with no record (C11).
-   - Only the coordinator writes the journal; workers emit row-results; first-write/ok-wins
-     dedup rules; reclaim reasons tagged and surfaced in the counter (D24 a+b).
-   - Column-token matcher false mismatch: trim + case-insensitivity (C15).
-   - Dialog text always logged on the triggering row (D4).
-   - Run Log tab: rework or cut as part of this (C16).
-   - Breaker/dump bug: coordinator marks remaining rows error without attempting them after a
-     breaker trip — fold the fix in here.
+- **D1. Lingering BUU processes** (blocks update prompt + builds). Confirm orphan source:
+  worker children not killed on quit vs main process not exiting. second-instance handler
+  never re-checks updates — verify.
+- **D2. Stop-hang: last worker hangs forever on stop, often re-logs-in** (burns license).
+  Likely the old logout dance wedging — recheck against new logout design before deep dive.
+- **D3. Typing lockup cluster** (user reports widespread: run-settings number inputs flaky,
+  step-editor fields stop accepting input). Dig hard. Suspect focus-stealing render loop.
+- **D4. Step-through mode spawns extra live workers / burns licenses.**
+- **D5. Phantom "Do you want to delete this note?" confirm during add-note flows.**
+- **D6. Overlay covers Add Profile modal** (overlays should default display:none).
+- **D7. Reauth doesn't work on long runs** (3,557 rows failed through on session drop).
+  Same session-state machine as D2.
+- **D8. Verify current step-then-Release pool behavior** works as believed (one window,
+  walk rows, Release starts full pool) — document exact logic so rebuild preserves it.
+- Parked unless tripped over: Frankware license/reauth machinery (KB2).
 
-## FIRM BUGS
+## PHASE 2 — REFACTOR (runtime unification + teardown)
 
-4. **Lingering BUU processes after a run** (KB1). Blocks update prompt + builds. Fix: full
-   worker teardown on run end + app quit; `second-instance` handler re-checks updates.
-   Partial mitigation shipped v2.2.9: installer.nsh taskkills before install.
-5. **On stop, last worker hangs forever, often re-logs-in** (C24). Burns a license. Same
-   drain machinery as restart (C22) and scale-down retirement (D22) — one design, three
-   consumers.
-6. **verifyAfterAction false-mismatch** (KB3). Reads post-save DOM after navigation destroyed
-   it. Fix: verify must FRESH-NAVIGATE and read (D25 has the full verify-pass design —
-   verify-on-failure default, verify-every-row opt-in, reclassify false skips).
-7. **Step-through mode spawns extra live workers / burns licenses** (KB4).
-8. **Phantom "delete this note?" confirm during add-note flows** (KB5).
-9. **Overlay covers Add Profile modal** (KB6). Overlays should default display:none.
-10. **Frankware runs invoke PestPac-only license/reauth machinery** (KB2). Gate on
-    `profile.platform === 'pestpac'`; Auto skips license read for Frankware.
-11. **Run-settings number inputs flaky** (C12).
-12. **No right-click paste anywhere** (C13). Likely missing Electron context menu.
+**New file structure (OOP-style, many small modules, thin main):**
+```
+src/
+  main.js          Electron boot, window, IPC wiring only
+  engine/steps.js  unified step handlers (one copy, all hosts)
+  engine/login.js  loginToPestPac / logout (new one-URL logout)
+  engine/popups.js browser-dialog + HTML-modal handling
+  engine/locate.js findLocator / resolveStepLocator
+  pool/coordinator.js  queue, journal writer, scaling
+  pool/worker.js   thin worker shell (bundled into child template at spawn)
+  flows.js         flow load/save/folders/migration
+  journal.js       the one journal writer + reader precedence rules
+  index.html       renderer (own cleanup pass)
+```
+Engine files bundle into the worker child-process script at spawn (template approach
+survives underneath, authored as real files).
 
-## FIRM FEATURES (small/medium)
+**TEARDOWN LIST (delete entirely):**
+- Single-runner remnants (Run Pool is the only run path)
+- Circuit breaker + all breaker/dump logic
+- "No URL" prompt + its check logic (only that)
+- Batching: batch-pull, batch-size UI, reclaim/hand-back, batch-tail tracking,
+  dup-row counters — whole family. Workers pull ONE row.
+- Handle Dialog step type (auto-migrate: previous step gets autoAcceptDialog=true)
+- Run Log tab (never worked; replaced by error strip in rebuild)
+- verifyAfterAction — fully gutted (code, UI toggle, journal fields)
+- If-click step type (absorbed into unified Click; auto-migrate existing)
+- Skip status + all skip logic/counters/UI (statuses become ok|error only)
+- Old 4-step logout dance + 150s polling budget (replaced, see Phase 3/rebuild)
+- Unused step types — pending flow audit (grep saved flows for types never used)
 
-13. **TODAY date token** (C1). Runtime-evaluated, mm/dd/yyyy, distinct chip color, usable in
-    any value field. ({{TODAY}} exists for once-flows since v1.2.8 — extend to everywhere.)
-14. **Popup auto-accept / auto-decline checkboxes on every action step** (C2 + D2 — SAME
-    item). Listener armed just before the action, handles all dialogs in the window,
-    harmless on zero dialogs. Then remove the standalone Handle Dialog step (D3, migration
-    on load). Grows into per-dialog routing later — don't build the rules editor yet.
-15. **Click step: wait-for-element timeout override** (C3) and **wait-until-enabled** (C4 +
-    D10 state-aware selectors + D12 per-step action timeout). One cluster: the hardcoded 30s
-    pool-worker element wait causes false errors on slow PestPac saves (flagged for v2.2.10
-    along with pressAfter on type steps).
-16. **Generic Wait step type** (D11). Selector + state + timeout.
-17. **URL-change / navigation-complete waitFor modes on Click** (D8 + D9).
-18. **Flows + logs move inside the BUU folder** (C7). Updater-wipe risk flagged; decision
-    stands.
-19. **Installer defaults to Desktop** (C8).
-20. **Remove failure limit** (C9).
-21. **Build-step page shows active flow name** (C14). Part of sidebar work (C17).
-22. **Sidebar consolidation umbrella** (C17): all controls to left sidebar — flow name (C14),
-    single Run button (C18 = D13 Run Pool is the only Run), run-progress-by-step (C23),
-    Save Flow, worker-pool settings.
-23. **Pool settings + start mode save with the flow** (C19). Restart bug (C22) proved it.
-24. **Pool defaults** (C20): workers 1, batch 5, auto-scale on, every(min) 2, diagnostic off,
-    verify off.
-25. **Remove the "no URL" code + prompt** (C26). Open sub-question: prompt only or all URL
-    handling?
-26. **Step move-up/move-down buttons** (D14). Small, rides along anywhere.
-27. **Hot-reload flow edits between runs** (D15) + "flow last saved" timestamp on launch.
-28. **pressAfter param on type steps** (flagged for v2.2.10).
+**KEEPERS (survive teardown, migrate into engine):**
+- Diagnostic capture (shipped v2.2.3 — the failures/ toggle w/ per-bucket cap 10)
+- Logout sweeper (permanent failsafe; exact-"BUU"-user match rule preserved)
+- Step-then-Release pool preview behavior (acceptance check D8)
+- findByText mode in resolveStepLocator (audit during refactor, feeds future
+  row-by-text Paste HTML feature)
 
-## BIG ROCKS (v2.4.0 core — see docs/design/BUU-v2.4.0-DESIGN.md for full specs)
+## PHASE 3 — BUG FIX (diagnosed bugs fixed in the new structure, written once)
 
-29. **Runtime unification** (D1). LARGEST ITEM — do first, by itself. One step engine, one
-    login, one logout, one dialog handler across single-runner/pool-worker/sweeper.
-    (v2.2.2 dedup'd loginToPestPac; the rest remains.)
-30. **Verify pass** (D25). Fresh-navigate readback of intended writes; reclassify false
-    skips; name the failing field. Depends on/pairs with #6 above.
-31. **Diagnostic capture with sampling caps** (D6) + **log retention policy** (D7).
-32. **Skip-vs-error reclassification** (D5).
-33. **Pool preview / verification mode** (D16). Pool respects start modes (part of D13).
-34. **Logout-attempt warnings surfaced** (D17) + smarter logout retry (D18).
-35. **Per-row total-time timeout** (D23). Row-timeout skip reason; worker stays alive.
-36. **Spreadsheet-free flow type** (D19).
-37. **Sequential flow queueing** (D20).
-38. **Scheduled flow runs** (D21).
-39. **Restart feature overhaul** (C22). Real use case: network recovery. Must reuse the flow's
-    saved worker count + window mode. Shares clean-drain machinery with #5 and D22.
+- **NEW LOGOUT (designed + URL proven live 2026-07-10):**
+  1. goto https://app.pestpac.com/default.asp?Mode=Logout
+  2. page loads → login page (login.pestpac.com or uid field)? done.
+     not login page → goto logout URL again
+  3. not verified after 5s total → step 4
+  4. flag worker "possible license leak" (red), exit. Sweeper = failsafe.
+  Force-kill fuse ~10s (was 180s). Worker logs every URL touched during logout.
+  Drain = finish current row (batch=1) then logout — logout-on-drain is an
+  acceptance-test item (regressed before: 28-stuck-sessions bug).
+- **Coordinator-crash safety:** workers detect IPC disconnect → finish current row →
+  append result to own spill file (journal-spill-w<N>.jsonl) → log out → exit.
+  Launch recovery merges spill files before offering Resume. Pidfile sweep on launch
+  kills any survivors from a dead run (also chips at D1).
+- Fixes for D1-D7 as diagnosed, implemented in new modules.
+- Logout-attempt surfacing: >2 attempts = amber on worker card; exit without verified
+  logout = red "possible license leak" on card + end-of-run summary.
 
-## DISCUSSION BUCKET
+## PHASE 4 — REBUILD (locked features, in rough build order)
 
-40. **IF/conditional logic in flows** (C6). Umbrella over #14. v2.2.9's If-click is the first
-    slice.
-41. **XPath text-locate click step** (C5). AND/OR/NOT compound text predicates. NOTE:
-    `resolveStepLocator` already supports a `findByText` mode — audit before building.
-42. **Batch vs one-at-a-time** (C21). Batch stays for now, default 5.
+**R1. Journal rework.** Coordinator is the ONLY journal writer; workers emit results over
+IPC. Append+flush per row (journal always complete to last row; no finalize step).
+Every row guaranteed a terminal state (worker death → coordinator writes requeued/abandoned;
+silence impossible). Statuses: ok | error only, with rich reason field (timeout,
+dialog-blocked, session-dropped, manual, ...). Duplicate rule: append-only, ok-wins,
+later lines marked superseded. Column-token matching: trim + case-insensitive.
+Popup/dialog encounters logged per row. Spill-file merge on recovery (Phase 3).
+Resume prompt names rows that were in-flight at crash (possible double-action; eyes decide).
 
-## BOTTOM OF LIST
+**R2. Unified Click step.** Absorbs If-click + wait items. Three sections, all defaulted
+to current behavior:
+- When to act: wait for element appears (default) | wait until enabled;
+  per-step wait timeout (kills hardcoded 30s pool wait)
+- If not found: error (default) | skip and continue (presence window, default 1s)
+- After click: nothing (default) | wait for element | wait for URL change |
+  wait for next page load
+Migration: existing Click = all defaults; If-click steps auto-migrate; If-click removed.
 
-43. **If-click: optional after-click "wait until gone"** (C28). For non-PestPac software with
-    fade-out popups. PestPac doesn't have the problem.
+**R3. Popup/dialog handling on action steps** (Click, Select, Type, Checkbox, Navigate):
+- ☐ Auto-accept browser dialog / ☐ Auto-decline (mutually exclusive; listener armed
+  before action, handles chained dialogs, harmless on zero dialogs, never blocks)
+- ☐ Dismiss alert popup if present (PestPac HTML modals, e.g. Alert note on location
+  pages): post-action poll, default 1s (editable), default selector button.modal-alert
+  (editable), click if present, never blocks. Encounter logged per row, no text capture.
+Handle Dialog step removed w/ auto-migration.
 
-## DEFERRED (unchanged from v2.4.0 doc)
+**R4. Adaptive worker scaling.**
+- Hardware (comfortable): min(cores × 3, floor(freeRAM_GB × 0.5 / 0.35)); tunable
+  multiplier; slider can exceed cap deliberately (amber past cap)
+- PestPac pressure: baseline = median row duration of first ~50 OK rows; rolling =
+  median last 30; pressure = rolling/baseline. >1.4 sustained 2 checks → drop ~20%;
+  <1.15 → slow creep back. Drop fast, recover slow.
+- License cap: existing logic unchanged
+- One evaluation timer (piggyback license-check interval); changes apply at row end
+- Scale-up strictly sequential: one worker spawns → logs in → pulls first row →
+  next spawns. Realistic counts 5-15, so no ramp-time concern.
+- ALL settings are SLIDERS, live during run, saved with flow (= new defaults);
+  Reset Defaults button. Manual IS the default (manual wins over auto).
+- Display: effective count + reason, e.g. "12 workers (cap: hardware) · pressure 1.1"
 
-- Field Catalog (v2.5). Parallel multi-flow (v2.5). PestPac API / hybrid (v3.0 branch —
-  blocked on WorkWave OAuth credentials).
+**R5. Step debugger (step mode).** Buttons: Next step · Redo step · Last step (cursor
+only, no undo) · Skip step · Restart row · Skip row (row logged error, reason=manual).
+Live flow reload at every pause boundary (edits apply from cursor forward; flow-shape-
+changed-above-cursor warns, pick "continue from step N"). Constraint (KB4): step mode
+never scales, never spawns extra logins — one worker, one license until Release.
+Tier 1 ships regardless: pool reads saved flow fresh at every launch + "flow last
+saved" timestamp on launch screen. NO live reload during full-speed runs.
+
+**R6. Tokens.** {{TODAY}} (live per row, crosses midnight) + {{RUNDATE}} (frozen at run
+start). Both accept ±N days: {{TODAY-1}}, {{RUNDATE+30}}. MM/DD/YYYY zero-padded.
+Straight day arithmetic. System tokens win over same-named columns; save-time warning
+on collision. Distinct chip color. Work everywhere incl. spreadsheet-free flows.
+
+**R7. pressAfter on type steps.** ☐ Press key after typing → dropdown: Tab, Enter,
+Escape, ArrowDown, ArrowUp, Space.
+
+**R8. Install + file layout.** Installer default: C:\BUU\ (fixed path; also the
+taskbar-pin fix candidate). Desktop shortcut created. Everything BUU lives there:
+app, flows\, logs\, failures\. installer.nsh preserves flows\/logs\/failures\ on
+upgrade — MUST be built+tested before first update lands on real flows.
+Migration on first launch: copy %APPDATA%\buu-2 flows/logs → C:\BUU\.
+
+**R9. Flow folders.** flows\automation\ (☐ Automation flow checkbox on Flow Type card),
+flows\once\ (setup+teardown), flows\general\ (default). Pickers filter by folder
+(setup/teardown ← once; run picker ← automation+general). Migration sorts existing
+flat flows by runMode; nothing auto-flags automation.
+
+**R10. Flow-name UX.** Build page shows active flow name; unsaved/new = "Building".
+Unsaved-changes prompt (Save / Don't Save / Cancel) on app close AND flow-switch.
+
+**R11. Sidebar consolidation.** Flow-building + run-launch controls to left sidebar:
+flow name, Save Flow, single Run button, pool settings sliders. Worker cards and run
+status DO NOT MOVE. Rides on refactor; dead UI deleted in same pass.
+
+**R12. Error strip on run screen.** Last N errors: row · step · one-line reason;
+click for detail. Lives near worker cards. (Replaces deleted Run Log tab.)
+
+**R13. Step reorder.** ▲/▼ buttons per step (disabled at ends, same mutation path as
+drag). Drag auto-scroll when dragging near list edges.
+
+**R14. Pool settings save with flow** (defaults on pick; launch-screen override per
+run without re-saving). Pool defaults: workers 1, auto-scale on, every(min) 2,
+diagnostic off. (Batch setting gone; verify setting gone.)
+
+**R15. Spreadsheet-free flows.** New flow mode: no sheet, no row loop, steps run once,
+one summary log. TODAY/RUNDATE tokens work; column tokens invalid. THE POINT OF THE
+RELEASE together with R16: "run this flow at this time."
+
+**R16. Scheduled runs.** Spreadsheet-free flows ONLY (regular flows not schedulable —
+complexity deleted). UI pickers, no cron: once at date+time / daily / weekly (day
+checkboxes) / monthly (day N). Each schedule: explicit timezone (default
+America/New_York; fire-times computed from that zone regardless of VM clock; dropdown
+in editor). Reserved time block per schedule, default 15 min, editable per schedule;
+editor refuses overlapping blocks. Persist C:\BUU\schedules\; load on start.
+Schedules panel: flow, next fire, last result, enable/disable. Missed while BUU
+closed → popup on launch per flow: "Run now / Schedule for later [date+time] /
+Dismiss". BUU expected always-open on the VM; no Task Scheduler integration now
+(design leaves the door open). No license guard (off-peak by convention).
+
+**R17. Right-click paste everywhere** (Electron context menu).
+
+**R18. Restart** = clean stop (drain) + start (reads saved flow + saved settings).
+Absorbed into run lifecycle; no special machinery. Window-per-worker bug dies in
+refactor.
+
+**Also folded into engine work:** smarter logout retry + logout-attempt surfacing
+(Phase 3); D8 step-then-Release preserved; navigation-interrupted goto-race
+(31% of big-run skips) should die with unified retry policy — verify during refactor.
+
+---
+
+## PENDING POOL (later releases, roughly by heat)
+
+- **Verify pass + diagnostic-capture expansion** — joint future design session.
+  Verify derives checks from the flow's own write steps (selector+intended value),
+  FRESH-NAVIGATE readback only (same-page reads lie), reclassify false errors,
+  name the failing field. Hard 20%: PestPac reformats values on save (dates/money).
+  Build AFTER this release reduces the false-error population.
+- **Row-by-text in Paste HTML** — pasted element in a row context → ask "row text?"
+  → generate XPath. Audit existing findByText first (refactor does this free).
+  AND/OR/NOT compound text conditions.
+- **Per-dialog/popup routing rules** — "if dialog text matches X → accept, else
+  decline". UI grows from checkboxes to rules list; schema already compatible.
+- **Sequential flow queueing (37)** — "run B after A"; mostly covered by adjacent
+  schedule blocks, revisit if a real chain need appears.
+- **Per-row total-time timeout (35)** — revisit if post-rebuild runs still show
+  100s+ burn rows.
+- **Phone notification app** — BUU pushes to a simple mobile app (X failures in a
+  row, run complete); respond from phone. Own project.
+- **Spreadsheet-upload-with-flow pairing** — upload sheet + flow together; the
+  automation/ folder is the contract for this.
+- **Windows Task Scheduler wake for schedules** — only if always-open VM stops
+  being acceptable.
+- **Regular-flow scheduling** — needs heavy discussion; manual for now.
+- **Field Catalog** — persistent store of every PestPac field BUU has seen.
+- **Parallel multi-flow runs.**
+- **PestPac API / hybrid branch** — still blocked on WorkWave OAuth credentials.
+
+## DELETED (decided 2026-07-10, re-add only on new evidence)
+- Circuit breaker (replaced by nothing; future = phone notify)
+- Batching + reclaim (batch=1 forever)
+- Skip status (error + reason field covers it)
+- verifyAfterAction (future verify pass replaces the intent)
+- If-click "wait until gone" (43)
+- Run Log tab; Handle Dialog step; single-runner; "no URL" prompt
+- License guard on schedules; run-progress-by-step (already shipped v2.1.0)
