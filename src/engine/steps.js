@@ -27,9 +27,7 @@ async function runStep(page, step, row, creds){
     case 'type':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.clearFirst!=='no') await loc.first().fill(''); const val=r(step.value); const delay=parseInt(step.typeDelay||0); if(delay>0) await loc.first().pressSequentially(val,{delay:delay}); else await loc.first().fill(val); break; }
     case 'select':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().selectOption({label:r(step.value)}); break; }
     case 'checkbox':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.checkAction==='check')await loc.first().check(); else if(step.checkAction==='uncheck')await loc.first().uncheck(); else if(step.checkAction==='toggle')await loc.first().click(); else if(step.checkAction==='conditional'){ const tv=(step.truthyVals||'yes,true,1,x').split(',').map(v=>v.trim().toLowerCase()); if(tv.includes(String(r(step.condCol)).trim().toLowerCase()))await loc.first().check(); else await loc.first().uncheck(); } break; }
-    case 'clear':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().fill(''); break; }
     case 'wait':if(step.waitType==='random'){const mn=ms(step.waitMin||1),mx=ms(step.waitMax||3);await page.waitForTimeout(Math.floor(Math.random()*(mx-mn+1))+mn);}else if(step.waitType==='element'){const loc=await findLocator(page,step.waitSel||'',{timeout:30000});await loc.first().waitFor({state:'visible',timeout:30000});}else if(step.waitType==='navigation')await page.waitForNavigation({timeout:30000});else await page.waitForTimeout(ms(step.waitSec||1));break;
-    case 'assert':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.expected){ const t=await loc.first().textContent(); if(!t||!t.includes(step.expected)) throw new Error('Assert failed: expected "'+step.expected+'"'); } break; }
     case 'pestpac-login':{ await loginToPestPac(page,creds); break; }
     case 'pestpac-logout':{ await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000}); await page.waitForSelector('div.select',{timeout:10000}); await page.click('div.select'); await page.waitForSelector('a.logout',{timeout:5000}); await page.click('a.logout'); await page.waitForTimeout(1500); break; }
     case 'fileupload':{
@@ -126,65 +124,6 @@ async function runStep(page, step, row, creds){
     //            partial-replace-piece / remove-after / remove-before / trim /
     //            remove-extra-spaces / regex. Bug fix on port: the regex editMode previously
     //            referenced undefined "replace" — corrected to "replaceStr".
-    case 'textedit':{
-      await page.waitForSelector(step.selector,{timeout:SELECTOR_TIMEOUT});
-      const currentVal = await page.$eval(step.selector, el => el.value || el.textContent || el.innerText || '');
-      const search = r(step.searchVal||'');
-      const replaceStr = r(step.replaceVal||'');
-      const tch = step.charVal||'@';
-      const flags = (step.regexFlags||'gi');
-      let newVal = currentVal;
-      switch(step.editMode||'find-replace'){
-        case 'find-replace':
-          if(step.caseSensitive==='yes'){
-            newVal = currentVal.split(search).join(replaceStr);
-          } else {
-            const searchLower = search.toLowerCase();
-            let result=''; let i=0;
-            while(i<currentVal.length){
-              if(currentVal.substring(i,i+search.length).toLowerCase()===searchLower){ result+=replaceStr; i+=search.length; }
-              else { result+=currentVal[i]; i++; }
-            }
-            newVal = result;
-          }
-          break;
-        case 'exact-remove':
-          newVal = currentVal.split(search).join('');
-          break;
-        case 'partial-remove-word':
-          newVal = currentVal.split(/\s+/).filter(w => !(step.caseSensitive==='yes' ? w.includes(search) : w.toLowerCase().includes(search.toLowerCase()))).join(' ').trim();
-          break;
-        case 'partial-remove-piece':
-          newVal = currentVal.split(/\s+/).map(w => { const idx = step.caseSensitive==='yes' ? w.indexOf(search) : w.toLowerCase().indexOf(search.toLowerCase()); if(idx<0) return w; return w.slice(0,idx) + w.slice(idx+search.length); }).join(' ').trim();
-          break;
-        case 'partial-replace-piece':
-          newVal = currentVal.split(/\s+/).map(w => { const idx = step.caseSensitive==='yes' ? w.indexOf(search) : w.toLowerCase().indexOf(search.toLowerCase()); if(idx<0) return w; return w.slice(0,idx) + replaceStr + w.slice(idx+search.length); }).join(' ').trim();
-          break;
-        case 'remove-after':
-          { const idx=currentVal.indexOf(tch); if(idx>=0) newVal=currentVal.slice(0,idx); }
-          break;
-        case 'remove-before':
-          { const idx=currentVal.indexOf(tch); if(idx>=0) newVal=currentVal.slice(idx+tch.length); }
-          break;
-        case 'trim':
-          newVal = currentVal.trim();
-          break;
-        case 'remove-extra-spaces':
-          newVal = currentVal.trim().replace(/  +/g,' ');
-          break;
-        case 'regex':
-          try{ newVal = currentVal.replace(new RegExp(search, flags), replaceStr); }
-          catch(e){ throw new Error('Invalid regex pattern: '+search+' — '+e.message); }
-          break;
-      }
-      const tag = await page.$eval(step.selector, el => el.tagName.toLowerCase());
-      if(tag==='input'||tag==='textarea'){
-        await page.fill(step.selector, newVal);
-      } else {
-        await page.$eval(step.selector, (el,v) => { el.textContent=v; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }, newVal);
-      }
-      break;
-    }
     case 'dialog':{ const matchText=step.dialogMatch||''; const dialogAction=step.dialogAction||'accept'; if(page._buuDialogListener){ try{page.off('dialog',page._buuDialogListener);}catch(_){} page._buuDialogListener=null; } const handler=async dialog=>{ try{page.off('dialog',handler);}catch(_){} if(page._buuDialogListener===handler)page._buuDialogListener=null; const msg=dialog.message(); const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase()); try{ if(matches){ if(dialogAction==='dismiss')await dialog.dismiss(); else await dialog.accept(); } else { await dialog.dismiss(); } }catch(e){} }; page._buuDialogListener=handler; page.on('dialog',handler); break; }
   }
 }

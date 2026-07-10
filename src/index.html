@@ -528,22 +528,6 @@ textarea { resize: vertical; min-height: 60px; }
 .live-log .log-warn { color: var(--amber); }
 .live-log .log-info { color: var(--blue); }
 
-/* ── LOG TABLE ── */
-.log-wrap {
-  overflow: auto; border: 1px solid var(--bdr);
-  border-radius: var(--r); max-height: calc(100vh - 320px);
-}
-.log-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
-.log-tbl th {
-  text-align: left; padding: 7px 10px;
-  background: var(--surf3); border-bottom: 1px solid var(--bdr);
-  font-size: 10px; font-weight: 700; color: var(--t2);
-  white-space: nowrap; position: sticky; top: 0; z-index: 1;
-}
-.log-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--bdr); vertical-align: top; font-size: 11px; }
-.log-tbl tr.row-ok { background: var(--surf2); }
-.log-tbl tr.row-err { background: #1a0808; }
-.log-tbl tr.row-skip { background: #1a1205; }
 .s-ok { color: var(--green); font-weight: 700; }
 .s-err { color: var(--red); font-weight: 700; }
 .s-skip { color: var(--amber); font-weight: 700; }
@@ -749,12 +733,6 @@ textarea { resize: vertical; min-height: 60px; }
     Run progress
     <span class="nb" id="nb-run" style="display:none;background:var(--glt);color:var(--green)">●</span>
   </div>
-  <div class="nav" id="nav-log" onclick="go('log')">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h8M2 12h10"/></svg>
-    Run log
-    <span class="nb" id="nb-log" style="display:none;background:var(--blt);color:var(--blue)">0</span>
-  </div>
-
   <div class="sb-sep"></div>
   <!-- v2.1.0 (#4): worker-pool controls, moved here from the topbar. Same element IDs and
        handlers as before — only the layout changed (inline strip -> stacked sidebar panel). -->
@@ -932,13 +910,10 @@ textarea { resize: vertical; min-height: 60px; }
       <button class="add-opt" onclick="addStep('type')">Type text</button>
       <button class="add-opt" onclick="addStep('select')">Select dropdown</button>
       <button class="add-opt" onclick="addStep('checkbox')">Checkbox</button>
-      <button class="add-opt" onclick="addStep('clear')">Clear field</button>
       <button class="add-opt" onclick="addStep('wait')">Wait</button>
-      <button class="add-opt" onclick="addStep('assert')">Assert / verify</button>
       <button class="add-opt" onclick="addStep('readfield')">Read field → column</button>
       <button class="add-opt" onclick="addStep('dialog')">Handle dialog</button>
       <button class="add-opt" onclick="addStep('fileupload')">Upload file</button>
-      <button class="add-opt" onclick="addStep('textedit')">Text edit</button>
       <button class="add-opt" id="addOptFwScrape" onclick="addStep('fw-scrape-orders')" style="display:none">Frankware: scrape orders → CSV</button>
     </div>
     <div class="infobox">
@@ -1078,7 +1053,6 @@ textarea { resize: vertical; min-height: 60px; }
       <div style="display:flex;gap:6px">
         <button class="btn pri sm" id="retryFailedBtn" onclick="retryFailedRows()" style="display:none;background:var(--amber);color:#1a1a1a;font-weight:700">↺ Retry failed rows</button>
         <button class="btn sm" id="openLogBtn" onclick="openCurrentLog()" style="display:none">Open log file</button>
-        <button class="btn sm" onclick="go('log')">View log table</button>
       </div>
     </div>
     <!-- v1.2.8: phase indicator. Only shown when the flow has setup or teardown attached.
@@ -1119,57 +1093,6 @@ textarea { resize: vertical; min-height: 60px; }
 </div>
 
 <!-- ══ LOG ══ -->
-<div class="panel" id="panel-log">
-  <div class="page-header">
-    <div class="page-title">Run log</div>
-    <div class="page-sub">Detailed record of every row processed</div>
-  </div>
-  <div class="card">
-    <div class="card-hd">
-      <div class="card-title">Log entries</div>
-      <div style="display:flex;gap:6px">
-        <button class="btn grn sm" onclick="openLogsFolder()">Open logs folder</button>
-        <button class="btn sm" id="openLastLogBtn" onclick="openCurrentLog()" style="display:none">Open current log</button>
-        <button class="btn sm" onclick="loadMergedPoolLog()" title="Combined per-row record across all pool workers (from the resume journal)">⚡ Merged pool log</button>
-        <button class="btn red sm" onclick="clearLogTable()">Clear table</button>
-      </div>
-    </div>
-    <p style="font-size:12px;color:var(--t2);margin-bottom:14px;line-height:1.65">
-      The full Excel log saves to your logs folder continuously during a run. This table shows the last 500 entries.
-    </p>
-    <!-- v2.0.0: merged pool log — combined per-row record across all workers, read from the
-         journal. Hidden until "Merged pool log" is clicked. -->
-    <div id="mergedPoolLog" style="display:none;margin-bottom:16px">
-      <div id="mergedPoolLogStats" style="font-size:12px;color:var(--t2);margin-bottom:8px"></div>
-      <div class="log-wrap" style="max-height:340px">
-        <table class="log-tbl">
-          <thead><tr><th style="width:60px">Row</th><th style="width:100px">Status</th><th>Job</th></tr></thead>
-          <tbody id="mergedPoolLogBody"></tbody>
-        </table>
-      </div>
-    </div>
-    <div id="logStats" class="stat-grid" style="display:none"></div>
-    <div class="log-wrap">
-      <table class="log-tbl">
-        <thead><tr>
-          <th style="width:36px">#</th>
-          <th style="width:70px">Time</th>
-          <th style="width:44px">Row</th>
-          <th style="width:72px">Status</th>
-          <th style="width:60px">Duration</th>
-          <th>URL</th>
-          <th>Fields written</th>
-          <th>Failed step</th>
-          <th>Error</th>
-        </tr></thead>
-        <tbody id="logBody">
-          <tr><td colspan="9" style="text-align:center;color:var(--t3);padding:28px;font-size:12px">No log entries yet. Run the automation to populate this log.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
 <!-- ══ PROFILES ══ -->
 <div class="panel" id="panel-profiles">
   <div class="page-header">
@@ -1267,9 +1190,9 @@ let currentPoolPause = null;
 // this as resumeFromRow so the pool picks up where the stepping left off. null = no handoff (pool
 // starts at row 1, the normal case).
 let manualRowCursor = null;
-let logEntries = [], runOk = 0, runErr = 0, runSkip = 0;
+let runOk = 0, runErr = 0, runSkip = 0;
 // v1.2.5 item 2.12: track failed source-row indexes for the in-progress / just-completed run.
-// Uncapped (unlike logEntries which is sliced to last 500) - we need every failed row to
+// Uncapped (uncapped) - we need every failed row to
 // build the retry list. Each entry is just an integer (the source-row number, 1-based).
 let _failedRowIndexesThisRun = [];
 // Snapshot of the run config used for the just-completed run, so a Retry click reuses
@@ -1522,26 +1445,9 @@ const SM = {
   type:     { label:'Type',     badge:'bd-typ', desc: s => s._label || (s.value ? 'Type "' + s.value + '" → ' + (s.selector||'?') : 'Type into a field') },
   select:   { label:'Select',   badge:'bd-sel', desc: s => s.value ? 'Select "' + s.value + '" in ' + (s.selector||'?') : 'Select dropdown' },
   checkbox: { label:'Checkbox', badge:'bd-chk', desc: s => { const a = s.checkAction||'check'; if(a==='conditional') return 'Checkbox ' + (s.selector||'?') + ' — from ' + (s.condCol||'column'); return (a==='check'?'Check':a==='uncheck'?'Uncheck':'Toggle') + ' ' + (s.selector||'?'); } },
-  clear:    { label:'Clear',    badge:'bd-clr', desc: s => s.selector ? 'Clear ' + s.selector : 'Clear a field' },
   wait:     { label:'Wait',     badge:'bd-wt',  desc: s => { if(s.waitType==='random') return 'Wait ' + (s.waitMin||1) + 's–' + (s.waitMax||3) + 's (random)'; if(s.waitType==='element') return 'Wait for "' + (s.waitSel||'?') + '"'; if(s.waitType==='navigation') return 'Wait for navigation'; return 'Wait ' + (s.waitSec||1) + 's'; } },
-  assert:   { label:'Assert',   badge:'bd-asr', desc: s => s.selector ? 'Verify "' + s.selector + '"' : 'Verify element' },
   'pestpac-login':  { label:'PestPac Login',  badge:'bd-nav', desc: s => 'Log in to PestPac using saved profile' },
   'pestpac-logout': { label:'PestPac Logout', badge:'bd-nav', desc: s => 'Log out of PestPac via user menu' },
-  textedit: { label:'Text edit', badge:'bd-edit', desc: s => {
-    const modes = {
-      'partial-remove-word':'Contains partial → remove word',
-      'exact-remove':'Exact match → remove',
-      'partial-remove-piece':'Contains partial → remove piece',
-      'partial-replace-piece':'Contains partial → replace piece',
-      'find-replace':'Find and replace',
-      'remove-after':'Remove everything after character',
-      'remove-before':'Remove everything before character',
-      'trim':'Trim whitespace',
-      'remove-extra-spaces':'Remove extra spaces',
-      'regex':'Regex find and replace',
-    };
-    return (modes[s.editMode]||'Text edit') + ' in ' + (s.selector||'?');
-  }},
   dialog: { label:'Handle dialog', badge:'bd-wt', desc: s => {
     const action = s.dialogAction||'accept';
     const when = s.dialogMatch ? 'if contains "'+s.dialogMatch+'"' : 'any dialog';
@@ -1896,7 +1802,6 @@ function bodyHTML(s) {
 
   if(s.type==='checkbox') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="optIn"]','CSS selector') + '<div class="fg"><label>Action</label><select onchange="u(' + s.id + ',\'checkAction\',this.value);renderSteps()"><option ' + (!s.checkAction||s.checkAction==='check'?'selected':'') + ' value="check">Always check</option><option ' + (s.checkAction==='uncheck'?'selected':'') + ' value="uncheck">Always uncheck</option><option ' + (s.checkAction==='toggle'?'selected':'') + ' value="toggle">Toggle</option><option ' + (s.checkAction==='conditional'?'selected':'') + ' value="conditional">Conditional — from column</option></select></div></div>' + (s.checkAction==='conditional' ? tokenBar(s.id,'condCol') + '<div class="row">' + valField(s.id,'condCol',s.condCol||'','{{Opt in}}','Column to read') + '<div class="fg"><label>Truthy values (comma separated)</label><input type="text" value="' + (esc(s.truthyVals)||'yes,true,1,x') + '" oninput="u(' + s.id + ',\'truthyVals\',this.value)"/><div class="hint">Case-insensitive. Checks box if cell matches any of these.</div></div></div>' : '') + findByTextBlock(s);
 
-  if(s.type==='clear') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[name="notes"]','CSS selector') + '</div>' + findByTextBlock(s);
 
   if(s.type==='wait') return '<div class="row"><div class="fg"><label>Wait type</label><select onchange="u(' + s.id + ',\'waitType\',this.value);renderSteps()"><option ' + (!s.waitType||s.waitType==='fixed'?'selected':'') + ' value="fixed">Fixed duration</option><option ' + (s.waitType==='random'?'selected':'') + ' value="random">Random range</option><option ' + (s.waitType==='element'?'selected':'') + ' value="element">Wait for element</option><option ' + (s.waitType==='navigation'?'selected':'') + ' value="navigation">Wait for navigation</option></select><div class="hint">All times in <strong>seconds</strong> — converted to ms in the script</div></div>' +
     ((!s.waitType||s.waitType==='fixed') ? '<div class="fg"><label>Duration (seconds)</label><input type="number" value="' + (s.waitSec||1) + '" min="0" step="0.1" oninput="u(' + s.id + ',\'waitSec\',this.value)"/></div>' : '') +
@@ -1904,7 +1809,6 @@ function bodyHTML(s) {
     (s.waitType==='element' ? '<div class="fg"><label>CSS selector to wait for</label><div class="sel-wrap"><input type="text" id="fi-' + s.id + '-waitSel" value="' + esc(s.waitSel) + '" placeholder=".success-banner" oninput="u(' + s.id + ',\'waitSel\',this.value)" onfocus="pendingInsertId=' + s.id + ';pendingInsertField=\'waitSel\'"/><button class="paste-btn" onclick="openPasteModal(' + s.id + ',\'waitSel\')">Paste HTML</button></div></div>' : '') +
     '</div>';
 
-  if(s.type==='assert') return '<div class="row">' + selField(s.id,'selector',s.selector||'','.toast-success','CSS selector to verify') + '<div class="fg"><label>Expected text (optional)</label><input type="text" id="fi-' + s.id + '-expected" value="' + esc(s.expected) + '" placeholder="Record saved" oninput="u(' + s.id + ',\'expected\',this.value)"/></div></div>' + findByTextBlock(s) + '<div class="row"><div class="fg"><label>On failure</label><select onchange="u(' + s.id + ',\'onFail\',this.value)"><option ' + (!s.onFail||s.onFail==='stop'?'selected':'') + ' value="stop">Stop automation</option><option ' + (s.onFail==='skip'?'selected':'') + ' value="skip">Skip row</option><option ' + (s.onFail==='log'?'selected':'') + ' value="log">Log and continue</option></select></div></div>';
 
   if(s.type==='dialog') return '<div class="row"><div class="fg"><label>Action</label><select onchange="u(' + s.id + ',\'dialogAction\',this.value)"><option ' + (!s.dialogAction||s.dialogAction==='accept'?'selected':'') + ' value="accept">Accept (click OK / confirm)</option><option ' + (s.dialogAction==='dismiss'?'selected':'') + ' value="dismiss">Dismiss (click Cancel)</option></select><div class="hint">Accept clicks OK on confirm dialogs. Dismiss clicks Cancel.</div></div><div class="fg"><label>Only trigger if dialog contains (optional)</label><input type="text" id="fi-' + s.id + '-dialogMatch" value="' + esc(s.dialogMatch) + '" placeholder="e.g. delete, are you sure" oninput="u(' + s.id + ',\'dialogMatch\',this.value)"/><div class="hint">Leave blank to handle any dialog. If set, only handles dialogs where the message contains this text.</div></div></div>';
   if(s.type==='fileupload') return '<div class="row">' + selField(s.id,'selector',s.selector||'','input[type="file"]','File input CSS selector') + '</div>'
@@ -1923,55 +1827,6 @@ function bodyHTML(s) {
     + '<div class="row">' + valField(s.id,'locCol',s.locCol||'','{{Location Code}}','PP Location Code — drag the column chip here') + '</div>'
     + '<div class="row">' + valField(s.id,'invCol',s.invCol||'','{{Invoice #}}','PP Invoice # — drag the column chip here') + '</div>'
     + '<div class="infobox" style="margin-top:8px"><strong>Frankware only.</strong> Scrapes every order across all pages — one CSV row per order, balance keeps its sign (negative = owed). Output is a CSV in the run\'s <strong>results</strong> folder, deduped on property&nbsp;+&nbsp;order id.</div>';
-  if(s.type==='textedit') {
-    const mode = s.editMode||'find-replace';
-    const modeOpts = [
-      ['find-replace','Find and replace (anywhere)'],
-      ['exact-remove','Exact match — remove exact text'],
-      ['partial-remove-word','Contains partial — remove whole word'],
-      ['partial-remove-piece','Contains partial — remove matching piece only'],
-      ['partial-replace-piece','Contains partial — replace matching piece'],
-      ['remove-after','Remove everything after a character'],
-      ['remove-before','Remove everything before a character'],
-      ['trim','Trim leading and trailing whitespace'],
-      ['remove-extra-spaces','Collapse extra spaces to single space'],
-      ['regex','Regex find and replace (advanced)'],
-    ];
-    const needsSearch = ['find-replace','exact-remove','partial-remove-word','partial-remove-piece','partial-replace-piece','regex'].includes(mode);
-    const needsReplace = ['find-replace','partial-replace-piece','regex'].includes(mode);
-    const needsChar = ['remove-after','remove-before'].includes(mode);
-    return tokenBar(s.id,'value') +
-      '<div class="row">' +
-        selField(s.id,'selector',s.selector||'','input[name="email"], .notes-field','CSS selector — field to edit') +
-        '<div class="fg"><label>Edit mode</label>' +
-          '<select onchange="u(' + s.id + ',\'editMode\',this.value);renderSteps()">' +
-          modeOpts.map(([v,l]) => '<option ' + (mode===v?'selected':'') + ' value="' + v + '">' + l + '</option>').join('') +
-          '</select>' +
-        '</div>' +
-      '</div>' +
-      (needsSearch ? '<div class="row">' +
-        valField(s.id,'searchVal',s.searchVal||'','@pestnow.com or {{Column}}', mode==='regex'?'Regex pattern':'Search for') +
-        (needsReplace ? valField(s.id,'replaceVal',s.replaceVal||'','@pestpro.com or leave empty to remove','Replace with (leave empty to remove)') : '') +
-      '</div>' : '') +
-      (needsChar ? '<div class="row">' +
-        '<div class="fg"><label>Character</label>' +
-          '<input type="text" id="fi-' + s.id + '-charVal" value="' + esc(s.charVal) + '" placeholder="e.g. @" oninput="u(' + s.id + ',\'charVal\',this.value)" style="max-width:80px"/>' +
-          '<div class="hint">The character to split on. Everything ' + (mode==='remove-after'?'after':'before') + ' this character will be removed.</div>' +
-        '</div>' +
-      '</div>' : '') +
-      '<div class="row"><div class="fg"><label>Case sensitive?</label>' +
-        '<select onchange="u(' + s.id + ',\'caseSensitive\',this.value)">' +
-          '<option ' + (s.caseSensitive!=='yes'?'selected':'') + ' value="no">No — ignore case</option>' +
-          '<option ' + (s.caseSensitive==='yes'?'selected':'') + ' value="yes">Yes — exact case only</option>' +
-        '</select>' +
-      '</div>' +
-      (mode==='regex' ? '<div class="fg"><label>Regex flags</label>' +
-        '<input type="text" value="' + esc(s.regexFlags||'gi') + '" placeholder="gi" oninput="u(' + s.id + ',\'regexFlags\',this.value)"/>' +
-        '<div class="hint">g = replace all, i = case-insensitive, m = multiline. Default: gi</div>' +
-      '</div>' : '') +
-      '</div>' +
-      (mode==='regex' ? '<div class="infobox" style="margin-top:10px">See the <strong>Text Manipulation & Regex Guide</strong> for pattern examples and help writing your own. Test patterns at <strong>regex101.com</strong> before running.</div>' : '');
-  }
   return '';
 }
 
@@ -2068,10 +1923,8 @@ function runValidation() {
     if(s.type==='type'){if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}if(!s.value){issues.push({t:'warn',msg:'Value is empty.'});warns++;}}
     if(s.type==='select'){if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}if(!s.value){issues.push({t:'warn',msg:'No option value.'});warns++;}}
     if(s.type==='checkbox'&&!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
-    if(s.type==='clear'&&!s.selector){issues.push({t:'warn',msg:'No CSS selector.'});warns++;}
     if(s.type==='wait'&&s.waitType==='element'&&!s.waitSel){issues.push({t:'warn',msg:'No wait selector.'});warns++;}
     if(s.type==='wait'&&s.waitType==='random'&&parseFloat(s.waitMin||1)>=parseFloat(s.waitMax||3)){issues.push({t:'warn',msg:'Min must be less than max.'});warns++;}
-    if(s.type==='assert'&&!s.selector){issues.push({t:'err',msg:'No selector to verify.'});errs++;}
     if(s.type==='readfield'){
       if(!s.selector){issues.push({t:'err',msg:'No CSS selector to read.'});errs++;}
       const cn=(s.colName||'').trim();
@@ -2101,16 +1954,8 @@ function runValidation() {
         if(def && def.idx>=i){ issues.push({t:'err',msg:'Uses {{'+tok+'}} but that value is read at a later step (#'+(def.idx+1)+'). Move the Read field step above this one.'});errs++; }
       });
     })();
-    if(s.type==='textedit'){
-      if(!s.selector){issues.push({t:'err',msg:'No CSS selector.'});errs++;}
-      const m=s.editMode||'find-replace';
-      if(['find-replace','exact-remove','partial-remove-word','partial-remove-piece','partial-replace-piece','regex'].includes(m)&&!s.searchVal){issues.push({t:'warn',msg:'No search value defined.'});warns++;}
-      if(m==='remove-after'&&!s.charVal){issues.push({t:'warn',msg:'No character defined to split on.'});warns++;}
-      if(m==='remove-before'&&!s.charVal){issues.push({t:'warn',msg:'No character defined to split on.'});warns++;}
-    }
     // v1.3.0 Item 8: brace-pair validation on all token-accepting fields. Runs before the
     // token-in-spreadsheet check below. Catches malformed braces ("{{Name}", "{{}}", "{{{")
-    // that the well-formed-token regex silently skips. textedit search/replace fields accept
     // tokens too, so they're included here even though they're not in the substitution check.
     [s.value,s.url,s.condCol,s.searchVal,s.replaceVal].filter(v=>typeof v==='string'&&v.length).forEach(v=>{
       validateBracePairs(v).forEach(bi=>{
@@ -2842,7 +2687,6 @@ function handleRunEvent(evt){
     document.getElementById('runStatusMsg').textContent='Row '+evt.rowIndex+' of '+evt.totalRows.toLocaleString()+'…';
     document.getElementById('runStatusMsg').style.color='var(--blue)';
   }
-  else if(evt.type==='row-done'){runRowsDone=evt.rowIndex;runOk=evt.ok||runOk+1;runErr=evt.errs||runErr;runSkip=evt.skipped||runSkip;addLiveLog('✓ Row '+evt.rowIndex+' done ('+evt.durationMs+'ms)','ok');addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:'ok',duration:evt.durationMs,url:evt.url||'',fieldsWritten:evt.fieldsWritten||'',failedStep:'',error:''});updateRunStats(runRowsDone,runOk,runErr,runSkip);}
   else if(evt.type==='row-error'){runRowsDone=evt.rowIndex;runErr=evt.errs||runErr+1;runOk=evt.ok||runOk;runSkip=evt.skipped||runSkip;
     // v1.2.5 item 2.10 (Phase 8): runner now passes evt.status so we can distinguish
     // 'skip' (BUU gave up after retries / errHandle=skip) from 'error' (true failure).
@@ -2857,7 +2701,6 @@ function handleRunEvent(evt){
     if(evt.errorCategory) _liveExtra += ' ['+evt.errorCategory+']';
     if(evt.stepIndex) _liveExtra += ' '+evt.stepIndex;
     addLiveLog(_liveIcon+' Row '+evt.rowIndex+' '+_liveLabel+_liveExtra+': '+evt.error,_liveCls);
-    addLogTableEntry({row:evt.rowIndex,timestamp:new Date().toISOString(),status:_wasSkip?'skip':'error',duration:0,url:evt.url||'',fieldsWritten:'',failedStep:evt.failedStep||'',error:evt.error||''});
     updateRunStats(runRowsDone,runOk,runErr,runSkip);
     // v1.2.5 item 2.12: track failed rows for the post-completion Retry button.
     if(typeof evt.rowIndex==='number') _failedRowIndexesThisRun.push(evt.rowIndex);
@@ -3019,7 +2862,6 @@ function fmtElapsed(ms){const sec=Math.floor(ms/1000);const h=Math.floor(sec/360
 function startElapsedTicker(){stopElapsedTicker();const el=document.getElementById('rs-elapsed');if(!el)return;elapsedTicker=setInterval(function(){if(!runStartTime){el.textContent='-';return;}el.textContent=fmtElapsed(Date.now()-runStartTime);},1000);}
 function stopElapsedTicker(){if(elapsedTicker){clearInterval(elapsedTicker);elapsedTicker=null;}}
 function updateRunStats(done,ok,err,skip){document.getElementById('rs-done').textContent=done.toLocaleString();document.getElementById('rs-ok').textContent=ok.toLocaleString();document.getElementById('rs-err').textContent=err.toLocaleString();document.getElementById('rs-skip').textContent=skip.toLocaleString();if(runTotal>0){const pct=Math.round(done/runTotal*100);document.getElementById('runProgBar').style.width=pct+'%';document.getElementById('rs-pct').textContent=pct+'%';}if(done>0&&runStartTime&&runStartTime>0){const elapsed=(Date.now()-runStartTime)/1000/60;const rate=elapsed>0?Math.round(done/elapsed):0;document.getElementById('rs-rate').textContent=rate.toLocaleString();if(runTotal>0){const remaining=runTotal-done;const etaMin=rate>0?Math.round(remaining/rate):0;document.getElementById('rs-eta').textContent=etaMin>60?Math.round(etaMin/60)+'h':etaMin+'m';}}}
-function addLogTableEntry(entry){logEntries.push(entry);if(logEntries.length>500)logEntries=logEntries.slice(-500);const tbody=document.getElementById('logBody');if(tbody.querySelector('td[colspan]'))tbody.innerHTML='';const tr=document.createElement('tr');const sc=entry.status==='ok'?'s-ok':entry.status==='error'?'s-err':'s-skip';const rc=entry.status==='ok'?'row-ok':entry.status==='error'?'row-err':'row-skip';tr.className=rc;tr.innerHTML='<td>' + logEntries.length + '</td><td>' + new Date(entry.timestamp).toLocaleTimeString() + '</td><td>' + entry.row + '</td><td class="' + sc + '">' + entry.status + '</td><td>' + (entry.duration?entry.duration+'ms':'') + '</td><td title="' + (entry.url||'') + '" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (entry.url||'') + '</td><td style="font-size:10px;color:var(--t2)">' + (entry.fieldsWritten||'') + '</td><td style="font-size:10px;color:var(--red)">' + (entry.failedStep||'') + '</td><td style="font-size:10px;color:var(--red)">' + (entry.error||'') + '</td>';tbody.appendChild(tr);const nb=document.getElementById('nb-log');nb.style.display='';nb.textContent=logEntries.length;}
 function openCurrentLog(){if(currentLogPath&&API.openFile)API.openFile(currentLogPath);}
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -3594,35 +3436,6 @@ function openLogsFolder(){if(API.openLogsFolder)API.openLogsFolder();}
 
 // v2.0.0: load the merged pool log (combined per-row record from the journal across all
 // workers). Reads the current run's journal, or the most recent orphan if none active.
-async function loadMergedPoolLog(){
-  const wrap=document.getElementById('mergedPoolLog');
-  const stats=document.getElementById('mergedPoolLogStats');
-  const body=document.getElementById('mergedPoolLogBody');
-  if(!API.poolReadJournal){ alert('Merged log not available.'); return; }
-  let poolId=null;
-  // If no active pool, offer the most recent orphan journal.
-  const status = API.poolGetStatus ? await API.poolGetStatus() : {active:false};
-  if(!status.active && API.poolFindOrphans){
-    const orphans = await API.poolFindOrphans();
-    if(orphans && orphans.length){ poolId = orphans[0].poolId; }
-  }
-  const res = await API.poolReadJournal(poolId?{poolId}:{});
-  if(!res || res.ok===false){ alert('No pool log found.'+(res&&res.error?('\n\n'+res.error):'')); return; }
-  wrap.style.display='';
-  stats.innerHTML = '<b>'+res.counts.total.toLocaleString()+'</b> rows recorded · '
-    + '<span style="color:var(--green)">'+res.counts.ok.toLocaleString()+' ok</span> · '
-    + '<span style="color:var(--amber)">'+res.counts.skip.toLocaleString()+' skip</span> · '
-    + '<span style="color:var(--red)">'+res.counts.error.toLocaleString()+' error</span>'
-    + ' &nbsp; <span style="color:var(--t3)">(pool '+res.poolId+')</span>';
-  // Render up to 1000 rows for performance; note if truncated.
-  const rows = res.rows.slice(0,1000);
-  body.innerHTML = rows.map(function(r){
-    const sc = (r.status==='ok'||r.status==='ok (retry)')?'s-ok':r.status==='error'?'s-err':'s-skip';
-    return '<tr><td>'+r.row+'</td><td class="'+sc+'">'+r.status+'</td><td style="font-size:11px;color:var(--t2)">'+(r.job||'')+'</td></tr>';
-  }).join('');
-  if(res.rows.length>1000){ body.innerHTML += '<tr><td colspan="3" style="text-align:center;color:var(--t3);padding:10px">… '+(res.rows.length-1000).toLocaleString()+' more rows (open the per-worker Excel files for the full record)</td></tr>'; }
-}
-function clearLogTable(){if(!confirm('Clear the log table? (Excel files on disk are not affected.)'))return;logEntries=[];document.getElementById('logBody').innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--t3);padding:28px;font-size:12px">No log entries yet.</td></tr>';document.getElementById('nb-log').style.display='none';}
 
 async function loadProfiles(){
   if(API.listProfiles)profiles=await API.listProfiles();
