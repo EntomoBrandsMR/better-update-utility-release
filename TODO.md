@@ -84,6 +84,14 @@ survives underneath, authored as real files).
   Launch recovery merges spill files before offering Resume. Pidfile sweep on launch
   kills any survivors from a dead run (also chips at D1).
 - Fixes for D1-D7 as diagnosed, implemented in new modules.
+- **Reauth (Matthew's spec, 2026-07-10):** two separate mechanisms —
+  (a) TIMER REFRESH: reauth = full logout THEN login at a row boundary, purpose is
+      beating PestPac's inactivity auto-logout. Not a check, a refresh.
+  (b) FAILURE RECOVERY: on ANY row error, worker checks for the login screen
+      (login.pestpac.com URL or uid field); if logged out → re-login → retry the
+      row once. This is the fix for the 3,557-row fail-through.
+- **Elastic timer gated on step mode:** does not start until Release (D4 fix,
+  confirmed by Matthew).
 - Logout-attempt surfacing: >2 attempts = amber on worker card; exit without verified
   logout = red "possible license leak" on card + end-of-run summary.
 
@@ -235,3 +243,57 @@ refactor.
 - If-click "wait until gone" (43)
 - Run Log tab; Handle Dialog step; single-runner; "no URL" prompt
 - License guard on schedules; run-progress-by-step (already shipped v2.1.0)
+
+---
+
+## HANDOFF — for the next session (written 2026-07-10, end of planning + Phase 1)
+
+**Who/where:** Matthew, sole dev + user. Machine: Matt Ruckman work box / VM (freshly
+RAM-upgraded, no BUU install used yet — clean testbed for the rebuild). Repo:
+C:\Users\Matt Ruckman\projects\Better Update Utility, branch v2.0.0-elastic, remote
+EntomoBrandsMR/better-update-utility-release. Toolchain installed this week: git,
+node 24, npm 11, gh (authed). NODE_ENV=production is set machine-wide — ALWAYS
+$env:NODE_ENV="" and npm --include=dev. Chromium for extraResources lives at
+.\chromium (copied from the installed app). Current shipped: 2.2.9.
+
+**State:** Planning is COMPLETE (this file is the locked plan — do not re-litigate
+decided items). Phase 1 diagnosis is COMPLETE — read docs/DIAGNOSIS-2026-07.md
+(D1-D8 root causes, all verified in source with line refs).
+
+**Next up: PHASE 2 — the refactor.** First moves, in order:
+1. ACCEPTANCE BASELINE before touching anything: run a small real flow on current
+   code (Matthew provides flow + sheet; step-then-Release works on this VM once BUU
+   is installed or `npm start` from repo), save its pool journal as the golden file.
+2. Extract modules per the Phase 2 structure in this file. Suggested extraction
+   order (lowest risk first): engine/login.js (login was already dedup'd to
+   LOGIN_TO_PESTPAC_SRC — one string constant to move) → engine/locate.js
+   (FIND_LOCATOR_FN_SRC + RESOLVE_STEP_LOCATOR_FN_SRC, ~line 1158/1257) →
+   engine/steps.js (runStep switch, ~line 2190-2380 inside buildPoolWorker
+   template) → pool/worker.js (the template shell) → pool/coordinator.js
+   (COORD object + handlers, ~line 60-800 + 1400-1700) → journal.js.
+   Mechanism: modules are real .js files; a small bundler step (readFileSync +
+   concatenation, same as today's ${FN_SRC} interpolation) builds the worker
+   child script. Keep validators green after EVERY extraction:
+   node --check src/main.js · node scripts/_check-html-js.js ·
+   node scripts/_validate-pool-worker.js (these two were recreated 2026-07-04 and
+   are now tracked in git; the validate-pool-worker script extracts the template
+   and syntax-checks it — it will need updating when the template becomes
+   file-concatenation, keep it working).
+3. Teardown items (list above) come out DURING extraction — don't port dead code.
+4. Re-run the golden flow; journal must match baseline (minus removed skip/batch
+   fields — document any expected diffs before running).
+5. Commit per extraction, terse messages. Matthew signs off diff-by-diff on
+   anything non-mechanical.
+
+**Then Phase 3 (bug fixes in new structure) and Phase 4 (R1-R18) per this file.**
+
+**Matthew's working style (do not violate):** terse; brutal honesty; flag real risks
+ONCE then move on; never re-ask decided things; no unattended scope creep; validate
+before every ship; commit -F file for messages; write scripts to disk, never inline
+node -e / python -c; ship = bump both versions → validators → commit → tag → push →
+build → gh release (dash-separated exe name) → version-buu2.json on main BOM-free.
+
+**Open items needing Matthew during Phase 2:** golden-flow choice; flow audit for
+unused step types (grep his real flows dir on the MAIN rig — %APPDATA%\buu-2\flows —
+this VM has none); D5 trigger step (one step-debugger pass over the add-note flow
+once the debugger exists, or on current build).
