@@ -320,7 +320,10 @@ Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
 
 **Then Phase 3 (bug fixes in new structure) and Phase 4 (R1-R18) per this file.**
 
-**Matthew's working style (do not violate):** terse; brutal honesty; flag real risks
+**Matthew's working style (do not violate):** NEVER self-run anything against live
+PestPac — no test runs, no logins, no "quick verification" sessions; Matthew runs all
+live tests himself. Validators/provers/static checks only when working alone. Also:
+terse; brutal honesty; flag real risks
 ONCE then move on; never re-ask decided things; no unattended scope creep; validate
 before every ship; commit -F file for messages; write scripts to disk, never inline
 node -e / python -c; ship = bump both versions → validators → commit → tag → push →
