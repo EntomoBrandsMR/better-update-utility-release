@@ -42,3 +42,5 @@ _commitmsg-*.txt
 !build/installer.nsh
 !scripts/_validate-pool-worker.js
 !scripts/_check-html-js.js
+
+.ntfy-topic
