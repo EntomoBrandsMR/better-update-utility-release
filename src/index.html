@@ -530,7 +530,6 @@ textarea { resize: vertical; min-height: 60px; }
 
 .s-ok { color: var(--green); font-weight: 700; }
 .s-err { color: var(--red); font-weight: 700; }
-.s-skip { color: var(--amber); font-weight: 700; }
 
 /* ── PROFILES ── */
 .profile-card {
@@ -1055,7 +1054,6 @@ textarea { resize: vertical; min-height: 60px; }
       <div class="run-stat"><div class="run-stat-val" id="rs-done">0</div><div class="run-stat-lbl">Done</div></div>
       <div class="run-stat"><div class="run-stat-val" style="color:var(--green)" id="rs-ok">0</div><div class="run-stat-lbl">Success</div></div>
       <div class="run-stat"><div class="run-stat-val" style="color:var(--red)" id="rs-err">0</div><div class="run-stat-lbl">Errors</div></div>
-      <div class="run-stat"><div class="run-stat-val" style="color:var(--amber)" id="rs-skip">0</div><div class="run-stat-lbl">Skipped</div></div>
       <div class="run-stat"><div class="run-stat-val" id="rs-rate">—</div><div class="run-stat-lbl">Rows/min</div></div>
       <div class="run-stat"><div class="run-stat-val" id="rs-eta">—</div><div class="run-stat-lbl">Est. left</div></div>
       <div class="run-stat"><div class="run-stat-val" id="rs-pct">0%</div><div class="run-stat-lbl">Complete</div></div>
@@ -2824,7 +2822,7 @@ let elapsedTicker=null;
 function fmtElapsed(ms){const sec=Math.floor(ms/1000);const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h>0?(h+'h '+m+'m'):(m>0?(m+'m '+s+'s'):(s+'s'));}
 function startElapsedTicker(){stopElapsedTicker();const el=document.getElementById('rs-elapsed');if(!el)return;elapsedTicker=setInterval(function(){if(!runStartTime){el.textContent='-';return;}el.textContent=fmtElapsed(Date.now()-runStartTime);},1000);}
 function stopElapsedTicker(){if(elapsedTicker){clearInterval(elapsedTicker);elapsedTicker=null;}}
-function updateRunStats(done,ok,err,skip){document.getElementById('rs-done').textContent=done.toLocaleString();document.getElementById('rs-ok').textContent=ok.toLocaleString();document.getElementById('rs-err').textContent=err.toLocaleString();document.getElementById('rs-skip').textContent=skip.toLocaleString();if(runTotal>0){const pct=Math.round(done/runTotal*100);document.getElementById('runProgBar').style.width=pct+'%';document.getElementById('rs-pct').textContent=pct+'%';}if(done>0&&runStartTime&&runStartTime>0){const elapsed=(Date.now()-runStartTime)/1000/60;const rate=elapsed>0?Math.round(done/elapsed):0;document.getElementById('rs-rate').textContent=rate.toLocaleString();if(runTotal>0){const remaining=runTotal-done;const etaMin=rate>0?Math.round(remaining/rate):0;document.getElementById('rs-eta').textContent=etaMin>60?Math.round(etaMin/60)+'h':etaMin+'m';}}}
+function updateRunStats(done,ok,err,skip){document.getElementById('rs-done').textContent=done.toLocaleString();document.getElementById('rs-ok').textContent=ok.toLocaleString();document.getElementById('rs-err').textContent=err.toLocaleString();if(runTotal>0){const pct=Math.round(done/runTotal*100);document.getElementById('runProgBar').style.width=pct+'%';document.getElementById('rs-pct').textContent=pct+'%';}if(done>0&&runStartTime&&runStartTime>0){const elapsed=(Date.now()-runStartTime)/1000/60;const rate=elapsed>0?Math.round(done/elapsed):0;document.getElementById('rs-rate').textContent=rate.toLocaleString();if(runTotal>0){const remaining=runTotal-done;const etaMin=rate>0?Math.round(remaining/rate):0;document.getElementById('rs-eta').textContent=etaMin>60?Math.round(etaMin/60)+'h':etaMin+'m';}}}
 function openCurrentLog(){if(currentLogPath&&API.openFile)API.openFile(currentLogPath);}
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2888,7 +2886,6 @@ function renderPool(){
   document.getElementById('rs-done').textContent=done.toLocaleString();
   document.getElementById('rs-ok').textContent=ok.toLocaleString();
   document.getElementById('rs-err').textContent=err.toLocaleString();
-  document.getElementById('rs-skip').textContent=skip.toLocaleString();
   const pct=total>0?Math.round(done/total*100):0;
   document.getElementById('runProgBar').style.width=pct+'%';
   document.getElementById('rs-pct').textContent=pct+'%';
@@ -3188,23 +3185,22 @@ function renderCoordStatus(st){
         + '<div style="display:flex;align-items:center;gap:6px"><div style="font-size:10px;font-weight:700;color:'+ph.color+';text-transform:uppercase">'+ph.label+'</div>'+stopBtn+'</div>'
       + '</div>'
       + detail
-      + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+(w.done||0).toLocaleString()+'</b> done</span><span style="color:var(--green)">'+(w.ok||0).toLocaleString()+' ok</span><span style="color:var(--red)">'+(w.err||0).toLocaleString()+' err</span><span style="color:var(--amber)">'+(w.skip||0).toLocaleString()+' skip</span></div></div>';
+      + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+(w.done||0).toLocaleString()+'</b> done</span><span style="color:var(--green)">'+(w.ok||0).toLocaleString()+' ok</span><span style="color:var(--red)">'+(w.err||0).toLocaleString()+' err</span></div></div>';
   }).join('');
   // Aggregate strip.
   // v2.2.3 Session 3B (A5): use distinctDone (unique completed rows) as the headline so
   // reclaim re-processes don't inflate the counter. j.done remains the row-result total
   // (includes re-processes) for the rate/ETA calculations where it makes more sense.
-  let distinctDone=0,doneTotal=0,ok=0,err=0,skip=0,total=0;
+  let distinctDone=0,doneTotal=0,ok=0,err=0,total=0;
   for(const j of (st.jobs||[])){
     distinctDone+=(j.distinctDone||j.done||0);
     doneTotal+=(j.done||0);
-    ok+=j.ok; err+=j.err; skip+=j.skip;
+    ok+=j.ok; err+=j.err;
     total+=j.totalRows;
   }
   document.getElementById('rs-done').textContent=distinctDone.toLocaleString();
   document.getElementById('rs-ok').textContent=ok.toLocaleString();
   document.getElementById('rs-err').textContent=err.toLocaleString();
-  document.getElementById('rs-skip').textContent=skip.toLocaleString();
   const pct=total>0?Math.round(distinctDone/total*100):0;
   document.getElementById('runProgBar').style.width=pct+'%';
   document.getElementById('rs-pct').textContent=pct+'%';

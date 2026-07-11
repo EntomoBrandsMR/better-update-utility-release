@@ -127,7 +127,7 @@ function coordEmitStatus(){
   if(!ctx.mainWindow) return;
   const jobs = Array.from(COORD.jobs.values()).map(j => ({
     jobId: j.jobId, label: j.label, totalRows: j.totalRows,
-    done: j.done, ok: j.ok, err: j.err, skip: j.skip,
+    done: j.done, ok: j.ok, err: j.err,
     // v2.2.3 Session 3B (A5): distinctDone is the number of UNIQUE rows that have completed
     // (counted via the journal-backed completedRows set). j.done counts every row-result
     // emit including reclaim re-processes, so distinctDone is the trustworthy headline.    distinctDone: (j.completedRows ? j.completedRows.size : j.done),
@@ -138,7 +138,7 @@ function coordEmitStatus(){
   }));
   const workers = Array.from(COORD.workers.values()).map(w => ({
     workerId: w.workerId, jobId: w.jobId, status: w.status,
-    done: w.done, ok: w.ok, err: w.err, skip: w.skip,
+    done: w.done, ok: w.ok, err: w.err,
     // v2.1.0 live detail: current row, position in batch, step in flow, logout result
     currentRow: w.currentRow,
     step: w.step, totalSteps: w.totalSteps, loggedOut: w.loggedOut,
@@ -235,7 +235,7 @@ async function coordSpawnWorker(){
     : path.join(__dirname, '..', 'node_modules');
   env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
 
-  const entry = { workerId, jobId, process: null, status: 'starting', batch: [], done:0, ok:0, err:0, skip:0, startedAt: Date.now(), runnerLogStream, runnerPath, credPath, logPath };
+  const entry = { workerId, jobId, process: null, status: 'starting', batch: [], done:0, ok:0, err:0, startedAt: Date.now(), runnerLogStream, runnerPath, credPath, logPath };
   COORD.workers.set(workerId, entry);
 
   const proc = spawn(process.execPath, [runnerPath, job.spreadsheetPath, credPath], { stdio:['pipe','pipe','pipe'], env });
@@ -394,8 +394,8 @@ function coordHandleWorkerMessage(workerId, msg){
       // v2.0.0 resume: journal FIRST (durable record precedes in-memory counters).
       coordJournalAppend(w.jobId, msg.row, msg.status);
       if(job && job.completedRows) job.completedRows.add(msg.row);
-      w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else if(msg.status==='skip') w.skip++; else if(msg.status==='error') w.err++;
-      if(job){ job.done++; if(msg.status==='ok'||msg.status==='ok (retry)') job.ok++; else if(msg.status==='skip') job.skip++; else if(msg.status==='error') job.err++; }
+      w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else w.err++;
+      if(job){ job.done++; if(msg.status==='ok'||msg.status==='ok (retry)') job.ok++; else job.err++; }
       // v2.2.0: collect read-field values into a per-job buffer for the dedicated results workbook.
       if(job && msg.reads && typeof msg.reads === 'object'){
         if(!job.readResults) job.readResults = [];
@@ -437,7 +437,7 @@ function coordCheckComplete(){
     coordMarkJournalDone();
     coordCloseJournal(false);
     if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-complete', {
-      jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err, skip:j.skip })),
+      jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err })),
     });
     // v2.1.1 (#8): for per-job/global scope, run teardown ONCE now (coordinator-driven), THEN
     // sweep. v2.1.1 logout sweep is the authoritative backstop and runs regardless of scope.

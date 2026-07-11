@@ -562,7 +562,7 @@ ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath,
     retryCount: Number.isFinite(_rc) ? Math.max(0, _rc) : 2,
     retryRowIndexes: _retrySet,
     reauthIntervalMin: Number.isFinite(_ri) ? Math.max(0, _ri) : 0,
-    done: 0, ok: 0, err: 0, skip: 0, finished: false,
+    done: 0, ok: 0, err: 0, finished: false,
     // v2.2.3 Session 3B (A5): track distinct rows that have completed via a Set so the
     // headline counter is reclaim-aware (j.done includes reclaim re-completions and would
     // exceed totalRows; distinctDone == completedRows.size is the trustworthy number).
@@ -619,7 +619,7 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
   // (coordResumeFromJournal) that seeds completedRows deliberately; pool-start is always a fresh run.
   // v2.2.3 Session 3C: also reset Session 3B's reclaim tally on a fresh pool-start so a
   // second run in the same app session doesn't inherit stale reclaim counts from the prior run.
-  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; job.completedRows = new Set(); }
+  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.finished = false; job.completedRows = new Set(); }
   // v2.2.3 Session 3C (A1): diagnostic capture toggle + bucket cap. Default ON since
   // v2.2.3 exists specifically to make false-ok reporting visible; user can flip off for
   // a 'fast' run knowingly. Bucket cap (default 10) limits per-(status,errorCategory)
@@ -827,7 +827,7 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseP
       retryRowIndexes: Array.isArray(j.retryRowIndexes) ? j.retryRowIndexes : null,
       reauthIntervalMin: Number.isFinite(j.reauthIntervalMin) ? j.reauthIntervalMin : 0,
       startRow: Number.isFinite(j.startRow) ? j.startRow : 1,
-      nextRow: Number.isFinite(j.startRow) ? j.startRow : 1, done: 0, ok: 0, err: 0, skip: 0, finished: false,
+      nextRow: Number.isFinite(j.startRow) ? j.startRow : 1, done: 0, ok: 0, err: 0, finished: false,
       completedRows: completedByJob[j.jobId] || new Set(),
       // v2.2.3 Session 3B (A5): reclaim tally is in-memory only — resumed runs start at zero.
     });
@@ -880,45 +880,7 @@ ipcMain.handle('pool-discard-orphan', async (_, { poolId }) => {
   return { ok: true };
 });
 
-ipcMain.handle('pool-read-journal', async (_, args) => {
-  const poolId = (args && args.poolId) || COORD.poolId || coordMostRecentJournalPoolId();
-  if (!poolId) return { ok: false, error: 'No pool run found.' };
-  const jp = coordJournalPath(poolId);
-  const metaPath = coordJournalMetaPath(poolId);
-  if (!fs.existsSync(jp)) return { ok: false, error: 'Journal not found for ' + poolId };
-  let meta = { jobs: [] };
-  try { if (fs.existsSync(metaPath)) meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch {}
-  const labelByJob = {}; for (const j of (meta.jobs||[])) labelByJob[j.jobId] = j.label;
-  const rows = [];
-  // v2.2.3 Session 3A (A3): also collect dialog records into a separate stream so the
-  // merged-log viewer can show "this row had a dialog with message X". Same dialogs appear
-  // in the per-worker xlsx Log sheet (under the 'dialogs' column), but the merged log
-  // aggregates across workers/jobs which is more useful for forensics.
-  const dialogs = [];
-  const counts = { ok: 0, skip: 0, error: 0, total: 0 };
-  try {
-    const lines = fs.readFileSync(jp, 'utf8').split('\n');
-    for (const line of lines) {
-      if (!line) continue;
-      try {
-        const rec = JSON.parse(line);
-        // Dialog record: {t:'dlg', j, r, m, k, ts}. Not a row completion; skip counter logic.
-        if (rec.t === 'dlg') {
-          dialogs.push({ job: labelByJob[rec.j] || rec.j, row: rec.r, message: rec.m, dialogType: rec.k, ts: rec.ts });
-          continue;
-        }
-        const status = rec.s;
-        rows.push({ job: labelByJob[rec.j] || rec.j, row: rec.r, status });
-        counts.total++;
-        if (status === 'ok' || status === 'ok (retry)') counts.ok++;
-        else if (status === 'skip') counts.skip++;
-        else if (status === 'error') counts.error++;
-      } catch {}
-    }
-  } catch (e) { return { ok: false, error: e.message }; }
-  rows.sort((a,b) => a.row - b.row);
-  return { ok: true, poolId, jobs: (meta.jobs||[]).map(j=>({jobId:j.jobId,label:j.label})), rows, dialogs, counts };
-});
+
 
 function resolveOnceFlowByName(name) {
   if (!name) return null;

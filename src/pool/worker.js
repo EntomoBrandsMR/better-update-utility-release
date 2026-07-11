@@ -233,7 +233,7 @@ async function processRow(page, row, creds, rowNum){
   row.__stepTrail = [];
   // v2.2.2 Session 2C: __STOP__ / __NEXT_ROW__ sentinels for step-mode control flow.
   // - 'next-step' / 'auto' / 'run-all': falls through to execute the step normally.
-  // - 'next-row': throws __NEXT_ROW__ so the row is recorded as skip and the loop moves on.
+  // - 'next-row': throws __NEXT_ROW__ so the row is recorded as an error (manual skip) and the loop moves on.
   // - 'stop': throws __STOP__ so the outer loop bails out and we proceed to shutdown.
   const attempt=async()=>{
     done.length=0;
@@ -271,9 +271,9 @@ async function processRow(page, row, creds, rowNum){
   try{ await attempt(); return {status:'ok', fieldsWritten:done.join(' | ')}; }
   catch(e){
     // v2.2.2 Session 2C: step-mode sentinels short-circuit retry — they're user actions,
-    // not errors. STOP propagates to the caller; NEXT_ROW becomes a clean skip.
+    // not errors. STOP propagates to the caller; NEXT_ROW records the row as a manual-skip error.
     if(e && e.message === '__STOP__') throw e;
-    if(e && e.message === '__NEXT_ROW__') return {status:'skip', error:'Skipped via Next-row during step-through', failedStep:'(user skipped)'};
+    if(e && e.message === '__NEXT_ROW__') return {status:'error', error:'Skipped via Next-row during step-through', failedStep:'(user skipped)'};
     // v2.2.2 Session 2D: network-aware retry gate (was buildRunner-only). Probe AFTER the
     // failure; if PestPac is unreachable, wait for connectivity to come back BEFORE entering
     // the retry loop, so retries operate on a fresh connection instead of burning the budget
@@ -299,7 +299,7 @@ async function processRow(page, row, creds, rowNum){
         try{ await attempt(); return {status:'ok (retry)', fieldsWritten:done.join(' | ')}; }
         catch(e2){
           if(e2 && e2.message === '__STOP__') throw e2;
-          if(e2 && e2.message === '__NEXT_ROW__') return {status:'skip', error:'Skipped via Next-row during step-through', failedStep:'(user skipped)'};
+          if(e2 && e2.message === '__NEXT_ROW__') return {status:'error', error:'Skipped via Next-row during step-through', failedStep:'(user skipped)'};
           lastErr=e2;
         }
       }
@@ -481,7 +481,7 @@ async function main(){
       // up — otherwise these rows vanish silently. Capture the tail and break; the emit happens
       // after the loop, before the shutdown/logout sequence.
       const row = ALL_ROWS[rowNum-1];
-      if(!row){ emit({type:'row-result', row:rowNum, status:'skip', error:'row index out of range'}); continue; }
+      if(!row){ emit({type:'row-result', row:rowNum, status:'error', error:'row index out of range'}); continue; }
       // v2.2.2 Session 2E: proactive re-auth at row boundary. Fires when the configured timer
       // elapses (REAUTH_INTERVAL_MS > 0). Best-effort — failure is logged, row attempts the
       // run anyway; if the session is genuinely dead the per-row failure + network-aware
