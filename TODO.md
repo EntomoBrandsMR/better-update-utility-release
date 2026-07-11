@@ -283,19 +283,25 @@ Every extraction: validators green + scripts/_emit-worker-diff.js proves the ass
 worker EQUIVALENT to v2.2.9's emitted template (comments/blanks/export-guards ignored).
 Dev boot smoke-tested (electron . loads, window up, no stderr). Golden baseline frozen
 in docs/golden/ (READ ITS README — Test.xlsx is DO-NOT-RERUN as-is).
-**Phase 2 remaining:** (1) teardown pass — DONE so far (commits fce6b42, d50adf5): Run Log
-tab, unused step types (clear/assert/textedit; fw-scrape-orders KEPT, Frankware parked
-not dead), verify-after-action fully gutted (cfg markers now 18, renumbered). REMAINING
-teardown, do as ONE coordinated batch (they share the worker main loop + coordinator
-queue protocol): circuit breaker, batching family (workers pull ONE row), skip status
-(ok|error only), "No URL" check (find it first — obvious greps came up empty; likely
-lives in the worker row loop or loadRowsForJob), single-runner remnant sweep.
+**Phase 2 remaining:** (1) teardown — DONE: Run Log tab, unused step types, verify-after-
+action, circuit breaker (a36c9f2), batching→one-row-per-pull with retry filter moved
+coordinator-side (197140e; cfg markers now 15; requeue kept as crash safety; w.batch is
+a ≤1 container), skip status→ok|error on pool path (61e162c; dead pool-read-journal
+handler deleted), No-URL alert (500a3a9). REMAINING teardown = SINGLE-RUNNER REMNANT
+SWEEP only: index.html still carries the whole v1.x runner layer — checkpoint/orphan
+resume UI (~2390-2560, incl. resumeBtnSkipResume + resumeAction routing), old evt
+dispatcher (row-done/row-error/complete, runOk/runErr/runSkip, updateRunStats), the old
+parallel-runner workers Map (~2830-2970), setup-pips 'skipped' state, and their main.js
+IPC partners (find-orphan-checkpoints, start-run family — verify liveness before
+cutting; some checkpoint IPC may be shared with pool resume). Requires liveness analysis
+of onclick/ipc wiring — do it as ONE careful pass with fresh context.
 If-click + Handle Dialog ride R2/R3; old logout dance dies with Phase 3's new logout.
-NOTE: _emit-worker-diff.js proves equivalence vs v2.2.9 — INTENTIONALLY diverged once
-teardown began; don't run it as a gate anymore. Validators remain mandatory.
-(2) MATTHEW-RUN checkpoint golden run — never self-run live (see working-style). Test
-Flow matchText already flipped BILLING→BALFWD; Matthew fixed Test.xlsx himself.
-(3) flow audit DONE (scripts/_audit-step-types.js). Also: 2026-07-10 incident —
+Validators mandatory; equivalence prover retired (intentional divergence).
+(2) MATTHEW-RUN checkpoint golden run — never self-run live. Test Flow matchText flipped
+BILLING→BALFWD; Matthew fixed Test.xlsx. Compare rules in docs/golden/README.md — note
+post-teardown expected diffs: no skip statuses, no batch fields, retry rows filtered
+coordinator-side (no synthetic skip rows in journal).
+(3) flow audit DONE (fw-scrape-orders kept). Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
 
