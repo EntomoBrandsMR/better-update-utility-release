@@ -28,30 +28,29 @@ const PAGE_LOAD_MODE = /*__BUU_CFG_3__*/null;
 // large account, so this is 90s (vs the old hardcoded 30s) to cut false skips on slow loads.
 const NAV_TIMEOUT = 90000;
 const RETRY_COUNT = /*__BUU_CFG_4__*/null;
-// v2.2.2 Session 2E: per-job knobs. BREAKER_THRESHOLD=0 disables the circuit breaker.
+// v2.2.2 Session 2E: per-job knobs.
 // RETRY_ROW_INDEXES=null processes all rows; an array (-> Set below) restricts to those row
 // numbers (retry-failed mode). REAUTH_INTERVAL_MS=0 disables proactive re-auth; otherwise
 // the worker re-logs-in at the next row boundary after the timer elapses.
-const BREAKER_THRESHOLD = /*__BUU_CFG_5__*/null;
-const RETRY_ROW_INDEXES = /*__BUU_CFG_6__*/null;
-const REAUTH_INTERVAL_MS = /*__BUU_CFG_7__*/null;
+const RETRY_ROW_INDEXES = /*__BUU_CFG_5__*/null;
+const REAUTH_INTERVAL_MS = /*__BUU_CFG_6__*/null;
 const RETRY_ROW_SET = RETRY_ROW_INDEXES ? new Set(RETRY_ROW_INDEXES) : null;
-const CHROMIUM_EXE = /*__BUU_CFG_8__*/null;
-const FLOW_STEPS = /*__BUU_CFG_9__*/null;
-const SETUP_STEPS = /*__BUU_CFG_10__*/null;
-const TEARDOWN_STEPS = /*__BUU_CFG_11__*/null;
-const RUN_CONTEXT = /*__BUU_CFG_12__*/null;
+const CHROMIUM_EXE = /*__BUU_CFG_7__*/null;
+const FLOW_STEPS = /*__BUU_CFG_8__*/null;
+const SETUP_STEPS = /*__BUU_CFG_9__*/null;
+const TEARDOWN_STEPS = /*__BUU_CFG_10__*/null;
+const RUN_CONTEXT = /*__BUU_CFG_11__*/null;
 // v2.2.2 Session 2C: step-by-step mode. Coordinator passes 'run-all' / 'step' / 'step-row'
 // when spawning. Pool forces workers=1 batch=1 when startMode is 'step' or 'step-row',
 // then scales up when the user clicks Run-All (coordinator handles that scaling).
-const START_MODE = /*__BUU_CFG_13__*/null;
+const START_MODE = /*__BUU_CFG_12__*/null;
 // v2.2.3 Session 3C (A1): diagnostic capture constants. CAPTURE_DIR is null when disabled.
 // CAPTURE_BUCKET_CAP limits per-(status,errorCategory) folders so high-volume failure modes
 // don't fill the disk. zlib is required here so the gzip call below doesn't reach for a
 // missing module under packaging.
-const DIAGNOSTIC_CAPTURE = /*__BUU_CFG_14__*/null;
-const CAPTURE_DIR = /*__BUU_CFG_15__*/null;
-const CAPTURE_BUCKET_CAP = /*__BUU_CFG_16__*/null;
+const DIAGNOSTIC_CAPTURE = /*__BUU_CFG_13__*/null;
+const CAPTURE_DIR = /*__BUU_CFG_14__*/null;
+const CAPTURE_BUCKET_CAP = /*__BUU_CFG_15__*/null;
 const zlib = require('zlib');
 const LOGIN_STEPS = FLOW_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
 const DATA_STEPS  = FLOW_STEPS.filter(s => !s.locked && s.type !== 'pestpac-logout');
@@ -172,7 +171,7 @@ function addLog(e){logEntries.push(e);if(logEntries.length%50===0)flush();else{c
 function flush(){
   try{
     const wb=XLSX.utils.book_new();
-    const summary=[{Metric:'Worker',Value:/*__BUU_CFG_17__*/null},{Metric:'Processed',Value:logEntries.filter(e=>e.row).length},{Metric:'Last updated',Value:new Date().toLocaleString()}];
+    const summary=[{Metric:'Worker',Value:/*__BUU_CFG_16__*/null},{Metric:'Processed',Value:logEntries.filter(e=>e.row).length},{Metric:'Last updated',Value:new Date().toLocaleString()}];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), 'Summary');
     if(logEntries.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(logEntries), 'Rows');
     XLSX.writeFile(wb, LOG_PATH);
@@ -477,18 +476,13 @@ async function main(){
   // we can hand those rows back to the coordinator (lossless reclaim) before shutting down.
   let _reclaimRows = [];
   // v2.2.3 Session 3B (A5): tag each reclaim with WHY it happened so the coordinator can
-  // tally "+N re-processed (X drain, Y breaker, Z user-stop)". Reasons used:
+  // tally "+N re-processed (X drain, Z user-stop)". Reasons used:
   //   'drain'     — coordinator sent a drain command (scale-down / pool-stop / sweep)
   //   'user-stop' — user clicked Stop mid-step or at a step-row pause
-  //   'breaker'   — circuit breaker tripped on consecutive errors
   // Crash reclaims are tagged by the coordinator's catch-all path (where the worker can't
   // emit anything because it's already gone).
   let _reclaimReason = 'drain';
-  // v2.2.2 Session 2E: circuit-breaker counters + re-auth timer scoped to main() so they
-  // persist across batches. consecutiveErrors resets on any success; lastSuccessfulRow lets
-  // the trip annotation say where progress stopped. nextReauthAt=0 disables proactive re-auth.
-  let consecutiveErrors = 0;
-  let lastSuccessfulRow = 0;
+  // v2.2.2 Session 2E: re-auth timer scoped to main(). nextReauthAt=0 disables proactive re-auth.
   let nextReauthAt = REAUTH_INTERVAL_MS > 0 ? Date.now() + REAUTH_INTERVAL_MS : 0;
   while(!_draining){
     const msg = await requestBatch();
@@ -580,29 +574,6 @@ async function main(){
       // helper itself swallows all errors so a capture failure never breaks the run.
       try { await captureRowDiagnostic(page, row, rowNum, res, Date.now()-t0); } catch(_) {}
       _currentRowNum = null; _currentRow = null;
-      // v2.2.2 Session 2E: circuit breaker bookkeeping. ok/ok-retry reset the counter;
-      // user-chosen skips (Next-row or retry-row-filter exclusions) don't count. Genuine
-      // errors increment.
-      // v2.2.3 Session 3A (A4): now that 'skip' is reserved for user-chosen filtering only,
-      // ANY status='skip' is a user/filter skip and should NOT increment the breaker counter.
-      // The old regex check is redundant (kept as a belt-and-suspenders heuristic for any
-      // weird path that still uses 'skip' with a non-user error message — shouldn't exist
-      // after A4 but cheap to leave in).
-      const _isUserSkip = res.status === 'skip';
-      if (res.status === 'ok' || res.status === 'ok (retry)') {
-        consecutiveErrors = 0;
-        lastSuccessfulRow = rowNum;
-      } else if (!_isUserSkip) {
-        consecutiveErrors++;
-      }
-      if (BREAKER_THRESHOLD > 0 && consecutiveErrors >= BREAKER_THRESHOLD) {
-        emit({type:'log', message:'Circuit breaker tripped: '+consecutiveErrors+' consecutive errors. Last successful row: '+lastSuccessfulRow+'. Draining worker.'});
-        emit({type:'circuit-breaker', rowNum:rowNum, consecutiveErrors:consecutiveErrors, lastSuccessfulRow:lastSuccessfulRow});
-        _draining = true;
-        _reclaimRows = msg.rows.slice(_bi+1);
-        _reclaimReason = 'breaker';  // v2.2.3 Session 3B (A5)
-        break;
-      }
       // v2.2.2 Session 2C: pause AFTER row in step-row mode. Same gating as buildRunner
       // (step-row pauses on the boundary so the user can verify the row's outcome in PestPac
       // before continuing). Skipped on the last row of the batch only if a drain has arrived;
@@ -625,7 +596,7 @@ async function main(){
   // job.requeue (skipping anything already completed) so another worker drains them. This MUST
   // be emitted before logout so the message is flushed while stdout is still open.
   // v2.2.3 Session 3B (A5): tag with the reason so the coordinator can tally
-  // "+N re-processed (X drain, Y user-stop, Z breaker)". Default reason 'drain' covers
+  // "+N re-processed (X drain, Y user-stop)". Default reason 'drain' covers
   // the coordinator-sent drain command (scale-down / pool-stop / sweep).
   if(_reclaimRows && _reclaimRows.length){ emit({type:'reclaim', rows:_reclaimRows, reason:_reclaimReason}); }
 

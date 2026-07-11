@@ -213,10 +213,9 @@ async function coordSpawnWorker(){
     errHandle: job.errHandle || 'retry',
     selectorTimeout: 30, pageLoadMode: 'domcontentloaded',
     // v2.2.2 Session 2E: per-job runtime knobs forwarded to the worker template.
-    // retryCount defaults to 2 (prior hardcode); breakerThreshold 0 means disabled;
+    // retryCount defaults to 2 (prior hardcode);
     // retryRowIndexes null = process all rows; reauthIntervalMin 0 = no proactive re-auth.
     retryCount: Number.isFinite(job.retryCount) ? job.retryCount : 2,
-    breakerThreshold: Number.isFinite(job.breakerThreshold) ? job.breakerThreshold : 0,
     retryRowIndexes: Array.isArray(job.retryRowIndexes) ? job.retryRowIndexes : null,
     reauthIntervalMin: Number.isFinite(job.reauthIntervalMin) ? job.reauthIntervalMin : 0,
     // v2.2.2 Session 2C: passing the pool-level startMode so the worker knows whether to
@@ -376,14 +375,6 @@ function coordHandleWorkerMessage(workerId, msg){
         ts: msg.ts,
       });
       break;
-    case 'circuit-breaker':
-      // v2.2.2 Session 2E: a worker tripped its breaker. Log it to coord console; the worker
-      // is already draining itself + reclaiming the tail of its batch (so other workers in
-      // the pool keep going on this job's remaining rows). Surface as a coord-side log so it
-      // shows up in the pool status panel for the user.
-      console.warn('[coord] worker '+workerId+' tripped circuit breaker after '+msg.consecutiveErrors+' consecutive errors (last ok row: '+msg.lastSuccessfulRow+')');
-      w.breakerTripped = true;
-      break;
     case 'logging-out':
       w.status = 'logging-out';
       break;
@@ -447,7 +438,7 @@ function coordHandleWorkerMessage(workerId, msg){
       // (coordAllDrained returns false while any requeue is non-empty), so the pool cannot report
       // "done" with rows outstanding — the exact silent-loss bug this fixes.
       // v2.2.3 Session 3B (A5): tally reclaims by reason for the counter display.
-      // msg.reason is one of: 'drain' | 'user-stop' | 'breaker'. Old workers (pre-3B) won't
+      // msg.reason is one of: 'drain' | 'user-stop'. Old workers (pre-3B) won't
       // send a reason — default to 'drain' for back-compat.
       if(job && Array.isArray(msg.rows) && msg.rows.length){
         if(!job.requeue) job.requeue = [];
@@ -460,7 +451,7 @@ function coordHandleWorkerMessage(workerId, msg){
           counted++;
         }
         if(counted > 0){
-          const reason = (msg.reason === 'user-stop' || msg.reason === 'breaker' || msg.reason === 'drain') ? msg.reason : 'drain';
+          const reason = (msg.reason === 'user-stop' || msg.reason === 'drain') ? msg.reason : 'drain';
           if(!job.reclaimsByReason) job.reclaimsByReason = { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 };
           job.reclaimsByReason[reason] += counted;
           job.reclaimsTotal = (job.reclaimsTotal || 0) + counted;

@@ -528,7 +528,7 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
 
 // Submit a job into the (not-yet-started) pool. Returns the jobId. Jobs are staged, then
 // 'pool-start' spawns workers to drain them. flowSteps is the full allSteps array.
-ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, resumeFromRow, retryCount, breakerThreshold, retryRowIndexes, reauthIntervalMin }) => {
+ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, resumeFromRow, retryCount, retryRowIndexes, reauthIntervalMin }) => {
   if (COORD.active) return { ok: false, error: 'Pool is already running. Stop it before staging new jobs.' };
   const total = countRowsSync(spreadsheetPath);
   if (total <= 0) return { ok: false, error: 'Could not read rows from ' + spreadsheetPath };
@@ -543,13 +543,11 @@ ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath,
   // v2.2.2 Session 2E: per-job runtime knobs, previously single-runner-only.
   // retryCount: bounded retries per row when errHandle='retry'. Default 2 matches the
   //   previous coordSpawnWorker hardcode.
-  // breakerThreshold: stop the worker if this many consecutive rows fail. 0 = disabled.
   //   (Coordinator marks the job finished + drains the worker when it trips.)
   // retryRowIndexes: optional array of 1-based source row numbers — if set, the worker
   //   processes ONLY those rows (skips all others). Used for retry-failed mode.
   // reauthIntervalMin: optional re-auth interval in minutes; 0 = disabled.
   const _rc = parseInt(retryCount);
-  const _bt = parseInt(breakerThreshold);
   const _ri = parseInt(reauthIntervalMin);
   const _retrySet = Array.isArray(retryRowIndexes)
     ? retryRowIndexes.map(n => parseInt(n)).filter(n => Number.isFinite(n) && n >= 1)
@@ -562,7 +560,6 @@ ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath,
     totalRows: total, nextRow: startRow, startRow,
     // v2.2.2 Session 2E knobs (passed through to worker via coordSpawnWorker)
     retryCount: Number.isFinite(_rc) ? Math.max(0, _rc) : 2,
-    breakerThreshold: Number.isFinite(_bt) ? Math.max(0, _bt) : 0,
     retryRowIndexes: _retrySet,
     reauthIntervalMin: Number.isFinite(_ri) ? Math.max(0, _ri) : 0,
     done: 0, ok: 0, err: 0, skip: 0, finished: false,
@@ -830,7 +827,7 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
   // Rebuild COORD.jobs from meta, pre-seeding completedRows.
   // v2.2.2 Session 2F: also restores per-job retry knobs (Session 2E) so resume preserves the
   // SAME runtime config the original run used. Missing fields default to safe values (older
-  // journals predating 2E/2F resume with retry=2/breaker=0/etc).
+  // journals predating 2E/2F resume with retry=2/etc).
   COORD.jobs.clear();
   for (const j of meta.jobs){
     COORD.jobs.set(j.jobId, {
@@ -840,7 +837,6 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
       errHandle: j.errHandle, totalRows: j.totalRows,
       // v2.2.2 Session 2F: restore Session 2E knobs from meta (defaults if missing).
       retryCount: Number.isFinite(j.retryCount) ? j.retryCount : 2,
-      breakerThreshold: Number.isFinite(j.breakerThreshold) ? j.breakerThreshold : 0,
       retryRowIndexes: Array.isArray(j.retryRowIndexes) ? j.retryRowIndexes : null,
       reauthIntervalMin: Number.isFinite(j.reauthIntervalMin) ? j.reauthIntervalMin : 0,
       startRow: Number.isFinite(j.startRow) ? j.startRow : 1,
@@ -976,7 +972,7 @@ function buildPoolWorker(cfg){
     chromiumExePath, errHandle = 'retry', selectorTimeout = 30,
     pageLoadMode = 'domcontentloaded', retryCount = 2, runContext = {},
     // v2.2.2 Session 2E: per-job runtime knobs.
-    breakerThreshold = 0, retryRowIndexes = null, reauthIntervalMin = 0,
+    retryRowIndexes = null, reauthIntervalMin = 0,
     // v2.2.3 Session 3C (A1): diagnostic capture. captureDir is the directory where per-row
     // failure folders go (one per captured row). bucketCap=10 means at most 10 captures per
     // (status, errorCategory) bucket — prevents 10k-row runs from filling the disk.
@@ -988,7 +984,6 @@ function buildPoolWorker(cfg){
     (parseInt(selectorTimeout) * 1000),
     (JSON.stringify(pageLoadMode)),
     (parseInt(retryCount)),
-    (parseInt(breakerThreshold) || 0),
     (retryRowIndexes && retryRowIndexes.length ? JSON.stringify(retryRowIndexes) : 'null'),
     ((parseInt(reauthIntervalMin) || 0) * 60 * 1000),
     (JSON.stringify(chromiumExePath)),

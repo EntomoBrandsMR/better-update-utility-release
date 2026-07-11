@@ -961,10 +961,6 @@ textarea { resize: vertical; min-height: 60px; }
         <input type="number" id="retryCount" value="2" min="0" max="20" step="1"/>
         <div class="hint">In Retry mode, how many extra attempts before giving up on a row.</div>
       </div>
-      <div class="fg">
-        <label>Stop after consecutive errors</label>
-        <input type="number" id="breakerThreshold" value="20" min="0" max="1000" step="1"/>
-        <div class="hint">Circuit breaker. After this many failures in a row, stop and preserve the checkpoint. 0 = disabled.</div>
       </div>
       <div class="fg">
         <label>Re-auth every N minutes</label>
@@ -2166,7 +2162,6 @@ async function startRun(){
       selectorTimeout: parseInt(document.getElementById('selectorTimeout').value||30),
       pageLoadMode: document.getElementById('pageLoadMode').value||'domcontentloaded',
       retryCount: parseInt(document.getElementById('retryCount').value||2),
-      breakerThreshold: parseInt(document.getElementById('breakerThreshold').value||20),
       reauthInterval: parseInt(document.getElementById('reauthInterval').value||120),
       startMode: startMode,
       // v1.2.8: forward flow-meta so main.js can resolve setup/teardown step arrays.
@@ -2191,7 +2186,6 @@ async function startRun(){
       selectorTimeout: parseInt(document.getElementById('selectorTimeout').value||30),
       pageLoadMode: document.getElementById('pageLoadMode').value||'domcontentloaded',
       retryCount: parseInt(document.getElementById('retryCount').value||2),
-      breakerThreshold: parseInt(document.getElementById('breakerThreshold').value||20),
       reauthInterval: parseInt(document.getElementById('reauthInterval').value||120),
       startMode: startMode
     };
@@ -2259,7 +2253,6 @@ async function retryFailedRows(){
     selectorTimeout: snap.selectorTimeout,
     pageLoadMode: snap.pageLoadMode,
     retryCount: snap.retryCount,
-    breakerThreshold: snap.breakerThreshold,
     reauthInterval: snap.reauthInterval,
     retryRowIndexes: failedRowsToRetry,
     startMode: snap.startMode
@@ -2419,7 +2412,7 @@ async function showResumePrompt(orphan){
     const reasonTitle=document.getElementById('resumeReasonTitle');
     const reasonBody=document.getElementById('resumeReasonBody');
     const skipBtn=document.getElementById('resumeBtnSkipResume');
-    skipBtn.style.display='none';  // default hidden, only breaker case shows it
+    skipBtn.style.display='none';
     // v1.2.8: "Run teardown only" button. Hidden by default; shown for the teardown-only case.
     let teardownOnlyBtn=document.getElementById('resumeBtnTeardownOnly');
     if(teardownOnlyBtn) teardownOnlyBtn.style.display='none';
@@ -2444,11 +2437,6 @@ async function showResumePrompt(orphan){
       reasonTitle.textContent='Teardown did not run';
       reasonBody.textContent='The main run finished but teardown never executed. Click "Run teardown" to release the batch / finalize, or Discard to skip cleanup.';
       if(teardownOnlyBtn) teardownOnlyBtn.style.display='';
-    }else if(orphan.lastError && orphan.lastError.phase==='circuit-breaker'){
-      reasonBox.style.display='';
-      reasonTitle.textContent='Circuit breaker tripped';
-      reasonBody.textContent='The previous run hit '+orphan.lastError.consecutiveErrors+' consecutive errors and stopped to prevent further wasted time. Last successful row: '+(orphan.lastError.lastSuccessfulRow||'?')+'. You can resume forward (the failed rows will be re-attempted) or skip forward past them.';
-      skipBtn.style.display='';
     }else if(orphan.lastError && orphan.lastError.phase==='fatal'){
       reasonBox.style.display='';
       reasonTitle.textContent='Run crashed';
@@ -2583,7 +2571,6 @@ async function executeResume(orphan, profileId, resumeAction){
     selectorTimeout:checkpoint.selectorTimeout||30,
     pageLoadMode:(checkpoint.pageLoadMode==='networkidle'?'domcontentloaded':(checkpoint.pageLoadMode||'domcontentloaded')),
     retryCount:(checkpoint.retryCount!=null?checkpoint.retryCount:2),
-    breakerThreshold:(checkpoint.breakerThreshold!=null?checkpoint.breakerThreshold:20),
     reauthInterval:(checkpoint.reauthInterval!=null?checkpoint.reauthInterval:120),
     // v1.2.8: forward the resumeAction so the runner can gate which phases to execute.
     // For 'run-teardown-only', start-automation will run only the teardown once-flow.
@@ -2660,15 +2647,6 @@ function handleRunEvent(evt){
     document.getElementById('runStatusMsg').textContent='Stopped at row '+evt.rowIndex;
     document.getElementById('runStatusMsg').style.color='var(--red)';
     hidePause();
-  }
-  else if(evt.type==='circuit-breaker'){
-    const msg='Circuit breaker tripped: '+evt.consecutiveErrors+' consecutive errors at row '+evt.rowIndex+'. Run stopped, checkpoint preserved for resume.';
-    addLiveLog(msg,'err');
-    document.getElementById('runStatusMsg').textContent='Stopped — '+evt.consecutiveErrors+' consecutive errors';
-    document.getElementById('runStatusMsg').style.color='var(--red)';
-    hidePause();
-    // Background alert so user notices on a long-running unattended overnight job.
-    setTimeout(()=>{alert('Circuit breaker tripped\n\n'+evt.consecutiveErrors+' consecutive errors starting near row '+(evt.lastSuccessfulRow||'?')+'.\n\nThe run was stopped to prevent further wasted time. Your checkpoint has been preserved — relaunch BUU to resume from the last successful row.');},200);
   }
   else if(evt.type==='row-start'){
     // v1.3.0 Item 3a: do NOT hidePause() here. Earlier code hid the pause panel on every
@@ -3250,7 +3228,6 @@ function renderCoordStatus(st){
     const parts=[];
     if(reclaimAgg['drain']>0)parts.push(reclaimAgg['drain']+' scale-down');
     if(reclaimAgg['user-stop']>0)parts.push(reclaimAgg['user-stop']+' user stop');
-    if(reclaimAgg['breaker']>0)parts.push(reclaimAgg['breaker']+' breaker');
     if(reclaimAgg['crash']>0)parts.push(reclaimAgg['crash']+' crash');
     bd.textContent='+'+reclaimTotal.toLocaleString()+' re-processed ('+parts.join(', ')+')';
     bd.style.display='block';
@@ -3598,7 +3575,6 @@ async function saveFlow(){
       selectorTimeout: document.getElementById('selectorTimeout').value,
       pageLoadMode: document.getElementById('pageLoadMode').value,
       retryCount: document.getElementById('retryCount').value,
-      breakerThreshold: document.getElementById('breakerThreshold').value,
       reauthInterval: document.getElementById('reauthInterval').value,
       flowNotes: document.getElementById('flowNotes').value,
       headless
@@ -3658,7 +3634,6 @@ async function loadFlow(){
   if(c.selectorTimeout) document.getElementById('selectorTimeout').value = c.selectorTimeout;
   if(c.pageLoadMode) document.getElementById('pageLoadMode').value = (c.pageLoadMode === 'networkidle' ? 'domcontentloaded' : c.pageLoadMode);
   if(c.retryCount != null) document.getElementById('retryCount').value = c.retryCount;
-  if(c.breakerThreshold != null) document.getElementById('breakerThreshold').value = c.breakerThreshold;
   if(c.reauthInterval != null) document.getElementById('reauthInterval').value = c.reauthInterval;
   if(c.flowNotes) document.getElementById('flowNotes').value = c.flowNotes;
   if(c.headless !== undefined){
