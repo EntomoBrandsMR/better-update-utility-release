@@ -568,12 +568,8 @@ ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath,
     // exceed totalRows; distinctDone == completedRows.size is the trustworthy number).
     // Resume re-seeds this from the journal in coordResumeFromJournal.
     completedRows: new Set(),
-    // Reclaim tally for the breakdown line — incremented in the 'reclaim' case + the crash
-    // catch-all in proc.on('close'). reclaimsByReason buckets by cause; reclaimsTotal is the
-    // sum for the headline. Both reset on a fresh submit (resume doesn't persist these in
+    // Reclaim tally for the breakdown line — incremented in the 'reclaim' case + the crash    // sum for the headline. Both reset on a fresh submit (resume doesn't persist these in
     // the journal meta today; tally restarts at zero on resume — documented in v2.2.3 doc).
-    reclaimsTotal: 0,
-    reclaimsByReason: { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 },
   });
   coordEmitStatus();
   return { ok: true, jobId, totalRows: total, startRow };
@@ -597,7 +593,7 @@ ipcMain.handle('pool-clear-jobs', async () => {
 
 // Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
-ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap }) => {
+ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
@@ -611,13 +607,7 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   // after testing, automation respects the worker pool settings.
   COORD.startMode = (startMode === 'step' || startMode === 'step-row') ? startMode : 'run-all';
   const _cfgWorkers = parseInt(workerCount) || 1;
-  const _cfgBatch = Math.max(1, Math.min(500, parseInt(batchSize) || 10));
-  COORD.startModeTarget = { workers: _cfgWorkers, batchSize: _cfgBatch };
-  if (COORD.startMode === 'step' || COORD.startMode === 'step-row') {
-    COORD.batchSize = 1;
-  } else {
-    COORD.batchSize = _cfgBatch;
-  }
+  COORD.startModeTarget = { workers: _cfgWorkers };
   // Reset per-run job counters in case jobs were staged then this is a restart.
   // v2.1.0 (#5): reset nextRow to the job's startRow (the step-by-step handoff cursor), not a
   // hard 1 — otherwise switching from manual stepping to the pool would re-run completed rows.
@@ -629,7 +619,7 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   // (coordResumeFromJournal) that seeds completedRows deliberately; pool-start is always a fresh run.
   // v2.2.3 Session 3C: also reset Session 3B's reclaim tally on a fresh pool-start so a
   // second run in the same app session doesn't inherit stale reclaim counts from the prior run.
-  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; job.completedRows = new Set(); job.reclaimsTotal = 0; job.reclaimsByReason = { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 }; }
+  for (const job of COORD.jobs.values()) { job.nextRow = job.startRow || 1; job.done = 0; job.ok = 0; job.err = 0; job.skip = 0; job.finished = false; job.completedRows = new Set(); }
   // v2.2.3 Session 3C (A1): diagnostic capture toggle + bucket cap. Default ON since
   // v2.2.3 exists specifically to make false-ok reporting visible; user can flip off for
   // a 'fast' run knowingly. Bucket cap (default 10) limits per-(status,errorCategory)
@@ -726,9 +716,6 @@ ipcMain.handle('pool-run-control', async (_, { cmd }) => {
   // size, tell the live worker(s) to switch to run-all, then scale to configured target.
   if (cmd === 'run-all') {
     COORD.startMode = 'run-all';
-    if (COORD.startModeTarget && COORD.startModeTarget.batchSize) {
-      COORD.batchSize = COORD.startModeTarget.batchSize;
-    }
     for (const w of COORD.workers.values()) {
       try { w.process.stdin.write(JSON.stringify({ cmd:'run-all' }) + '\n'); } catch {}
     }
@@ -737,7 +724,7 @@ ipcMain.handle('pool-run-control', async (_, { cmd }) => {
     COORD.desiredWorkers = Math.max(1, Math.min(tgt, MAX_WORKERS_HARD_CEILING, hwCap));
     await coordScaleTo(COORD.desiredWorkers);
     coordEmitStatus();
-    return { ok: true, desiredWorkers: COORD.desiredWorkers, batchSize: COORD.batchSize };
+    return { ok: true, desiredWorkers: COORD.desiredWorkers };
   }
   // 'next-step' / 'next-row' release the current pause without changing mode. Forward to
   // the live worker. In step modes there's exactly one worker, but if multiple are alive
@@ -807,7 +794,7 @@ ipcMain.handle('pool-find-orphans', async () => {
 // v2.0.0 resume: rebuild the pool from an orphan journal and restart it. Reconstructs each
 // job from the meta sidecar, loads the completed-row sets from the journal, then APPENDS to
 // the SAME journal (so the resumed run keeps one continuous record).
-ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin }) => {
+ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   const metaPath = coordJournalMetaPath(poolId);
   const jp = coordJournalPath(poolId);
@@ -843,8 +830,6 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
       nextRow: Number.isFinite(j.startRow) ? j.startRow : 1, done: 0, ok: 0, err: 0, skip: 0, finished: false,
       completedRows: completedByJob[j.jobId] || new Set(),
       // v2.2.3 Session 3B (A5): reclaim tally is in-memory only — resumed runs start at zero.
-      reclaimsTotal: 0,
-      reclaimsByReason: { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 },
     });
   }
   // Seed counters from the completed sets so the UI shows real progress immediately.
@@ -853,8 +838,7 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
   // v2.2.2 Session 2F: restore pool-level configuration from meta (defaults preserve old behavior).
   COORD.setupScope = meta.setupScope || 'per-worker';
   COORD.startMode = meta.startMode || 'run-all';
-  COORD.startModeTarget = meta.startModeTarget || { workers: 1, batchSize: meta.batchSize || 10 };
-  COORD.batchSize = Math.max(1, Math.min(500, parseInt(batchSize) || meta.batchSize || 10));
+  COORD.startModeTarget = meta.startModeTarget || { workers: 1 };
   // v2.2.3 Session 3C (A1): restore diagnostic-capture config from meta. Default ON if missing
   // (older journals predating 3C resume with capture enabled, which is the desired behavior for
   // any resume — you want to keep diagnosing).
@@ -972,7 +956,7 @@ function buildPoolWorker(cfg){
     chromiumExePath, errHandle = 'retry', selectorTimeout = 30,
     pageLoadMode = 'domcontentloaded', retryCount = 2, runContext = {},
     // v2.2.2 Session 2E: per-job runtime knobs.
-    retryRowIndexes = null, reauthIntervalMin = 0,
+    reauthIntervalMin = 0,
     // v2.2.3 Session 3C (A1): diagnostic capture. captureDir is the directory where per-row
     // failure folders go (one per captured row). bucketCap=10 means at most 10 captures per
     // (status, errorCategory) bucket — prevents 10k-row runs from filling the disk.
@@ -984,7 +968,6 @@ function buildPoolWorker(cfg){
     (parseInt(selectorTimeout) * 1000),
     (JSON.stringify(pageLoadMode)),
     (parseInt(retryCount)),
-    (retryRowIndexes && retryRowIndexes.length ? JSON.stringify(retryRowIndexes) : 'null'),
     ((parseInt(reauthIntervalMin) || 0) * 60 * 1000),
     (JSON.stringify(chromiumExePath)),
     (JSON.stringify(flowSteps)),

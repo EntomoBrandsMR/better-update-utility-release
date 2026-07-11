@@ -29,28 +29,22 @@ const PAGE_LOAD_MODE = /*__BUU_CFG_3__*/null;
 const NAV_TIMEOUT = 90000;
 const RETRY_COUNT = /*__BUU_CFG_4__*/null;
 // v2.2.2 Session 2E: per-job knobs.
-// RETRY_ROW_INDEXES=null processes all rows; an array (-> Set below) restricts to those row
-// numbers (retry-failed mode). REAUTH_INTERVAL_MS=0 disables proactive re-auth; otherwise
-// the worker re-logs-in at the next row boundary after the timer elapses.
-const RETRY_ROW_INDEXES = /*__BUU_CFG_5__*/null;
-const REAUTH_INTERVAL_MS = /*__BUU_CFG_6__*/null;
-const RETRY_ROW_SET = RETRY_ROW_INDEXES ? new Set(RETRY_ROW_INDEXES) : null;
-const CHROMIUM_EXE = /*__BUU_CFG_7__*/null;
-const FLOW_STEPS = /*__BUU_CFG_8__*/null;
-const SETUP_STEPS = /*__BUU_CFG_9__*/null;
-const TEARDOWN_STEPS = /*__BUU_CFG_10__*/null;
-const RUN_CONTEXT = /*__BUU_CFG_11__*/null;
+const CHROMIUM_EXE = /*__BUU_CFG_6__*/null;
+const FLOW_STEPS = /*__BUU_CFG_7__*/null;
+const SETUP_STEPS = /*__BUU_CFG_8__*/null;
+const TEARDOWN_STEPS = /*__BUU_CFG_9__*/null;
+const RUN_CONTEXT = /*__BUU_CFG_10__*/null;
 // v2.2.2 Session 2C: step-by-step mode. Coordinator passes 'run-all' / 'step' / 'step-row'
 // when spawning. Pool forces workers=1 batch=1 when startMode is 'step' or 'step-row',
 // then scales up when the user clicks Run-All (coordinator handles that scaling).
-const START_MODE = /*__BUU_CFG_12__*/null;
+const START_MODE = /*__BUU_CFG_11__*/null;
 // v2.2.3 Session 3C (A1): diagnostic capture constants. CAPTURE_DIR is null when disabled.
 // CAPTURE_BUCKET_CAP limits per-(status,errorCategory) folders so high-volume failure modes
 // don't fill the disk. zlib is required here so the gzip call below doesn't reach for a
 // missing module under packaging.
-const DIAGNOSTIC_CAPTURE = /*__BUU_CFG_13__*/null;
-const CAPTURE_DIR = /*__BUU_CFG_14__*/null;
-const CAPTURE_BUCKET_CAP = /*__BUU_CFG_15__*/null;
+const DIAGNOSTIC_CAPTURE = /*__BUU_CFG_12__*/null;
+const CAPTURE_DIR = /*__BUU_CFG_13__*/null;
+const CAPTURE_BUCKET_CAP = /*__BUU_CFG_14__*/null;
 const zlib = require('zlib');
 const LOGIN_STEPS = FLOW_STEPS.filter(s => s.locked && s.type !== 'pestpac-logout');
 const DATA_STEPS  = FLOW_STEPS.filter(s => !s.locked && s.type !== 'pestpac-logout');
@@ -171,7 +165,7 @@ function addLog(e){logEntries.push(e);if(logEntries.length%50===0)flush();else{c
 function flush(){
   try{
     const wb=XLSX.utils.book_new();
-    const summary=[{Metric:'Worker',Value:/*__BUU_CFG_16__*/null},{Metric:'Processed',Value:logEntries.filter(e=>e.row).length},{Metric:'Last updated',Value:new Date().toLocaleString()}];
+    const summary=[{Metric:'Worker',Value:/*__BUU_CFG_15__*/null},{Metric:'Processed',Value:logEntries.filter(e=>e.row).length},{Metric:'Last updated',Value:new Date().toLocaleString()}];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), 'Summary');
     if(logEntries.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(logEntries), 'Rows');
     XLSX.writeFile(wb, LOG_PATH);
@@ -472,41 +466,20 @@ async function main(){
   // v2.1.0: _draining is set the instant a drain command arrives (even mid-batch). We check it
   // BETWEEN EVERY ROW so the worker stops promptly and reaches logout, instead of grinding the
   // whole batch of slow pages first (which let the force-kill fire before logout -> stuck sessions).
-  // v2.2.1: holds the unstarted tail of the current batch when a drain interrupts mid-batch, so
-  // we can hand those rows back to the coordinator (lossless reclaim) before shutting down.
-  let _reclaimRows = [];
-  // v2.2.3 Session 3B (A5): tag each reclaim with WHY it happened so the coordinator can
-  // tally "+N re-processed (X drain, Z user-stop)". Reasons used:
-  //   'drain'     — coordinator sent a drain command (scale-down / pool-stop / sweep)
-  //   'user-stop' — user clicked Stop mid-step or at a step-row pause
-  // Crash reclaims are tagged by the coordinator's catch-all path (where the worker can't
-  // emit anything because it's already gone).
-  let _reclaimReason = 'drain';
   // v2.2.2 Session 2E: re-auth timer scoped to main(). nextReauthAt=0 disables proactive re-auth.
   let nextReauthAt = REAUTH_INTERVAL_MS > 0 ? Date.now() + REAUTH_INTERVAL_MS : 0;
   while(!_draining){
     const msg = await requestBatch();
     if(!msg || msg.cmd==='drain' || _draining){ break; }
     if(msg.cmd!=='batch' || !Array.isArray(msg.rows) || msg.rows.length===0){ continue; }
-    for(let _bi=0; _bi<msg.rows.length; _bi++){
-      const rowNum = msg.rows[_bi];
+    { // one row per pull (Phase 2 teardown: batching removed)
+      const rowNum = msg.rows[0];
       // v2.2.1 LOSSLESS RECLAIM (worker side): a drain can arrive mid-batch (happens constantly
       // during elastic scale-down). We stop at this ROW boundary (current row already finished),
       // but the UNSTARTED tail of this batch was already handed out by the coordinator (removed
       // from the queue) and is NOT yet in completedRows. Hand it back so another worker picks it
       // up — otherwise these rows vanish silently. Capture the tail and break; the emit happens
       // after the loop, before the shutdown/logout sequence.
-      if(_draining){ _reclaimRows = msg.rows.slice(_bi); break; }
-      // v2.2.2 Session 2E: retry-failed mode. RETRY_ROW_SET is non-null only when the user
-      // selected "retry failed rows" — in that case the worker silently skips any row not in
-      // the set (no row-result emit; coordinator counts these as processed via the journal).
-      // We emit a synthetic 'row-result' with status='skip' so coordinator bookkeeping stays
-      // consistent (otherwise the coordinator never sees this row close and the pool waits
-      // forever for it).
-      if (RETRY_ROW_SET && !RETRY_ROW_SET.has(rowNum)) {
-        emit({type:'row-result', row:rowNum, status:'skip', error:'(retry mode: row not in retry set)', durationMs:0});
-        continue;
-      }
       const row = ALL_ROWS[rowNum-1];
       if(!row){ emit({type:'row-result', row:rowNum, status:'skip', error:'row index out of range'}); continue; }
       // v2.2.2 Session 2E: proactive re-auth at row boundary. Fires when the configured timer
@@ -524,7 +497,7 @@ async function main(){
         }
       }
       // batchPos/batchSize = e.g. 3/10 (which row of this batch); totalSteps for the step counter.
-      emit({type:'row-start', row:rowNum, batchPos:_bi+1, batchSize:msg.rows.length});
+      emit({type:'row-start', row:rowNum});
       const t0=Date.now();
       // v2.2.3 Session 3A (A3): set the row-attribution globals so the blanket dialog
       // listener can tag captured dialogs with this row. Cleared after row-result emit.
@@ -543,8 +516,6 @@ async function main(){
       catch(e){
         if(e && e.message === '__STOP__'){
           _draining = true;
-          _reclaimRows = msg.rows.slice(_bi+1);  // any rows not yet started
-          _reclaimReason = 'user-stop';  // v2.2.3 Session 3B (A5)
           emit({type:'row-result', row:rowNum, status:'stopped', error:'User stop during step-through', durationMs:Date.now()-t0});
           _currentRowNum = null; _currentRow = null;
           break;
@@ -583,22 +554,12 @@ async function main(){
         await waitForCommand();
         if(currentMode === 'stop'){
           _draining = true;
-          _reclaimRows = msg.rows.slice(_bi+1);
-          _reclaimReason = 'user-stop';  // v2.2.3 Session 3B (A5)
           break;
         }
       }
     }
   }
 
-  // v2.2.1 LOSSLESS RECLAIM (worker side): before the shutdown/logout sequence, hand back any
-  // rows from the interrupted batch that we never started. The coordinator pushes these into
-  // job.requeue (skipping anything already completed) so another worker drains them. This MUST
-  // be emitted before logout so the message is flushed while stdout is still open.
-  // v2.2.3 Session 3B (A5): tag with the reason so the coordinator can tally
-  // "+N re-processed (X drain, Y user-stop)". Default reason 'drain' covers
-  // the coordinator-sent drain command (scale-down / pool-stop / sweep).
-  if(_reclaimRows && _reclaimRows.length){ emit({type:'reclaim', rows:_reclaimRows, reason:_reclaimReason}); }
 
   // v2.1.0: shutdown sequence on drain. Report each phase so the UI can show
 // 'shutting down' -> 'logging out' -> gone. Logout MUST happen (frees the PestPac license),

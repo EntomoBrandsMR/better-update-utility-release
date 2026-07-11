@@ -743,10 +743,6 @@ textarea { resize: vertical; min-height: 60px; }
       <input id="poolWorkerCount" type="number" min="1" max="100" value="4" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="How many workers to start with. Use Auto to size it by hardware and free licenses.">
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-      <span style="font-size:11px;color:var(--t3)">Batch</span>
-      <input id="poolBatchSize" type="number" min="1" max="500" value="10" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Rows each worker claims per pull">
-    </div>
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
       <span style="font-size:11px;color:var(--t3)" title="Licenses to always keep free. Used by Auto and by Auto-scale.">Buffer</span>
       <input id="poolLicBuffer" type="number" min="0" max="100" value="10" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Keep this many PestPac licenses free (never consumed by workers)">
     </div>
@@ -1057,8 +1053,6 @@ textarea { resize: vertical; min-height: 60px; }
     <div class="run-prog-wrap"><div class="run-prog-bar" id="runProgBar" style="width:0"></div></div>
     <div class="run-stats">
       <div class="run-stat"><div class="run-stat-val" id="rs-done">0</div><div class="run-stat-lbl">Done</div></div>
-      <!-- v2.2.3 Session 3B (A5): reclaim re-processed count (+breakdown line below grid) -->
-      <div class="run-stat"><div class="run-stat-val" style="color:var(--t3)" id="rs-reclaim">0</div><div class="run-stat-lbl">Re-processed</div></div>
       <div class="run-stat"><div class="run-stat-val" style="color:var(--green)" id="rs-ok">0</div><div class="run-stat-lbl">Success</div></div>
       <div class="run-stat"><div class="run-stat-val" style="color:var(--red)" id="rs-err">0</div><div class="run-stat-lbl">Errors</div></div>
       <div class="run-stat"><div class="run-stat-val" style="color:var(--amber)" id="rs-skip">0</div><div class="run-stat-lbl">Skipped</div></div>
@@ -1067,8 +1061,6 @@ textarea { resize: vertical; min-height: 60px; }
       <div class="run-stat"><div class="run-stat-val" id="rs-pct">0%</div><div class="run-stat-lbl">Complete</div></div>
       <div class="run-stat"><div class="run-stat-val" id="rs-elapsed">-</div><div class="run-stat-lbl">Elapsed</div></div>
     </div>
-    <!-- v2.2.3 Session 3B (A5): reclaim breakdown line. Hidden until reclaims accumulate. -->
-    <div id="rs-reclaim-breakdown" style="display:none;font-size:11px;color:var(--t3);margin-top:6px;text-align:center"></div>
     <!-- v2.0.0: staged-jobs list. Shows jobs queued for the pool (label, rows, remove).
          Visible whenever there are staged jobs; lets you review/remove before Run pool. -->
     <div id="stagedJobsHd" style="display:none;font-size:11px;font-weight:600;color:var(--t3);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em">Staged jobs <button class="btn sm" style="margin-left:8px;padding:1px 8px" onclick="poolClearStaged()">Clear all</button></div>
@@ -1270,11 +1262,10 @@ async function offerPoolResume(p){
     + '\n\nResume it now? (Cancel lets you discard or ignore it.)';
   if(confirm(msg)){
     const n = Math.max(1, Math.min(100, parseInt((document.getElementById('poolWorkerCount')||{}).value)||4));
-    const batchSize = parseInt((document.getElementById('poolBatchSize')||{}).value) || 10;
     const elastic = !!(document.getElementById('poolElastic')||{}).checked;
     const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
     const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
-    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
+    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
     if(res && res.ok===false){ alert('Could not resume pool: '+(res.error||'unknown')); return; }
     poolUIActive(true);
     go('run');
@@ -3033,7 +3024,6 @@ async function poolRunClick(){
     const staged = await poolStageCurrent();
     if(!staged) return;
   }
-  const batchSize = parseInt((document.getElementById('poolBatchSize')||{}).value) || 10;
   const elastic = !!(document.getElementById('poolElastic')||{}).checked;
   const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
   const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
@@ -3041,13 +3031,13 @@ async function poolRunClick(){
   // v2.2.3 Session 3C (A1): diagnostic capture config. ON by default; user can flip off.
   const diagnosticCapture = !!(document.getElementById('poolDiagCapture')||{checked:true}).checked;
   const captureBucketCap = parseInt((document.getElementById('poolDiagCap')||{}).value) || 10;
-  if(!confirm('Start worker pool?\n\n• '+n+' workers (headless, batch size '+batchSize+')\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull batches until all jobs drain. Continue?')) return;
+  if(!confirm('Start worker pool?\n\n• '+n+' workers (headless)\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull rows until all jobs drain. Continue?')) return;
   // v2.2.2 Session 2C: pool start mode pulled from the same start-mode dropdown the
 // single-runner uses. Session 2G will move the dropdown into the pool launch UI; for now
 // it just doubles up so pool runs can also be stepped through.
 const _smSel = document.getElementById('startModeSel');
 const startMode = (_smSel && _smSel.value) || 'run-all';
-const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });
+const res = await API.poolStart({ workerCount:n, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
   poolUIActive(true);
   go('run');
@@ -3189,7 +3179,6 @@ function renderCoordStatus(st){
     let detail = '';
     if(w.status==='running' && w.currentRow!=null){
       const parts = ['row '+w.currentRow];
-      if(w.batchPos!=null && w.batchTotal!=null) parts.push(w.batchPos+'/'+w.batchTotal);
       if(w.step!=null && w.totalSteps!=null && w.step>0) parts.push('step '+w.step+'/'+w.totalSteps);
       detail = '<div style="font-size:10px;color:var(--t3);margin-bottom:4px">'+parts.join(' · ')+'</div>';
     }
@@ -3205,33 +3194,17 @@ function renderCoordStatus(st){
   // v2.2.3 Session 3B (A5): use distinctDone (unique completed rows) as the headline so
   // reclaim re-processes don't inflate the counter. j.done remains the row-result total
   // (includes re-processes) for the rate/ETA calculations where it makes more sense.
-  let distinctDone=0,doneTotal=0,ok=0,err=0,skip=0,total=0,reclaimTotal=0;
-  const reclaimAgg={'drain':0,'user-stop':0,'breaker':0,'crash':0};
+  let distinctDone=0,doneTotal=0,ok=0,err=0,skip=0,total=0;
   for(const j of (st.jobs||[])){
     distinctDone+=(j.distinctDone||j.done||0);
     doneTotal+=(j.done||0);
     ok+=j.ok; err+=j.err; skip+=j.skip;
     total+=j.totalRows;
-    reclaimTotal+=(j.reclaimsTotal||0);
-    if(j.reclaimsByReason){
-      for(const k of Object.keys(reclaimAgg)) reclaimAgg[k]+=(j.reclaimsByReason[k]||0);
-    }
   }
   document.getElementById('rs-done').textContent=distinctDone.toLocaleString();
   document.getElementById('rs-ok').textContent=ok.toLocaleString();
   document.getElementById('rs-err').textContent=err.toLocaleString();
   document.getElementById('rs-skip').textContent=skip.toLocaleString();
-  // v2.2.3 Session 3B (A5): reclaim count + breakdown line.
-  document.getElementById('rs-reclaim').textContent=reclaimTotal.toLocaleString();
-  const bd=document.getElementById('rs-reclaim-breakdown');
-  if(reclaimTotal>0){
-    const parts=[];
-    if(reclaimAgg['drain']>0)parts.push(reclaimAgg['drain']+' scale-down');
-    if(reclaimAgg['user-stop']>0)parts.push(reclaimAgg['user-stop']+' user stop');
-    if(reclaimAgg['crash']>0)parts.push(reclaimAgg['crash']+' crash');
-    bd.textContent='+'+reclaimTotal.toLocaleString()+' re-processed ('+parts.join(', ')+')';
-    bd.style.display='block';
-  } else { bd.style.display='none'; }
   const pct=total>0?Math.round(distinctDone/total*100):0;
   document.getElementById('runProgBar').style.width=pct+'%';
   document.getElementById('rs-pct').textContent=pct+'%';

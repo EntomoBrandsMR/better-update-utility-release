@@ -24,7 +24,6 @@ const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, encS
 // ════════════════════════════════════════════════════════════════════════════
 const COORD = {
   active: false,
-  batchSize: 10,
   jobs: new Map(),      // jobId -> { jobId, label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, totalRows, nextRow, rows, done, ok, err, skip, finished }
   workers: new Map(),   // workerId -> { workerId, jobId, process, status, batch, done, ok, err, skip, startedAt, runnerLogStream, runnerPath, credPath }
   desiredWorkers: 0,    // target worker count (license/hardware bounded)
@@ -37,7 +36,7 @@ const COORD = {
   startMode: 'run-all',     // v2.2.2 Session 2C: 'run-all' | 'step' | 'step-row'. Forces
                             // workers=1 batch=1 when 'step'/'step-row'. Transitions via
                             // pool-run-control(cmd:'run-all') unlock the configured worker count.
-  startModeTarget: { workers: 1, batchSize: 10 }, // configured target; restored on Run-All transition.
+  startModeTarget: { workers: 1 }, // configured target; restored on Run-All transition.
 };
 const { coordJournalPath, coordJournalMetaPath, coordJournalDonePath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordMarkJournalDone, coordMostRecentJournalPoolId } = require('../journal')({ COORD });
 
@@ -96,16 +95,22 @@ function coordNextBatch(jobId){
   const batch = [];
   // Drain reclaimed rows first (skip any that have since completed).
   if(job.requeue && job.requeue.length){
-    while(batch.length < COORD.batchSize && job.requeue.length){
+    while(batch.length < 1 && job.requeue.length){
       const r = job.requeue.shift();
       if(job.completedRows && job.completedRows.has(r)) continue;
       batch.push(r);
     }
   }
-  while(batch.length < COORD.batchSize && job.nextRow <= job.totalRows){
+  while(batch.length < 1 && job.nextRow <= job.totalRows){
     const r = job.nextRow;
     job.nextRow++;
     if(job.completedRows && job.completedRows.has(r)) continue; // already done in a prior run
+    // Phase 2 teardown: retry-failed filtering moved coordinator-side (worker cfg no longer
+    // carries the set; unselected rows are simply never handed out or journaled).
+    if(job.retryRowIndexes && job.retryRowIndexes.length){
+      if(!job._retrySet) job._retrySet = new Set(job.retryRowIndexes);
+      if(!job._retrySet.has(r)) continue;
+    }
     batch.push(r);
   }
   return batch;
@@ -125,11 +130,7 @@ function coordEmitStatus(){
     done: j.done, ok: j.ok, err: j.err, skip: j.skip,
     // v2.2.3 Session 3B (A5): distinctDone is the number of UNIQUE rows that have completed
     // (counted via the journal-backed completedRows set). j.done counts every row-result
-    // emit including reclaim re-processes, so distinctDone is the trustworthy headline.
-    // reclaimsTotal + reclaimsByReason expose the "+N re-processed" breakdown line.
-    distinctDone: (j.completedRows ? j.completedRows.size : j.done),
-    reclaimsTotal: j.reclaimsTotal || 0,
-    reclaimsByReason: j.reclaimsByReason || { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 },
+    // emit including reclaim re-processes, so distinctDone is the trustworthy headline.    distinctDone: (j.completedRows ? j.completedRows.size : j.done),
     remaining: Math.max(0, j.totalRows - (j.nextRow - 1)), finished: j.finished,
     // v2.2.3 Session 3F (B2): expose the source spreadsheet path so the renderer can offer
     // an Archive button (move to upcoming/Finished/) on completed jobs.
@@ -137,13 +138,13 @@ function coordEmitStatus(){
   }));
   const workers = Array.from(COORD.workers.values()).map(w => ({
     workerId: w.workerId, jobId: w.jobId, status: w.status,
-    done: w.done, ok: w.ok, err: w.err, skip: w.skip, batchSize: (w.batch||[]).length,
+    done: w.done, ok: w.ok, err: w.err, skip: w.skip,
     // v2.1.0 live detail: current row, position in batch, step in flow, logout result
-    currentRow: w.currentRow, batchPos: w.batchPos, batchTotal: w.batchSize,
+    currentRow: w.currentRow,
     step: w.step, totalSteps: w.totalSteps, loggedOut: w.loggedOut,
   }));
   ctx.mainWindow.webContents.send('pool-status', {
-    active: COORD.active, batchSize: COORD.batchSize,
+    active: COORD.active,
     desiredWorkers: COORD.desiredWorkers, liveWorkers: COORD.workers.size,
     jobs, workers,
   });
@@ -214,9 +215,8 @@ async function coordSpawnWorker(){
     selectorTimeout: 30, pageLoadMode: 'domcontentloaded',
     // v2.2.2 Session 2E: per-job runtime knobs forwarded to the worker template.
     // retryCount defaults to 2 (prior hardcode);
-    // retryRowIndexes null = process all rows; reauthIntervalMin 0 = no proactive re-auth.
+    // reauthIntervalMin 0 = no proactive re-auth.
     retryCount: Number.isFinite(job.retryCount) ? job.retryCount : 2,
-    retryRowIndexes: Array.isArray(job.retryRowIndexes) ? job.retryRowIndexes : null,
     reauthIntervalMin: Number.isFinite(job.reauthIntervalMin) ? job.reauthIntervalMin : 0,
     // v2.2.2 Session 2C: passing the pool-level startMode so the worker knows whether to
     // pause before each step (step), pause after each row (step-row), or just run (run-all).
@@ -265,23 +265,14 @@ async function coordSpawnWorker(){
     if(w && w.jobId){
       const cjob = COORD.jobs.get(w.jobId);
       if(cjob && Array.isArray(w.batch) && w.batch.length){
-        if(!cjob.requeue) cjob.requeue = [];
-        // v2.2.3 Session 3B (A5): tally crash reclaims separately. Idempotent guard:
-        // only count rows that weren't already requeued (e.g. by a worker-side 'reclaim'
+        if(!cjob.requeue) cjob.requeue = [];        // only count rows that weren't already requeued (e.g. by a worker-side 'reclaim'
         // message that did arrive). The set-of-already-requeued check avoids double-counting
         // when the worker emitted reclaim AND then the process closed.
         const alreadyRequeued = new Set(cjob.requeue);
-        let crashCount = 0;
         for(const r of w.batch){
           if(cjob.completedRows && cjob.completedRows.has(r)) continue;
           if(alreadyRequeued.has(r)) continue;
           cjob.requeue.push(r);
-          crashCount++;
-        }
-        if(crashCount > 0){
-          if(!cjob.reclaimsByReason) cjob.reclaimsByReason = { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 };
-          cjob.reclaimsByReason.crash += crashCount;
-          cjob.reclaimsTotal = (cjob.reclaimsTotal || 0) + crashCount;
         }
         if(cjob.requeue.length) cjob.finished = false;
       }
@@ -323,7 +314,6 @@ function coordHandleWorkerMessage(workerId, msg){
       // v2.1.0: live detail - which row, and position within the current batch (e.g. 3/10).
       w.status = 'running';
       w.currentRow = msg.row;
-      w.batchPos = msg.batchPos; w.batchSize = msg.batchSize;
       w.step = 0; w.totalSteps = undefined;
       break;
     case 'step':
@@ -430,36 +420,6 @@ function coordHandleWorkerMessage(workerId, msg){
       w.status = 'shut-down';
       if(msg.loggedOut!=null) w.loggedOut = !!msg.loggedOut;
       break;
-    case 'reclaim': {
-      // v2.2.1 LOSSLESS RECLAIM (coordinator side, primary path): a draining worker handed back
-      // the unstarted tail of its batch. Push those rows into the job's requeue so another worker
-      // drains them (coordNextBatch drains requeue FIRST). Idempotent: skip any row already
-      // completed. Clearing job.finished and the rows still being in requeue blocks completion
-      // (coordAllDrained returns false while any requeue is non-empty), so the pool cannot report
-      // "done" with rows outstanding — the exact silent-loss bug this fixes.
-      // v2.2.3 Session 3B (A5): tally reclaims by reason for the counter display.
-      // msg.reason is one of: 'drain' | 'user-stop'. Old workers (pre-3B) won't
-      // send a reason — default to 'drain' for back-compat.
-      if(job && Array.isArray(msg.rows) && msg.rows.length){
-        if(!job.requeue) job.requeue = [];
-        const alreadyRequeued = new Set(job.requeue);
-        let counted = 0;
-        for(const r of msg.rows){
-          if(job.completedRows && job.completedRows.has(r)) continue;
-          if(alreadyRequeued.has(r)) continue;
-          job.requeue.push(r);
-          counted++;
-        }
-        if(counted > 0){
-          const reason = (msg.reason === 'user-stop' || msg.reason === 'drain') ? msg.reason : 'drain';
-          if(!job.reclaimsByReason) job.reclaimsByReason = { 'drain':0, 'user-stop':0, 'breaker':0, 'crash':0 };
-          job.reclaimsByReason[reason] += counted;
-          job.reclaimsTotal = (job.reclaimsTotal || 0) + counted;
-        }
-        job.finished = false;
-      }
-      break;
-    }
   }
   coordEmitStatus();
 }
