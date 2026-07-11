@@ -600,7 +600,7 @@ ipcMain.handle('pool-clear-jobs', async () => {
 
 // Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
-ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap, verifyAfterAction }) => {
+ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
@@ -639,10 +639,6 @@ ipcMain.handle('pool-start', async (_, { workerCount, batchSize, elastic, licens
   // capture folders so a 10k-row run can't fill the disk.
   COORD.diagnosticCapture = (diagnosticCapture === false) ? false : true;
   COORD.captureBucketCap = Math.max(1, Math.min(1000, parseInt(captureBucketCap) || 10));
-  // v2.2.3 Session 3D (A2): verify-after-action toggle. ON by default since v2.2.3 exists
-  // specifically to make false-ok reporting visible. User can flip off for a 'fast' run
-  // knowingly (verify adds one re-navigation per row, ~5-15s).
-  COORD.verifyAfterAction = (verifyAfterAction === false) ? false : true;
   COORD.active = true;
   coordOpenJournal();  // v2.0.0 resume: start the append-only journal for this run
 
@@ -868,8 +864,6 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, batchSize, elasti
   // any resume — you want to keep diagnosing).
   COORD.diagnosticCapture = (meta.diagnosticCapture === false) ? false : true;
   COORD.captureBucketCap = Number.isFinite(meta.captureBucketCap) ? meta.captureBucketCap : 10;
-  // v2.2.3 Session 3D (A2): restore verify-after-action toggle.
-  COORD.verifyAfterAction = (meta.verifyAfterAction === false) ? false : true;
   COORD.active = true;
   // Re-open the SAME journal in append mode (continue the continuous record).
   COORD.poolId = poolId;
@@ -987,11 +981,6 @@ function buildPoolWorker(cfg){
     // failure folders go (one per captured row). bucketCap=10 means at most 10 captures per
     // (status, errorCategory) bucket — prevents 10k-row runs from filling the disk.
     diagnosticCapture = true, captureDir = null, captureBucketCap = 10,
-    // v2.2.3 Session 3D (A2): verify-after-action. Re-navigates to the row's primary URL
-    // after each row completes and reads back the fields the flow's write steps tried to set.
-    // Mismatch → reclassify as 'error'. THE headline feature for v2.2.3 — without this every
-    // reported 'ok' remains untrustworthy (see void-flow false-ok pattern in design doc).
-    verifyAfterAction = true,
   } = cfg;
     const __inj = [
     (JSON.stringify(logPath)),
@@ -1011,7 +1000,6 @@ function buildPoolWorker(cfg){
     (diagnosticCapture ? 'true' : 'false'),
     (captureDir ? JSON.stringify(captureDir) : 'null'),
     (parseInt(captureBucketCap) || 10),
-    (verifyAfterAction ? 'true' : 'false'),
     (JSON.stringify(runContext.runId||'')),
   ];
   let __src = fs.readFileSync(path.join(__dirname, 'pool', 'worker.js'), 'utf8');

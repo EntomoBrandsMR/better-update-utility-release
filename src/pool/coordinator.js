@@ -226,8 +226,6 @@ async function coordSpawnWorker(){
     diagnosticCapture: !!COORD.diagnosticCapture,
     captureDir: captureDir,
     captureBucketCap: COORD.captureBucketCap || 10,
-    // v2.2.3 Session 3D (A2): verify-after-action toggle.
-    verifyAfterAction: !!COORD.verifyAfterAction,
     runContext: { runId: workerId, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
   });
   fs.writeFileSync(runnerPath, script);

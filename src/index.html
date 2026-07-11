@@ -774,12 +774,6 @@ textarea { resize: vertical; min-height: 60px; }
       <label style="font-size:11px;color:var(--t3);display:flex;align-items:center;gap:5px"><input id="poolDiagCapture" type="checkbox" checked style="margin:0;cursor:pointer"> Diagnostic capture</label>
       <input id="poolDiagCap" type="number" min="1" max="1000" value="10" title="Captures per (status, error category) bucket" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:11px">
     </div>
-    <!-- v2.2.3 Session 3D (A2): verify-after-action toggle. THE headline feature for v2.2.3 —
-         re-navigates after each row and reads back the fields the flow tried to set so a
-         false-ok (BUU thought it worked, PestPac shows it didn't) gets reclassified to error. -->
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px" title="After each row, re-navigate to the row's primary URL and read back the fields the flow's type/select/checkbox steps tried to set. Any mismatch → reclassify the row as 'error' with the specific field named. Adds one navigation per row (~5-15s). ON by default; v2.2.3 exists to make this possible. Turn off for a 'fast' run when you trust BUU's primary outcome.">
-      <label style="font-size:11px;color:var(--t3);display:flex;align-items:center;gap:5px"><input id="poolVerify" type="checkbox" checked style="margin:0;cursor:pointer"> Verify after action</label>
-    </div>
     <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" style="width:100%" title="Start the worker pool">Run pool</button>
     <button class="tbtn" id="poolSweepBtn" onclick="poolLogoutSweepClick()" style="width:100%;margin-top:2px" title="Log out any BUU sessions still logged in on PestPac (License Manager). Use if you see stuck sessions.">Log out stuck sessions</button>
   </div>
@@ -3069,15 +3063,13 @@ async function poolRunClick(){
   // v2.2.3 Session 3C (A1): diagnostic capture config. ON by default; user can flip off.
   const diagnosticCapture = !!(document.getElementById('poolDiagCapture')||{checked:true}).checked;
   const captureBucketCap = parseInt((document.getElementById('poolDiagCap')||{}).value) || 10;
-  // v2.2.3 Session 3D (A2): verify-after-action toggle. ON by default.
-  const verifyAfterAction = !!(document.getElementById('poolVerify')||{checked:true}).checked;
   if(!confirm('Start worker pool?\n\n• '+n+' workers (headless, batch size '+batchSize+')\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull batches until all jobs drain. Continue?')) return;
   // v2.2.2 Session 2C: pool start mode pulled from the same start-mode dropdown the
 // single-runner uses. Session 2G will move the dropdown into the pool launch UI; for now
 // it just doubles up so pool runs can also be stepped through.
 const _smSel = document.getElementById('startModeSel');
 const startMode = (_smSel && _smSel.value) || 'run-all';
-const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap, verifyAfterAction });
+const res = await API.poolStart({ workerCount:n, batchSize, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
   poolUIActive(true);
   go('run');
