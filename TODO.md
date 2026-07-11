@@ -283,13 +283,19 @@ Every extraction: validators green + scripts/_emit-worker-diff.js proves the ass
 worker EQUIVALENT to v2.2.9's emitted template (comments/blanks/export-guards ignored).
 Dev boot smoke-tested (electron . loads, window up, no stderr). Golden baseline frozen
 in docs/golden/ (READ ITS README — Test.xlsx is DO-NOT-RERUN as-is).
-**Phase 2 remaining:** (1) teardown pass — extractions were done VERBATIM to preserve
-golden comparability; breaker/batching/skip/verifyAfterAction/Run-Log/no-URL-prompt
-still exist and come out in a dedicated pass AFTER the checkpoint run verifies the move
-(If-click + Handle Dialog ride R2/R3 as planned). (2) CHECKPOINT GOLDEN RUN — needs
-Matthew: safe test LocationID (rebuild all 10 Test.xlsx URLs on it) + flow step 17
-matchText BILLING→BALFWD; then run, compare via scripts/_compare-golden.js.
-(3) unused-step-type flow audit (this rig has the flows). Also: 2026-07-10 incident —
+**Phase 2 remaining:** (1) teardown pass — DONE so far (commits fce6b42, d50adf5): Run Log
+tab, unused step types (clear/assert/textedit; fw-scrape-orders KEPT, Frankware parked
+not dead), verify-after-action fully gutted (cfg markers now 18, renumbered). REMAINING
+teardown, do as ONE coordinated batch (they share the worker main loop + coordinator
+queue protocol): circuit breaker, batching family (workers pull ONE row), skip status
+(ok|error only), "No URL" check (find it first — obvious greps came up empty; likely
+lives in the worker row loop or loadRowsForJob), single-runner remnant sweep.
+If-click + Handle Dialog ride R2/R3; old logout dance dies with Phase 3's new logout.
+NOTE: _emit-worker-diff.js proves equivalence vs v2.2.9 — INTENTIONALLY diverged once
+teardown began; don't run it as a gate anymore. Validators remain mandatory.
+(2) MATTHEW-RUN checkpoint golden run — never self-run live (see working-style). Test
+Flow matchText already flipped BILLING→BALFWD; Matthew fixed Test.xlsx himself.
+(3) flow audit DONE (scripts/_audit-step-types.js). Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
 
