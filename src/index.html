@@ -1316,8 +1316,6 @@ async function openSpreadsheet() {
   ssPath = result.filePath; ssName = result.name;
   ssHeaders = result.headers || []; ssRows = result.previewRows || []; ssRowCount = result.totalRows || 0;
   cols = [...ssHeaders];
-  if (!ssHeaders.some(h => h.toLowerCase() === 'url'))
-    alert('Warning: No "URL" column found. Add one so the automation knows where to navigate for each row.');
   const rowLabel = ssRowCount > 0 ? ssRowCount.toLocaleString() + ' rows' : 'row count unknown (CSV)';
   document.getElementById('ssStatus').innerHTML = '<strong style="color:var(--tx)">' + ssName + '</strong> &nbsp;·&nbsp; ' + rowLabel + ' &nbsp;·&nbsp; ' + ssHeaders.length + ' columns';
   document.getElementById('sbFoot').textContent = ssRowCount > 0 ? ssRowCount.toLocaleString() + ' rows' : 'Loaded';
