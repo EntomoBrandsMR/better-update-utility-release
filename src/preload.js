@@ -111,7 +111,6 @@ async function shimStartAutomation(d) {
       errHandle: d.errHandle || 'retry',
       resumeFromRow: d.resumeFromRow || 1,
       retryCount: parseInt(d.retryCount) || 2,
-      breakerThreshold: parseInt(d.breakerThreshold) || 0,
       retryRowIndexes: Array.isArray(d.retryRowIndexes) && d.retryRowIndexes.length ? d.retryRowIndexes : null,
       reauthIntervalMin: parseInt(d.reauthInterval) || 0,
     });
@@ -120,7 +119,6 @@ async function shimStartAutomation(d) {
     }
     const start = await ipcRenderer.invoke('pool-start', {
       workerCount: 1,
-      batchSize: 10,
       elastic: false,
       licenseProfileId: null,
       licenseBuffer: 0,
@@ -133,8 +131,6 @@ async function shimStartAutomation(d) {
       // user can disable via the pool-launch UI when running through that path instead.
       diagnosticCapture: true,
       captureBucketCap: 10,
-      // v2.2.3 Session 3D (A2): verify-after-action ON by default for the legacy Start path too.
-      verifyAfterAction: true,
     });
     if (!start || start.ok === false) {
       return { ok: false, error: (start && start.error) || 'pool-start failed' };
@@ -198,10 +194,6 @@ contextBridge.exposeInMainWorld('api', {
   startAutomation:     (d)     => shimStartAutomation(d),
   stopAutomation:      (d)     => shimStopAutomation(d),
   runControl:          (d)     => shimRunControl(d),
-  getCheckpoint:       ()      => Promise.resolve(null),
-  findOrphanCheckpoints:()     => Promise.resolve([]),
-  loadCheckpoint:      ()      => Promise.resolve(null),
-  discardCheckpoint:   ()      => Promise.resolve({ ok: true }),
   onAutomationEvent:   (cb)    => { _autoEventCb = cb; },
   // v1.3.4 Phase 3: worker-pool sizing + license-aware cap.
   getWorkerCaps:       ()      => ipcRenderer.invoke('get-worker-caps'),
@@ -219,7 +211,6 @@ contextBridge.exposeInMainWorld('api', {
   poolFindOrphans:     ()      => ipcRenderer.invoke('pool-find-orphans'),
   poolResume:          (d)     => ipcRenderer.invoke('pool-resume', d),
   poolDiscardOrphan:   (d)     => ipcRenderer.invoke('pool-discard-orphan', d),
-  poolReadJournal:     (d)     => ipcRenderer.invoke('pool-read-journal', d),
   poolRunControl:      (d)     => ipcRenderer.invoke('pool-run-control', d),
   onPoolStatus:        (cb)    => ipcRenderer.on('pool-status', (_, d) => cb(d)),
   onPoolComplete:      (cb)    => ipcRenderer.on('pool-complete', (_, d) => cb(d)),
