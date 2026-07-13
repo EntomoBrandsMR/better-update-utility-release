@@ -126,7 +126,22 @@ function coordAllDrained(){
 }
 
 // Broadcast aggregate pool status to the renderer.
-function coordEmitStatus(){
+// Phase 3 (D3): THROTTLE. coordEmitStatus used to fire on EVERY worker message — at
+// 100+ workers that is hundreds of full status broadcasts per second, each triggering
+// a full worker-grid innerHTML rebuild in the renderer. The render storm saturated the
+// renderer main thread and starved every input in the app ("can no longer type").
+// Coalesce to at most one broadcast per 250ms; a trailing emit catches the final state.
+let _emitTimer = null;
+let _emitPending = false;
+function coordEmitStatus() {
+  if (_emitTimer) { _emitPending = true; return; }
+  _coordEmitStatusNow();
+  _emitTimer = setTimeout(() => {
+    _emitTimer = null;
+    if (_emitPending) { _emitPending = false; coordEmitStatus(); }
+  }, 250);
+}
+function _coordEmitStatusNow(){
   if(!ctx.mainWindow) return;
   const jobs = Array.from(COORD.jobs.values()).map(j => ({
     jobId: j.jobId, label: j.label, totalRows: j.totalRows,

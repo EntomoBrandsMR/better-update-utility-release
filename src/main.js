@@ -654,7 +654,13 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
   for (let i = 0; i < target; i++) { await coordSpawnWorker(); }
 
   // Elastic license loop.
-  if (elastic && licenseProfileId) {
+  // Phase 3 (D4): NOT started while stepping — the timer used to scale up workers (each
+  // burning a login/license) while the user was still verifying row 1. It starts at
+  // Release (pool-run-control 'run-all') from the params stashed on COORD here.
+  COORD.elasticParams = (elastic && licenseProfileId)
+    ? { licenseProfileId, licenseBuffer, hwCap, intervalMs: Math.max(1, parseInt(licenseIntervalMin) || 5) * 60 * 1000 }
+    : null;
+  if (elastic && licenseProfileId && COORD.startMode !== 'step' && COORD.startMode !== 'step-row') {
     COORD.licenseTimer = setInterval(() => coordLicenseScale(licenseProfileId, licenseBuffer, hwCap), Math.max(1, parseInt(licenseIntervalMin) || 5) * 60 * 1000);
   }
   coordEmitStatus();
@@ -726,6 +732,11 @@ ipcMain.handle('pool-run-control', async (_, { cmd }) => {
     COORD.startMode = 'run-all';
     for (const w of COORD.workers.values()) {
       try { w.process.stdin.write(JSON.stringify({ cmd:'run-all' }) + '\n'); } catch {}
+    }
+    // Phase 3 (D4): start the elastic license timer now that the user has Released.
+    if (COORD.elasticParams && !COORD.licenseTimer) {
+      const ep = COORD.elasticParams;
+      COORD.licenseTimer = setInterval(() => coordLicenseScale(ep.licenseProfileId, ep.licenseBuffer, ep.hwCap), ep.intervalMs);
     }
     const tgt = (COORD.startModeTarget && COORD.startModeTarget.workers) || 1;
     const hwCap = computeHardwareCap();
@@ -1562,6 +1573,10 @@ if (!gotLock) {
   // (%APPDATA%\BUU 2.0) in BOTH dev and packaged runs — fully isolated from Legacy's data.
   try { app.setName('BUU 2.0'); } catch(e){}
   app.on('second-instance', () => {
+  // Phase 3 (D1): a second launch used to only focus the existing window — with lingering
+  // processes common, fresh launches were rare and the update prompt almost never appeared.
+  // Re-check on every second launch so updates surface even without a clean restart.
+  try { checkForUpdates(false); } catch {}
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
@@ -1581,6 +1596,14 @@ if (!gotLock) {
     });
   });
 }
+// Phase 3 (D1): nothing ever killed workers on app quit — closing BUU mid-run orphaned
+// N worker processes (each holding a Chromium tree + a PestPac license) under the app's
+// own exe name. Kill them all on the way out; the pidfile sweep on next launch is the
+// backstop for anything this misses (e.g. a hard crash where before-quit never fires).
+app.on('before-quit', () => {
+  try { if (COORD.licenseTimer) { clearInterval(COORD.licenseTimer); COORD.licenseTimer = null; } } catch {}
+  try { for (const w of COORD.workers.values()) { try { if (w.process) w.process.kill(); } catch {} } } catch {}
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
 
