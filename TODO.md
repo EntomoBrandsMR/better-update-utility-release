@@ -292,10 +292,19 @@ parallel-runner block, preload stubs). Deferred by design: If-click + Handle Dia
 + automation-event dispatcher + updateRunStats (LIVE — the simple Start button routes
 through them; they die in R11 when the renderer consumes pool events directly).
 Worker cfg markers: 15. Validators mandatory; equivalence prover retired.
-**GATE before Phase 3:** Matthew's checkpoint golden run (Test Flow, fixed Test.xlsx,
-2 workers, plain run) + compare via scripts/_compare-golden.js. Expected diffs
-documented in docs/golden/README.md (no skip statuses, no batch fields, retry filter
-coordinator-side). After it passes: Phase 3 per the locked order. Also: 2026-07-10 incident —
+**GATE before Phase 3:** SKIPPED by Matthew's call (2026-07-13) — Phase 2 + Phase 3 ride
+unverified until his thorough end test.
+**PHASE 3 COMPLETE (commits 29bada7..f574e83, pushed, boots after every commit):**
+new one-URL logout (5s budget, per-URL attempt log, amber/red card badges + leak summary);
+reauth per spec (timer = logout-then-login refresh; failure recovery detects login screen
+on row error, re-logins, retries once — the 3,557-row fail-through fix); Stop abandons
+the row at the next step boundary + 10s fuse + prompt logout sweep; D1 before-quit worker
+kill + second-instance update check; D3 status throttle 4/s; D4 elastic timer starts at
+Release; crash safety (worker spill files on coordinator death, pidfile sweep + spill
+merge at launch). PARKED: D5 needs Matthew's step-debugger pass over the add-note flow
+to name the trigger step (R3 makes handling deliberate regardless); D6 rides R11.
+**NEXT: PHASE 4 REBUILD** per the locked R-order (R1 journal rework first).
+Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
 
