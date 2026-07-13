@@ -608,6 +608,7 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
   COORD.startMode = (startMode === 'step' || startMode === 'step-row') ? startMode : 'run-all';
   const _cfgWorkers = parseInt(workerCount) || 1;
   COORD.startModeTarget = { workers: _cfgWorkers };
+  COORD.possibleLeaks = [];
   // Reset per-run job counters in case jobs were staged then this is a restart.
   // v2.1.0 (#5): reset nextRow to the job's startRow (the step-by-step handoff cursor), not a
   // hard 1 — otherwise switching from manual stepping to the pool would re-run completed rows.

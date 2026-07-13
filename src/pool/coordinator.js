@@ -31,7 +31,8 @@ const COORD = {
   poolId: null,         // v2.0.0 resume: id for this pool run's journal file
   journalStream: null,  // append-only results journal (one line per completed row)
   usedProfileIds: new Set(), // v2.1.1: profiles used this run — the logout sweep logs in with one
-  sweepRunning: false,  // v2.1.1: guards against double-spawning the logout sweeper
+  sweepRunning: false,
+  possibleLeaks: [],   // Phase 3: workerIds that exited without VERIFIED logout (license may be held)  // v2.1.1: guards against double-spawning the logout sweeper
   setupScope: 'per-worker', // v2.1.1 (#8): 'per-worker' | 'per-job' | 'global'
   startMode: 'run-all',     // v2.2.2 Session 2C: 'run-all' | 'step' | 'step-row'. Forces
                             // workers=1 batch=1 when 'step'/'step-row'. Transitions via
@@ -141,7 +142,7 @@ function coordEmitStatus(){
     done: w.done, ok: w.ok, err: w.err,
     // v2.1.0 live detail: current row, position in batch, step in flow, logout result
     currentRow: w.currentRow,
-    step: w.step, totalSteps: w.totalSteps, loggedOut: w.loggedOut,
+    step: w.step, totalSteps: w.totalSteps, loggedOut: w.loggedOut, logoutAttempts: w.logoutAttempts||0,
   }));
   ctx.mainWindow.webContents.send('pool-status', {
     active: COORD.active,
@@ -368,8 +369,13 @@ function coordHandleWorkerMessage(workerId, msg){
     case 'logging-out':
       w.status = 'logging-out';
       break;
+    case 'logout-attempt':
+      w.logoutAttempts = msg.attempt;
+      break;
     case 'logged-out':
       w.loggedOut = !!msg.ok;
+      w.logoutAttempts = msg.attempts || w.logoutAttempts || 0;
+      if(!msg.ok && !COORD.possibleLeaks.includes(w.workerId)) COORD.possibleLeaks.push(w.workerId);
       break;
     case 'request-batch': {
       // Hand out the next batch for this worker's job. If the worker's job is drained,
@@ -437,6 +443,7 @@ function coordCheckComplete(){
     coordMarkJournalDone();
     coordCloseJournal(false);
     if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-complete', {
+      possibleLeaks: COORD.possibleLeaks.slice(),
       jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err })),
     });
     // v2.1.1 (#8): for per-job/global scope, run teardown ONCE now (coordinator-driven), THEN

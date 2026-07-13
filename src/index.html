@@ -2785,6 +2785,11 @@ function renderCoordStatus(st){
     const stopBtn = canStop
       ? '<button title="Gracefully stop this worker (finishes its current row, logs out, returns its remaining rows to the queue)" onclick="poolStopWorkerClick(\''+w.workerId+'\')" style="border:none;background:var(--surf3);color:var(--t2);font-size:9px;font-weight:700;border-radius:4px;padding:2px 6px;cursor:pointer;text-transform:uppercase;letter-spacing:.04em">Stop</button>'
       : '';
+    // Phase 3: logout surfacing — red when a worker shut down without VERIFIED logout
+    // (session may still hold a PestPac license); amber when logout took >2 attempts.
+    let logoutBadge='';
+    if(w.status==='shut-down' && w.loggedOut===false) logoutBadge='<span style="font-size:9px;font-weight:700;color:var(--red)" title="Logout never verified - this session may still hold a PestPac license">LEAK?</span>';
+    else if((w.logoutAttempts||0)>2) logoutBadge='<span style="font-size:9px;font-weight:700;color:var(--amber)" title="Logout took '+w.logoutAttempts+' attempts">LOGOUT x'+w.logoutAttempts+'</span>';
     // Live detail line: row N - 3/10 - step 7/8 (only while running with data).
     let detail = '';
     if(w.status==='running' && w.currentRow!=null){
@@ -2795,7 +2800,7 @@ function renderCoordStatus(st){
     return '<div class="card" style="padding:11px 13px;border:1.5px solid var(--bdr2);border-radius:10px;background:var(--surf2);box-shadow:0 1px 3px rgba(0,0,0,.18)">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">'
         + '<div style="font-size:12px;font-weight:700;color:var(--t2)">'+w.workerId.slice(-6)+'</div>'
-        + '<div style="display:flex;align-items:center;gap:6px"><div style="font-size:10px;font-weight:700;color:'+ph.color+';text-transform:uppercase">'+ph.label+'</div>'+stopBtn+'</div>'
+        + '<div style="display:flex;align-items:center;gap:6px"><div style="font-size:10px;font-weight:700;color:'+ph.color+';text-transform:uppercase">'+ph.label+'</div>'+logoutBadge+stopBtn+'</div>'
       + '</div>'
       + detail
       + '<div style="display:flex;gap:10px;font-size:11px;color:var(--t2)"><span><b>'+(w.done||0).toLocaleString()+'</b> done</span><span style="color:var(--green)">'+(w.ok||0).toLocaleString()+' ok</span><span style="color:var(--red)">'+(w.err||0).toLocaleString()+' err</span></div></div>';
@@ -2937,6 +2942,10 @@ if(API.onPoolPause) API.onPoolPause(function(p){
 });
 if(API.onPoolComplete) API.onPoolComplete(function(d){
   document.getElementById('runStatusMsg').textContent='Pool complete';
+  // Phase 3: end-of-run license-leak summary.
+  if(d && Array.isArray(d.possibleLeaks) && d.possibleLeaks.length){
+    addLiveLog('WARNING: '+d.possibleLeaks.length+' worker(s) exited without verified logout - possible PestPac license leak: '+d.possibleLeaks.map(function(x){return String(x).slice(-6);}).join(', ')+'. The logout sweep is the failsafe; check License Manager if it reports lingering sessions.','warn');
+  }
   poolUIActive(false); stopElapsedTicker();
   const grid=document.getElementById('workerGrid'); if(grid) setTimeout(()=>{grid.style.display='none';document.getElementById('workerGridHd').style.display='none';},1500);
 });

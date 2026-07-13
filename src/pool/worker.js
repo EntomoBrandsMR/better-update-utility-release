@@ -567,42 +567,28 @@ async function main(){
   emit({type:'shutting-down'});
   if(TEARDOWN_STEPS.length){ try{ await runOnceFlow(page,TEARDOWN_STEPS,creds); }catch(e){} }
   emit({type:'logging-out'});
-  // v2.1.1: VERIFIED logout. A single click is not trusted — after attempting logout we navigate
-  // to a PestPac page and check whether we land on the login page (input[name="uid"] present).
-  // If still logged in, we retry. The worker does NOT exit until logout is VERIFIED or the budget
-  // is exhausted. A stuck session is a consumed PestPac license, so this must be near-bulletproof;
-  // anything that still leaks is caught by the coordinator's license-manager sweep.
-  let _loggedOut=false;
-  async function _isLoggedOut(){
-    // Land anywhere in the app; if redirected to the login page, the session is gone.
-    try{
-      await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'domcontentloaded',timeout:20000});
-    }catch(e){ /* navigation hiccup — fall through and probe the DOM */ }
-    try{
-      // Login page (login.pestpac.com) shows the company-key field input[name="uid"].
-      if(/login\.pestpac\.com/i.test(page.url())) return true;
-      const uid = await page.$('input[name="uid"]');
-      if(uid) return true;
-      const user = await page.$('input[name="username"]');
-      if(user) return true;
-    }catch(e){}
-    return false;
-  }
-  const _logoutDeadline = Date.now() + 150000; // 150s total budget across all attempts
-  let _attempt=0;
-  while(!_loggedOut && Date.now() < _logoutDeadline){
-    _attempt++;
+  // Phase 3 NEW LOGOUT — one URL (Mode=Logout), verify login page, 5s total budget,
+  // every URL touched is logged. Replaces the 4-step dance + 150s budget (KB item 34;
+  // the 28-stuck-sessions incident). Frankware has no Mode=Logout: single flow-step
+  // attempt with a 5s cap, then a URL probe.
+  let _loggedOut=false, _attempt=0;
+  if((creds.platform||'pestpac')==='frankware'){
     try{
       await Promise.race([
         runStep(page, LOGOUT_STEP, {}, creds),
-        new Promise((_,rej)=>setTimeout(()=>rej(new Error('logout step timeout')), 30000)),
+        new Promise((_,rej)=>setTimeout(()=>rej(new Error('logout step timeout')), 5000)),
       ]);
-    }catch(e){ /* logout click/nav failed this attempt — verification below decides */ }
-    try{ _loggedOut = await _isLoggedOut(); }catch(e){ _loggedOut=false; }
-    emit({type:'logout-attempt', attempt:_attempt, ok:_loggedOut});
-    if(_loggedOut) break;
-    // Brief backoff, then re-attempt (a fresh login may have happened, or the menu wasn't ready).
-    await page.waitForTimeout(2000).catch(()=>{});
+    }catch(e){}
+    _attempt=1;
+    let _u=''; try{ _u=page.url(); }catch(e){}
+    _loggedOut = /\/login/i.test(_u);
+    emit({type:'logout-attempt', attempt:1, ok:_loggedOut, url:_u});
+  } else {
+    const _r = await logoutFromPestPac(page);
+    _loggedOut=_r.ok; _attempt=_r.attempts;
+    for(let _i=0;_i<_r.urls.length;_i++){
+      emit({type:'logout-attempt', attempt:_i+1, ok:(_i===_r.urls.length-1)&&_r.ok, url:_r.urls[_i]});
+    }
   }
   emit({type:'logged-out', ok:_loggedOut, attempts:_attempt});
   flush();
