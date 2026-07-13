@@ -9,6 +9,15 @@ const https = require('https');
 const { app } = require('electron');
 const { spawn } = require('child_process');
 
+// Phase 3 CRASH SAFETY: pidfile of live worker processes. If the coordinator dies
+// (crash, force-close), the next launch reads this file and kills any survivors whose
+// PID still resolves to our own executable name (guards against PID reuse).
+const PIDFILE = () => path.join(app.getPath('userData'), 'worker-pids.json');
+function coordPidfileRead(){ try { return JSON.parse(fs.readFileSync(PIDFILE(), 'utf8')).pids || []; } catch(e){ return []; } }
+function coordPidfileWrite(pids){ try { fs.writeFileSync(PIDFILE(), JSON.stringify({ pids })); } catch(e){} }
+function coordPidfileAdd(pid){ if(!pid) return; const p = coordPidfileRead(); if(!p.includes(pid)) p.push(pid); coordPidfileWrite(p); }
+function coordPidfileRemove(pid){ if(!pid) return; coordPidfileWrite(coordPidfileRead().filter(x => x !== pid)); }
+
 module.exports = function wireCoordinator(ctx) {
 const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, encStore, readAllProfiles, readConfig, getBundledChromiumPath, licenseReaderLogout, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper, buildOnceFlowRunner } = ctx;
 
@@ -243,7 +252,7 @@ async function coordSpawnWorker(){
     diagnosticCapture: !!COORD.diagnosticCapture,
     captureDir: captureDir,
     captureBucketCap: COORD.captureBucketCap || 10,
-    runContext: { runId: workerId, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
+    runContext: { runId: workerId, poolId: COORD.poolId, jobId, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
   });
   fs.writeFileSync(runnerPath, script);
 
@@ -257,6 +266,7 @@ async function coordSpawnWorker(){
   COORD.workers.set(workerId, entry);
 
   const proc = spawn(process.execPath, [runnerPath, job.spreadsheetPath, credPath], { stdio:['pipe','pipe','pipe'], env });
+  coordPidfileAdd(proc.pid);
   entry.process = proc;
 
   proc.stderr.on('data', d => runnerLogStream.write(`[STDERR] ${String(d)}\n`));
@@ -268,6 +278,7 @@ async function coordSpawnWorker(){
     });
   });
   proc.on('close', code => {
+    coordPidfileRemove(proc.pid);
     runnerLogStream.write(`[${new Date().toISOString()}] worker exited code=${code}\n`);
     runnerLogStream.end();
     const w = COORD.workers.get(workerId);

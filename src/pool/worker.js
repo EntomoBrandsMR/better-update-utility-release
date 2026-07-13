@@ -86,6 +86,21 @@ let _responseBuffer = [];
 const _captureBucketCount = {};
 const _readline = require('readline');
 const _rl = _readline.createInterface({ input: process.stdin, terminal: false });
+// Phase 3 CRASH SAFETY: stdout to a dead parent raises EPIPE as a stream 'error' —
+// swallow it so a dying coordinator cannot crash the worker mid-row.
+process.stdout.on('error', function(){});
+// If the coordinator dies our stdin closes. Finish the current row, SPILL its result
+// to disk (nobody is journaling anymore), log out, exit. Launch recovery merges
+// journal-spill-*.jsonl into the pool journal before offering Resume.
+let _coordinatorDead = false;
+const SPILL_PATH = (function(){
+  try { return path.join(path.dirname(path.dirname(LOG_PATH)), 'journal-spill-' + (RUN_CONTEXT.runId || ('w'+process.pid)) + '.jsonl'); }
+  catch(e){ return null; }
+})();
+function spillResult(row, status, error){
+  if(!SPILL_PATH) return;
+  try { fs.appendFileSync(SPILL_PATH, JSON.stringify({ poolId: RUN_CONTEXT.poolId||null, j: RUN_CONTEXT.jobId||null, r: row, s: status, error: error||'', ts: new Date().toISOString() }) + '\n'); } catch(e){}
+}
 _rl.on('line', function(line){
   let msg; try{ msg = JSON.parse(line); }catch(e){ return; }
   if(!msg || !msg.cmd) return;
@@ -116,6 +131,12 @@ _rl.on('line', function(line){
       if(_pendingPauseResolve){ const r = _pendingPauseResolve; _pendingPauseResolve = null; r(msg.cmd); }
       break;
   }
+});
+_rl.on('close', function(){
+  _coordinatorDead = true;
+  _draining = true;
+  if(_pendingBatchResolve){ const r=_pendingBatchResolve; _pendingBatchResolve=null; r({cmd:'drain'}); }
+  if(_pendingPauseResolve){ const r=_pendingPauseResolve; _pendingPauseResolve=null; r('auto'); }
 });
 function requestBatch(){
   emit({type:'request-batch'});
@@ -574,6 +595,8 @@ async function main(){
         scrape: row.__scrape||null,
         errorCategory: res.errorCategory || '', phase: res.phase || '',
         dialogs: row.__dialogs || null});
+      // Phase 3 CRASH SAFETY: the emit above went nowhere if the coordinator is dead.
+      if(_coordinatorDead) spillResult(rowNum, res.status, res.error||'');
       // v2.2.3 Session 3C (A1): diagnostic capture. Awaited inline so the next row's listeners
       // don't overwrite buffers mid-serialization. Bucket-capped + best-effort: a slow capture
       // can add ~1-3s per captured row, but is bounded by CAPTURE_BUCKET_CAP per bucket. The

@@ -124,3 +124,34 @@ function coordMostRecentJournalPoolId(){
 
 return { coordJournalPath, coordJournalMetaPath, coordJournalDonePath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordMarkJournalDone, coordMostRecentJournalPoolId };
 };
+
+// Phase 3 CRASH SAFETY: merge worker spill files (journal-spill-*.jsonl, written when a
+// worker outlived a dead coordinator) into their pool journals, so Resume sees those rows
+// as completed instead of re-running them. Standalone: needs no COORD. Idempotent-ish:
+// each spill file is deleted after a successful merge.
+module.exports.mergeSpillFiles = function mergeSpillFiles(){
+  const dir = app.getPath('userData');
+  let merged = 0;
+  let files = [];
+  try { files = fs.readdirSync(dir).filter(f => /^journal-spill-.*\.jsonl$/.test(f)); } catch(e){ return 0; }
+  for (const f of files) {
+    const full = path.join(dir, f);
+    try {
+      const lines = fs.readFileSync(full, 'utf8').split(/\r?\n/).filter(Boolean);
+      const byPool = {};
+      for (const line of lines) {
+        let o; try { o = JSON.parse(line); } catch(e){ continue; }
+        if (!o || !o.poolId || o.r === undefined) continue;
+        (byPool[o.poolId] = byPool[o.poolId] || []).push(JSON.stringify({ j: o.j || null, r: o.r, s: o.s }));
+      }
+      for (const poolId of Object.keys(byPool)) {
+        const jp2 = path.join(dir, 'pool-journal-pool' + poolId + '.jsonl');
+        if (!fs.existsSync(jp2)) continue; // no journal to merge into — leave the spill alone
+        fs.appendFileSync(jp2, byPool[poolId].join('\n') + '\n');
+        merged += byPool[poolId].length;
+      }
+      fs.unlinkSync(full);
+    } catch(e){ /* leave the spill file for the next attempt */ }
+  }
+  return merged;
+};

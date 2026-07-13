@@ -1583,7 +1583,40 @@ if (!gotLock) {
     }
   });
   app.setAppUserModelId('com.entomobands.buu-2');
-  app.whenReady().then(() => {
+  // Phase 3 CRASH SAFETY: launch recovery. (1) Kill orphaned workers from a dead run —
+// pidfile entries whose PID still resolves to our own exe name (guards PID reuse; the
+// workers run under the app's exe via ELECTRON_RUN_AS_NODE, which is exactly why they
+// blend into Task Manager and lingered invisibly — D1). (2) Merge worker spill files
+// into pool journals before any Resume offer, so crash-finished rows are not re-run.
+function sweepOrphanWorkers() {
+  try {
+    const pf = path.join(app.getPath('userData'), 'worker-pids.json');
+    let pids = [];
+    try { pids = (JSON.parse(fs.readFileSync(pf, 'utf8')).pids || []); } catch (e) {}
+    if (pids.length) {
+      const { execSync } = require('child_process');
+      const me = path.basename(process.execPath).toLowerCase();
+      let killed = 0;
+      for (const pid of pids) {
+        if (!pid || pid === process.pid) continue;
+        try {
+          const out = execSync('tasklist /FI "PID eq ' + pid + '" /FO CSV /NH', { encoding: 'utf8', timeout: 5000 });
+          const mm = out.match(/^"([^"]+)"/m);
+          if (mm && mm[1].toLowerCase() === me) { process.kill(pid); killed++; }
+        } catch (e) {}
+      }
+      if (killed) console.log('[crash-safety] killed ' + killed + ' orphaned worker process(es) from a previous run');
+    }
+    try { fs.writeFileSync(pf, JSON.stringify({ pids: [] })); } catch (e) {}
+  } catch (e) {}
+  try {
+    const merged = require('./journal').mergeSpillFiles();
+    if (merged) console.log('[crash-safety] merged ' + merged + ' spilled row result(s) into pool journals');
+  } catch (e) {}
+}
+
+app.whenReady().then(() => {
+  sweepOrphanWorkers();
     createWindow();
     // v2.2.3 Session 3E (B4): log retention. Runs asynchronously after window creation so a
     // slow disk doesn't delay startup. Reads logRetentionDays from config; default 30.
