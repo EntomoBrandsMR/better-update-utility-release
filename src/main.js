@@ -821,14 +821,9 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseP
   let meta;
   try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch(e){ return { ok:false, error:'Could not read resume metadata: '+e.message }; }
 
-  // Load completed rows per job from the journal.
-  // v2.2.3 Session 3A (A3): journal now mixes completion records {j,r,s} with dialog records
-  // {t:'dlg',j,r,m,k,ts}. Only completion records count toward completedRows on resume.
-  const completedByJob = {};
-  if (fs.existsSync(jp)) {
-    const lines = fs.readFileSync(jp, 'utf8').split('\n');
-    for (const line of lines){ if(!line) continue; try{ const rec=JSON.parse(line); if(rec.t === 'dlg') continue; (completedByJob[rec.j]=completedByJob[rec.j]||new Set()).add(rec.r); }catch{} }
-  }
+  // R1: completed rows come from the ONE journal reader (ok-wins; requeued lines are
+  // in-flight, not completions — those rows re-run on resume, which is the safe default).
+  const completedByJob = require('./journal').readJournalRowStates(poolId).completedByJob;
 
   // Rebuild COORD.jobs from meta, pre-seeding completedRows.
   // v2.2.2 Session 2F: also restores per-job retry knobs (Session 2E) so resume preserves the

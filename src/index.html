@@ -1210,9 +1210,14 @@ async function offerPoolResume(p){
   const done = p.jobs.reduce((s,j)=>s+j.completed,0);
   const when = p.startedAt ? new Date(p.startedAt).toLocaleString() : 'unknown time';
   const jobLines = p.jobs.map(j=>'  • '+j.label+': '+j.completed.toLocaleString()+'/'+j.total.toLocaleString()+' done, '+j.remaining.toLocaleString()+' left').join('\n');
+  // R1: name rows that were in-flight when the run died — they may have partially run
+  // in PestPac before the crash, so resuming re-runs them (possible double-action).
+  const inflight = (p.inFlightRows && p.inFlightRows.length)
+    ? '\n\n⚠ In-flight at crash — these rows may have PARTIALLY run and WILL RE-RUN on resume (verify by eye after): '+p.inFlightRows.join(', ')
+    : '';
   const msg = 'Unfinished worker pool found (started '+when+').\n\n'
     + done.toLocaleString()+' of '+total.toLocaleString()+' rows completed · '+p.totalRemaining.toLocaleString()+' remaining\n\n'+jobLines
-    + '\n\nResume it now? (Cancel lets you discard or ignore it.)';
+    + inflight + '\n\nResume it now? (Cancel lets you discard or ignore it.)';
   if(confirm(msg)){
     const n = Math.max(1, Math.min(100, parseInt((document.getElementById('poolWorkerCount')||{}).value)||4));
     const elastic = !!(document.getElementById('poolElastic')||{}).checked;

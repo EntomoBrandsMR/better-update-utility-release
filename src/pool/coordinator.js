@@ -68,16 +68,11 @@ function coordFindOrphanPools(){
     try{ if(fs.existsSync(coordJournalDonePath(poolId))) continue; }catch(e){}
     try{
       const meta = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-      // Count completed rows per job from the journal.
-      const completedByJob = {};
+      // R1: one reader, one precedence rule (journal.js). Requeued rows are in-flight,
+      // not completions — surfaced so the resume prompt can name them.
+      const st = require('../journal').readJournalRowStates(poolId);
+      const completedByJob = st.completedByJob;
       const jp = coordJournalPath(poolId);
-      if(fs.existsSync(jp)){
-        const lines = fs.readFileSync(jp, 'utf8').split('\n');
-        // v2.2.3 Session 3A (A3): journal now mixes completion records {j,r,s} with dialog
-        // records {t:'dlg',j,r,m,k,ts}. Only completion records (no `t` field) count toward
-        // completedRows. Skip dialogs here so they don't mark uncompleted rows as done.
-        for(const line of lines){ if(!line) continue; try{ const rec = JSON.parse(line); if(rec.t === 'dlg') continue; (completedByJob[rec.j] = completedByJob[rec.j] || new Set()).add(rec.r); }catch{} }
-      }
       let totalRemaining = 0;
       const jobs = meta.jobs.map(j => {
         const completed = (completedByJob[j.jobId] || new Set()).size;
@@ -86,7 +81,7 @@ function coordFindOrphanPools(){
         return { jobId: j.jobId, label: j.label, total: j.totalRows, completed, remaining };
       });
       // Only surface pools that actually have remaining work.
-      if(totalRemaining > 0) out.push({ poolId, startedAt: meta.startedAt, jobs, totalRemaining });
+      if(totalRemaining > 0) out.push({ poolId, startedAt: meta.startedAt, jobs, totalRemaining, inFlightRows: st.inFlight.map(x => x.r).sort((a,b)=>a-b).slice(0, 50) });
       else { // fully done but never cleaned — remove the stale files
         try{ fs.unlinkSync(jp); }catch{} try{ fs.unlinkSync(path.join(dir, f)); }catch{}
       }
@@ -302,6 +297,10 @@ async function coordSpawnWorker(){
           if(cjob.completedRows && cjob.completedRows.has(r)) continue;
           if(alreadyRequeued.has(r)) continue;
           cjob.requeue.push(r);
+          // R1: every row is guaranteed a terminal journal line — a crash can no longer
+          // leave silence. When the row re-runs, its later line wins (requeued is not a
+          // completion for the reader).
+          coordJournalAppend(w.jobId, r, 'error', { reason: 'requeued', error: 'worker died mid-row; row returned to the queue' });
         }
         if(cjob.requeue.length) cjob.finished = false;
       }
@@ -433,7 +432,12 @@ function coordHandleWorkerMessage(workerId, msg){
     }
     case 'row-result': {
       // v2.0.0 resume: journal FIRST (durable record precedes in-memory counters).
-      coordJournalAppend(w.jobId, msg.row, msg.status);
+      // R1: pass the rich reason/error/duration through to the journal. Worker-side
+      // classifier supplies errorCategory; user-stop rows map to reason 'manual'.
+      coordJournalAppend(w.jobId, msg.row, msg.status, {
+        reason: msg.errorCategory || (/Stopped by user/.test(msg.error||'') ? 'manual' : undefined),
+        error: msg.error, durationMs: msg.durationMs,
+      });
       if(job && job.completedRows) job.completedRows.add(msg.row);
       w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else w.err++;
       if(job){ job.done++; if(msg.status==='ok'||msg.status==='ok (retry)') job.ok++; else job.err++; }
