@@ -11,17 +11,49 @@ async function runStep(page, step, row, creds){
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
     case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:NAV_TIMEOUT}); break;}
-    case 'click':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); await loc.first().click(); if(step.waitFor){ const wl=await findLocator(page,step.waitFor,{timeout:SELECTOR_TIMEOUT}); await wl.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); } break; }
-    case 'ifclick':{
-      // v2.2.9: conditional click — if the element shows up within the presence window, click it;
-      // otherwise continue silently. Branch taken is recorded on the row (__stepNote) so it lands
-      // in the step trail + fieldsWritten — never silent (per TODO item, minimal slice of IF logic).
-      const presenceMs=Math.max(250,Math.round(parseFloat(step.presenceSec||1)*1000));
-      let loc=null;
-      try{ loc=await findLocator(page,step.selector,{timeout:presenceMs}); }catch(e){ loc=null; }
-      if(loc){ try{ await loc.first().waitFor({state:'visible',timeout:1000}); }catch(e){ loc=null; } }
-      if(loc){ await loc.first().click(); row.__stepNote='clicked'; }
-      else { row.__stepNote='not present'; }
+    // R2 UNIFIED CLICK — three sections, all defaulted to pre-R2 behavior:
+    //   When to act: 'appears' (default) | 'enabled'; waitTimeoutSec overrides the
+    //     pool-wide SELECTOR_TIMEOUT for THIS step when set (kills the hardcoded 30s).
+    //   If not found: 'error' (default) | 'skip' — skip probes within presenceSec
+    //     (default 1s) and continues, recording the branch on the row (absorbs If-click).
+    //   After click: 'none' (default) | 'element' | 'url' | 'load'. Legacy step.waitFor
+    //     is honored as after='element', so pre-R2 Click steps run unchanged unmigrated.
+    case 'ifclick': step = Object.assign({}, step, { type:'click', notFound:'skip' }); // legacy alias — falls through
+    case 'click':{
+      const waitMs = (step.waitTimeoutSec != null && step.waitTimeoutSec !== '' && isFinite(parseFloat(step.waitTimeoutSec)))
+        ? Math.max(250, Math.round(parseFloat(step.waitTimeoutSec)*1000)) : SELECTOR_TIMEOUT;
+      const notFound = step.notFound === 'skip' ? 'skip' : 'error';
+      let loc = null;
+      if(notFound === 'skip'){
+        const presenceMs = Math.max(250, Math.round(parseFloat(step.presenceSec||1)*1000));
+        try{ loc = await findLocator(page, step.selector, {timeout: presenceMs}); }catch(e){ loc = null; }
+        if(loc){ try{ await loc.first().waitFor({state:'visible', timeout: Math.max(1000, presenceMs)}); }catch(e){ loc = null; } }
+        if(!loc){ row.__stepNote = 'not present'; break; }
+        row.__stepNote = 'clicked';
+      } else {
+        loc = await resolveStepLocator(page, step, r, waitMs);
+        await loc.first().waitFor({state:'visible', timeout: waitMs});
+      }
+      if(step.whenMode === 'enabled'){
+        const _end = Date.now() + waitMs;
+        while(true){
+          let _en = false; try{ _en = await loc.first().isEnabled(); }catch(e){}
+          if(_en) break;
+          if(Date.now() >= _end) throw new Error('element never became enabled within '+waitMs+'ms');
+          await page.waitForTimeout(150);
+        }
+      }
+      await loc.first().click();
+      const after = step.after || (step.waitFor ? 'element' : 'none');
+      if(after === 'element'){
+        const _sel = step.afterSelector || step.waitFor;
+        if(_sel){ const wl = await findLocator(page, _sel, {timeout: waitMs}); await wl.first().waitFor({state:'visible', timeout: waitMs}); }
+      } else if(after === 'url'){
+        const _u0 = page.url();
+        await page.waitForURL(u => u.toString() !== _u0, {timeout: waitMs});
+      } else if(after === 'load'){
+        await page.waitForLoadState('load', {timeout: waitMs});
+      }
       break;
     }
     case 'type':{ const loc=await resolveStepLocator(page,step,r); await loc.first().waitFor({state:'visible',timeout:SELECTOR_TIMEOUT}); if(step.clearFirst!=='no') await loc.first().fill(''); const val=r(step.value); const delay=parseInt(step.typeDelay||0); if(delay>0) await loc.first().pressSequentially(val,{delay:delay}); else await loc.first().fill(val); break; }

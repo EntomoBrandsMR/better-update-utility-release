@@ -96,11 +96,13 @@ async function findInContainer(page, containerSel, matchText, targetSel, mode, o
   throw new Error('Find-by-text found no container matching "' + matchText + '" (mode: ' + (mode||'contains') + ') in selector "' + containerSel + '" after ' + timeoutMs + 'ms. Containers seen during scan: ' + lastSeenCount + '. Check the match text/column value and the container selector.');
 }
 
-async function resolveStepLocator(page, step, resolveFn){
+// R2: optional per-step timeout (ms). Omitted -> pool-wide SELECTOR_TIMEOUT (pre-R2 behavior).
+async function resolveStepLocator(page, step, resolveFn, timeoutMs){
+  const _t = (timeoutMs && isFinite(timeoutMs)) ? timeoutMs : SELECTOR_TIMEOUT;
   if (step.findByText) {
     var matchResolved = resolveFn(step.matchText || '');
-    return await findInContainer(page, step.containerSel || '', matchResolved, step.selector || '', step.matchMode || 'contains', {timeout: SELECTOR_TIMEOUT});
+    return await findInContainer(page, step.containerSel || '', matchResolved, step.selector || '', step.matchMode || 'contains', {timeout: _t});
   }
-  return await findLocator(page, step.selector, {timeout: SELECTOR_TIMEOUT});
+  return await findLocator(page, step.selector, {timeout: _t});
 }
 if (typeof module !== "undefined" && module.exports) { module.exports = { findLocator, matchesText, findInContainer, resolveStepLocator }; }
