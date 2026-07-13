@@ -32,7 +32,9 @@ const COORD = {
   journalStream: null,  // append-only results journal (one line per completed row)
   usedProfileIds: new Set(), // v2.1.1: profiles used this run — the logout sweep logs in with one
   sweepRunning: false,
-  possibleLeaks: [],   // Phase 3: workerIds that exited without VERIFIED logout (license may be held)  // v2.1.1: guards against double-spawning the logout sweeper
+  possibleLeaks: [],   // Phase 3: workerIds that exited without VERIFIED logout (license may be held)
+  stopping: false,     // Phase 3 (D2): pool-stop in progress — gates stall-guard respawn + prompt sweep
+  _stopSweepFired: false,  // v2.1.1: guards against double-spawning the logout sweeper
   setupScope: 'per-worker', // v2.1.1 (#8): 'per-worker' | 'per-job' | 'global'
   startMode: 'run-all',     // v2.2.2 Session 2C: 'run-all' | 'step' | 'step-row'. Forces
                             // workers=1 batch=1 when 'step'/'step-row'. Transitions via
@@ -282,6 +284,13 @@ async function coordSpawnWorker(){
     try { fs.unlinkSync(runnerPath); } catch {}
     try { fs.unlinkSync(credPath); } catch {}
     coordEmitStatus();
+    // Phase 3 (D2): when the pool is stopping, fire the logout sweep PROMPTLY once the
+    // last worker is gone instead of on the old fixed 184s clock. sweepRunning +
+    // _stopSweepFired guard doubles with the fuse-path backstop in pool-stop.
+    if(COORD.stopping && COORD.workers.size === 0 && !COORD._stopSweepFired){
+      COORD._stopSweepFired = true;
+      setTimeout(() => coordRunLogoutSweep('pool-stop'), 1500);
+    }
     // v2.2.1 LOSSLESS RECLAIM (stall guard): lazy reclaim relies on a live worker eventually
     // pulling the requeued rows. If THIS was the last worker and the pool is still active with
     // work outstanding (forward queue OR reclaimed requeue), nothing would pull it — the elastic
@@ -289,7 +298,7 @@ async function coordSpawnWorker(){
     // with rows unprocessed. Spawn exactly one worker to drain the remainder. coordPickJobForWorker
     // is requeue-aware, so this also covers requeue-only-remaining. Not aggressive: only fires at
     // zero live workers, and only while there is genuinely work left.
-    if(COORD.active && COORD.workers.size === 0 && coordPickJobForWorker()){
+    if(COORD.active && !COORD.stopping && COORD.workers.size === 0 && coordPickJobForWorker()){
       coordSpawnWorker().catch(e => { try{ console.error('[coord] stall-guard respawn failed:', e.message); }catch(_){} });
     }
     coordCheckComplete();

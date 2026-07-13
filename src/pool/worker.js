@@ -244,6 +244,9 @@ async function processRow(page, row, creds, rowNum){
       // Pause BEFORE each step in step mode. Dialog steps skip the pause — they register an
       // invisible page.on('dialog') listener; pausing here makes the user click Next on a no-op,
       // then immediately again on the real action. Same rationale as buildRunner (v1.3.0 Item 5).
+      // Phase 3 (D2): honor Stop at EVERY step boundary in every mode — abandon the row
+      // instead of grinding remaining steps/waits/retries for minutes after Stop.
+      if(currentMode === 'stop') throw new Error('__STOP__');
       if(currentMode === 'step' && s.type !== 'dialog'){
         const _preview = resolvePreview(s, row, creds);
         emit({type:'pause-step', row:rowNum, stepIndex:si, totalSteps:DATA_STEPS.length, step:_preview, mode:currentMode});
@@ -516,7 +519,7 @@ async function main(){
       catch(e){
         if(e && e.message === '__STOP__'){
           _draining = true;
-          emit({type:'row-result', row:rowNum, status:'stopped', error:'User stop during step-through', durationMs:Date.now()-t0});
+          emit({type:'row-result', row:rowNum, status:'error', error:'Stopped by user at a step boundary', durationMs:Date.now()-t0});
           _currentRowNum = null; _currentRow = null;
           break;
         }
@@ -547,7 +550,7 @@ async function main(){
           }catch(e){
             if(e && e.message === '__STOP__'){
               _draining = true;
-              emit({type:'row-result', row:rowNum, status:'stopped', error:'User stop during step-through', durationMs:Date.now()-t0});
+              emit({type:'row-result', row:rowNum, status:'error', error:'Stopped by user at a step boundary', durationMs:Date.now()-t0});
               _currentRowNum = null; _currentRow = null;
               break;
             }

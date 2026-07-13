@@ -609,6 +609,8 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
   const _cfgWorkers = parseInt(workerCount) || 1;
   COORD.startModeTarget = { workers: _cfgWorkers };
   COORD.possibleLeaks = [];
+  COORD.stopping = false;
+  COORD._stopSweepFired = false;
   // Reset per-run job counters in case jobs were staged then this is a restart.
   // v2.1.0 (#5): reset nextRow to the job's startRow (the step-by-step handoff cursor), not a
   // hard 1 — otherwise switching from manual stepping to the pool would re-run completed rows.
@@ -664,27 +666,32 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
 ipcMain.handle('pool-stop', async () => {
   if (!COORD.active) return { ok: true, stopped: 0 };
   if (COORD.licenseTimer) { clearInterval(COORD.licenseTimer); COORD.licenseTimer = null; }
+  COORD.stopping = true; // Phase 3 (D2): gates stall-guard respawn; arms the prompt logout sweep
   // Drain all jobs so any subsequent request-batch gets 'drain'.
   for (const job of COORD.jobs.values()) { job.nextRow = job.totalRows + 1; job.finished = true; }
   // Proactively send drain to idle/running workers.
   for (const w of COORD.workers.values()) {
+    // Phase 3 (D2): 'stop' abandons the current row at the next step boundary;
+    // 'drain' resolves any pending row request so idle workers exit immediately.
+    try { w.process.stdin.write(JSON.stringify({ cmd: 'stop' }) + '\n'); } catch {}
     try { w.process.stdin.write(JSON.stringify({ cmd: 'drain' }) + '\n'); } catch {}
     w.status = 'draining';
   }
-  // v2.1.0: force-kill backstop raised to 180s. With 90s page timeouts, a worker can need up
-  // to ~90s to finish its current row + ~30s to log out. 180s guarantees clean logout first;
-  // only workers still alive after that (genuinely hung) get killed.
+  // Phase 3 (D2): force-kill fuse is 10s (was 180s). Stop now abandons the current row
+  // at the next STEP boundary and logout is a 5s one-URL navigation, so a healthy worker
+  // exits in a few seconds. Anything still alive at 10s is wedged mid-action; kill it and
+  // let the logout sweep (fired promptly on last-worker-exit, backstopped below) free the
+  // session. A killed process cannot log itself out — the sweep is the guarantee layer.
   const _ids = Array.from(COORD.workers.keys());
   setTimeout(() => {
     for (const id of _ids) {
       const w = COORD.workers.get(id);
       if (w && w.process) { try { w.process.kill(); } catch {} }
     }
-    // v2.1.1: after the force-kill window, sweep the License Manager for any BUU sessions left
-    // behind by workers that were killed mid-logout (or had already crashed). This is the
-    // guarantee layer — a killed process can't log itself out, so the coordinator does it.
-    setTimeout(() => coordRunLogoutSweep('pool-stop'), 4000);
-  }, 180000);
+    // Backstop sweep for the killed-mid-action case (sweepRunning + _stopSweepFired
+    // make this a no-op when the prompt last-worker-exit sweep already ran).
+    setTimeout(() => coordRunLogoutSweep('pool-stop'), 2000);
+  }, 10000);
   coordEmitStatus();
   return { ok: true, stopped: COORD.workers.size };
 });
