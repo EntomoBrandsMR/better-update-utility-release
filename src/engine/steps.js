@@ -7,6 +7,18 @@
 // Extracted verbatim from buildPoolWorker template — Phase 2 refactor, 2026-07-10.
 // ifclick + dialog handlers intentionally survive Phase 2; they die with R2/R3.
 async function runStep(page, step, row, creds){
+
+  // R3: per-step dialog checkboxes on action steps. Armed BEFORE the action so even a
+  // dialog fired mid-action is handled; stays armed for the WHOLE step (chained dialogs);
+  // harmless when no dialog fires; never blocks; always disarmed in the finally below.
+  // Mutually exclusive accept/decline — accept wins if a hand-edited flow sets both.
+  let _r3Handler = null;
+  if ((step.dialogAccept || step.dialogDecline) && { click:1, type:1, select:1, checkbox:1, navigate:1 }[step.type]) {
+    const _accept = !!step.dialogAccept;
+    _r3Handler = async function(dialog){ try { if (_accept) await dialog.accept(); else await dialog.dismiss(); } catch (e) {} };
+    page.on('dialog', _r3Handler);
+  }
+  try {
   const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
@@ -157,6 +169,9 @@ async function runStep(page, step, row, creds){
     //            remove-extra-spaces / regex. Bug fix on port: the regex editMode previously
     //            referenced undefined "replace" — corrected to "replaceStr".
     case 'dialog':{ const matchText=step.dialogMatch||''; const dialogAction=step.dialogAction||'accept'; if(page._buuDialogListener){ try{page.off('dialog',page._buuDialogListener);}catch(_){} page._buuDialogListener=null; } const handler=async dialog=>{ try{page.off('dialog',handler);}catch(_){} if(page._buuDialogListener===handler)page._buuDialogListener=null; const msg=dialog.message(); const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase()); try{ if(matches){ if(dialogAction==='dismiss')await dialog.dismiss(); else await dialog.accept(); } else { await dialog.dismiss(); } }catch(e){} }; page._buuDialogListener=handler; page.on('dialog',handler); break; }
+  }
+  } finally {
+    if (_r3Handler) { try { page.off('dialog', _r3Handler); } catch (e) {} }
   }
 }
 if (typeof module !== "undefined" && module.exports) { module.exports = { runStep }; }
