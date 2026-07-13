@@ -283,25 +283,19 @@ Every extraction: validators green + scripts/_emit-worker-diff.js proves the ass
 worker EQUIVALENT to v2.2.9's emitted template (comments/blanks/export-guards ignored).
 Dev boot smoke-tested (electron . loads, window up, no stderr). Golden baseline frozen
 in docs/golden/ (READ ITS README — Test.xlsx is DO-NOT-RERUN as-is).
-**Phase 2 remaining:** (1) teardown — DONE: Run Log tab, unused step types, verify-after-
-action, circuit breaker (a36c9f2), batching→one-row-per-pull with retry filter moved
-coordinator-side (197140e; cfg markers now 15; requeue kept as crash safety; w.batch is
-a ≤1 container), skip status→ok|error on pool path (61e162c; dead pool-read-journal
-handler deleted), No-URL alert (500a3a9). REMAINING teardown = SINGLE-RUNNER REMNANT
-SWEEP only: index.html still carries the whole v1.x runner layer — checkpoint/orphan
-resume UI (~2390-2560, incl. resumeBtnSkipResume + resumeAction routing), old evt
-dispatcher (row-done/row-error/complete, runOk/runErr/runSkip, updateRunStats), the old
-parallel-runner workers Map (~2830-2970), setup-pips 'skipped' state, and their main.js
-IPC partners (find-orphan-checkpoints, start-run family — verify liveness before
-cutting; some checkpoint IPC may be shared with pool resume). Requires liveness analysis
-of onclick/ipc wiring — do it as ONE careful pass with fresh context.
-If-click + Handle Dialog ride R2/R3; old logout dance dies with Phase 3's new logout.
-Validators mandatory; equivalence prover retired (intentional divergence).
-(2) MATTHEW-RUN checkpoint golden run — never self-run live. Test Flow matchText flipped
-BILLING→BALFWD; Matthew fixed Test.xlsx. Compare rules in docs/golden/README.md — note
-post-teardown expected diffs: no skip statuses, no batch fields, retry rows filtered
-coordinator-side (no synthetic skip rows in journal).
-(3) flow audit DONE (fw-scrape-orders kept). Also: 2026-07-10 incident —
+**Phase 2 COMPLETE (refactor + teardown), commits f3cbe05..ce72031, all pushed, app
+boots after every commit.** Teardown final tally: Run Log tab, unused step types,
+verify-after-action, circuit breaker, batching→one-row (requeue kept as crash safety),
+skip→ok|error, No-URL alert, single-runner remnants (checkpoint/orphan UI, v1.3.4
+parallel-runner block, preload stubs). Deferred by design: If-click + Handle Dialog
+(die with R2/R3), old logout dance (dies with Phase 3 logout), the v2.2.2 preload SHIM
++ automation-event dispatcher + updateRunStats (LIVE — the simple Start button routes
+through them; they die in R11 when the renderer consumes pool events directly).
+Worker cfg markers: 15. Validators mandatory; equivalence prover retired.
+**GATE before Phase 3:** Matthew's checkpoint golden run (Test Flow, fixed Test.xlsx,
+2 workers, plain run) + compare via scripts/_compare-golden.js. Expected diffs
+documented in docs/golden/README.md (no skip statuses, no batch fields, retry filter
+coordinator-side). After it passes: Phase 3 per the locked order. Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
 
