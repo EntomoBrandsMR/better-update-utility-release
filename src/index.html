@@ -1014,7 +1014,6 @@ textarea { resize: vertical; min-height: 60px; }
     <div class="card-hd" style="margin-bottom:6px">
       <div id="runStatusMsg" style="font-size:14px;font-weight:700;color:var(--t2)">Idle</div>
       <div style="display:flex;gap:6px">
-        <button class="btn pri sm" id="retryFailedBtn" onclick="retryFailedRows()" style="display:none;background:var(--amber);color:#1a1a1a;font-weight:700">↺ Retry failed rows</button>
         <button class="btn sm" id="openLogBtn" onclick="openCurrentLog()" style="display:none">Open log file</button>
       </div>
     </div>
@@ -1152,7 +1151,6 @@ let runOk = 0, runErr = 0, runSkip = 0;
 // v1.2.5 item 2.12: track failed source-row indexes for the in-progress / just-completed run.
 // Uncapped (uncapped) - we need every failed row to
 // build the retry list. Each entry is just an integer (the source-row number, 1-based).
-let _failedRowIndexesThisRun = [];
 // Snapshot of the run config used for the just-completed run, so a Retry click reuses
 // the right spreadsheet/profile/settings without depending on UI state that may have
 // drifted (user edits steps, swaps spreadsheet, etc).
@@ -1187,9 +1185,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         else if (s.type === 'error') alert('Update check failed: ' + s.message);
         else if (s.type === 'not-configured') alert('Auto-update not configured yet.\nSee README.md for GitHub setup instructions.');
       });
-    }
-    if (API.onAutomationEvent) API.onAutomationEvent(handleRunEvent);
-    await loadProfiles();
+    }    await loadProfiles();
     // v2.2.7: restore the persistent "Write Frankware scrape to CSV" run-setting (default on).
     try { if (API.getConfig) { const _c = await API.getConfig(); const _chk = document.getElementById('scrapeCsvChk'); if (_chk) _chk.checked = (_c.scrapeCsvEnabled !== false); } } catch(e){}
     seedExampleSteps();
@@ -2075,236 +2071,16 @@ function updateStartModeHint(){
   else hint.textContent='Fire-and-forget through every row. No pauses. Use this once your flow is verified.';
 }
 
-async function startRun(){
-  // v1.3.0 Item 3: log entry state so a stuck-second-start reproduction shows what was true on click.
-  console.log('[run] startRun: called, isRunning=' + isRunning + ', currentRunId=' + currentRunId + ', _stopInProgress=' + _stopInProgress);
-  // v2.1.1 (#7): distinguish "pool is running" from "a single run is running". Building and
-  // saving flows while the worker pool runs is fully supported (the pool captured its own copy
-  // of the flow at submit time, so editing the builder doesn't affect running workers). Only the
-  // single-runner can't start a second concurrent run. Give a clear, specific message.
-  if(typeof coordActive!=='undefined' && coordActive){
-    alert('The worker pool is running.\n\nYou can keep building and saving flows while it runs — your edits won\u2019t affect the running workers. But the single-run mode can\u2019t start while the pool is active. Stop the pool first if you want to do a single manual run.');
-    return;
-  }
-  if(isRunning){alert('An automation is already running. Stop it first or wait for it to finish.');return;}
-  if(!activeProfileId){alert('Please select a login profile first.');go('profiles');return;}
-  if(!steps.length){alert('No steps defined. Build your flow first.');go('builder');return;}
-  if(!ssPath){alert('No spreadsheet loaded. Import data first.');go('import');return;}
-  // v1.2.5 item 2.6: non-blocking pre-run validation. User can run anyway, view issues, or cancel.
-  if(!preRunValidationGate()) return;
-  // v1.2.4 unified runner — read selected start mode. Verification modes force headless off.
-  const startMode=(document.getElementById('startModeSel')||{}).value||'step';
-  const effectiveHeadless = startMode==='run-all' ? !!headless : false;
-  const modeLabel = startMode==='step' ? 'Step through each step' : (startMode==='step-row' ? 'Step through each row' : 'Run all (no verification)');
-  const confirmed=confirm('Start automation?\n\n• Profile: ' + (profiles.find(p=>p.id===activeProfileId)||{}).name + '\n• Spreadsheet: ' + ssName + (ssRowCount>0?' ('+ssRowCount.toLocaleString()+' rows)':'') + '\n• Steps per row: ' + allSteps().length + '\n• Start mode: ' + modeLabel + '\n• Browser: ' + (effectiveHeadless?'Hidden (background)':'Visible') + '\n• Error handling: ' + (document.getElementById('errHandle')||{}).value + '\n\nThis will log into PestPac and begin entering data. Continue?');
-  if(!confirmed)return;
-  const flowJson=JSON.stringify({allSteps:allSteps(),config:{rowDelayMin:document.getElementById('rowDelayMin').value,rowDelayMax:document.getElementById('rowDelayMax').value,errHandle:document.getElementById('errHandle').value}});
-  runOk=0;runErr=0;runSkip=0;runRowsDone=0;runTotal=ssRowCount||0;runStartTime=Date.now();
-  // v2.1.0 (#5): fresh manual run — clear any handoff cursor from a previous session. It is
-  // repopulated as the user steps (pause-step / pause-row) and consumed by poolStageCurrent.
-  manualRowCursor = null;
-  // v1.2.5 item 2.12: reset failed-row tracker for this run + hide any retry button from a prior run.
-  _failedRowIndexesThisRun=[];
-  const _retryBtn=document.getElementById('retryFailedBtn');if(_retryBtn)_retryBtn.style.display='none';
-  updateRunStats(0,0,0,0);
-  startElapsedTicker();
-  { const _ll=document.getElementById('liveLog'); if(_ll) _ll.innerHTML=''; }
-  // v1.2.8: show phase indicator if flow has setup or teardown attached.
-  showPhaseIndicator(!!setupFlowId, !!teardownFlowId);
-  if(setupFlowId || teardownFlowId) updatePhaseIndicator('main','pending');
-  document.getElementById('runStatusMsg').textContent='Starting…';
-  document.getElementById('runStatusMsg').style.color='var(--blue)';
-  document.getElementById('runBtn').style.display='none';
-  document.getElementById('stopBtn').style.display='';
-  document.getElementById('nb-run').style.display='';
-  // Lock the start-mode picker while running.
-  const _smSel=document.getElementById('startModeSel'); if(_smSel)_smSel.disabled=true;
-  isRunning=true;
-  refreshRunBtn();
-  go('run');
-  if(!API.startAutomation){
-    alert('Internal error: automation API not available.\n\nThis usually means BUU was launched incorrectly. Try fully quitting and relaunching BUU.\n\nIf the problem persists, BUU may need to be reinstalled.');
-    addLiveLog('FATAL: API.startAutomation is undefined — preload bridge is missing.','err');
-    runStopped();
-    return;
-  }
-  {
-    const flow = JSON.parse(flowJson);
-    const runId = Date.now().toString();
-    currentRunId = runId;
-    const result = await API.startAutomation({
-      stepsJson: JSON.stringify(flow.allSteps||[]),
-      spreadsheetPath: ssPath,
-      profileId: activeProfileId,
-      headless: effectiveHeadless,
-      runId,
-      resumeFromRow: 0,
-      errHandle: document.getElementById('errHandle').value,
-      rowDelayMin: parseFloat(document.getElementById('rowDelayMin').value||0),
-      rowDelayMax: parseFloat(document.getElementById('rowDelayMax').value||0),
-      selectorTimeout: parseInt(document.getElementById('selectorTimeout').value||30),
-      pageLoadMode: document.getElementById('pageLoadMode').value||'domcontentloaded',
-      retryCount: parseInt(document.getElementById('retryCount').value||2),
-      reauthInterval: parseInt(document.getElementById('reauthInterval').value||120),
-      startMode: startMode,
-      // v1.2.8: forward flow-meta so main.js can resolve setup/teardown step arrays.
-      runMode: runMode,
-      setupFlowId: setupFlowId || null,
-      teardownFlowId: teardownFlowId || null
-    });
-    if(!result.ok){alert('Failed to start: ' + (result.error||'Unknown error'));runStopped();return;}
-    currentLogPath=result.logPath;
-    // v1.2.5 item 2.12: snapshot run config so a Retry click later doesn't depend on
-    // current UI state (which may drift if user edits steps or swaps spreadsheet).
-    _lastRunSnapshot = {
-      stepsJson: JSON.stringify(flow.allSteps||[]),
-      spreadsheetPath: ssPath,
-      spreadsheetName: ssName,
-      sourceRowCount: ssRowCount,
-      profileId: activeProfileId,
-      headless: effectiveHeadless,
-      errHandle: document.getElementById('errHandle').value,
-      rowDelayMin: parseFloat(document.getElementById('rowDelayMin').value||0),
-      rowDelayMax: parseFloat(document.getElementById('rowDelayMax').value||0),
-      selectorTimeout: parseInt(document.getElementById('selectorTimeout').value||30),
-      pageLoadMode: document.getElementById('pageLoadMode').value||'domcontentloaded',
-      retryCount: parseInt(document.getElementById('retryCount').value||2),
-      reauthInterval: parseInt(document.getElementById('reauthInterval').value||120),
-      startMode: startMode
-    };
-    document.getElementById('openLogBtn').style.display='';
-    document.getElementById('openLastLogBtn').style.display='';
-  }
-}
-// v1.2.5 item 2.12: retry the failed rows from the just-completed run.
-// Uses the snapshot taken at run start so we don't depend on UI state that may have
-// drifted (user editing steps, swapping spreadsheet, etc).
-async function retryFailedRows(){
-  if(isRunning){alert('A run is already in progress.');return;}
-  if(!_lastRunSnapshot){alert('No prior run to retry from.');return;}
-  if(!_failedRowIndexesThisRun.length){alert('No failed rows to retry.');return;}
-  const snap = _lastRunSnapshot;
-  // Source-spreadsheet integrity check: row count must match what the original run saw.
-  // If the user has edited the spreadsheet between runs, indexes may map to different
-  // rows entirely. Refuse rather than silently process the wrong data.
-  if(ssPath !== snap.spreadsheetPath){
-    alert('Spreadsheet path has changed since the original run.\n\nOriginal: '+snap.spreadsheetName+'\nCurrent: '+ssName+'\n\nRe-load the original spreadsheet to retry, or run a fresh full run.');
-    return;
-  }
-  if(ssRowCount !== snap.sourceRowCount){
-    alert('Spreadsheet row count has changed.\n\nOriginal run saw: '+snap.sourceRowCount.toLocaleString()+' rows\nCurrent file has: '+ssRowCount.toLocaleString()+' rows\n\nRow indexes may not map correctly. Refusing to retry. Re-load the original spreadsheet at its original size, or run a fresh full run.');
-    return;
-  }
-  const n = _failedRowIndexesThisRun.length;
-  const confirmed = confirm('Retry '+n+' failed row'+(n===1?'':'s')+'?\n\n• Spreadsheet: '+snap.spreadsheetName+'\n• Profile: '+(profiles.find(p=>p.id===snap.profileId)||{}).name+'\n• Settings: same as original run (selector timeout, retry count, etc.)\n• A separate log file will be written for this retry.\n\nFailed rows: '+_failedRowIndexesThisRun.slice(0,20).join(', ')+(n>20?', + '+(n-20)+' more':''));
-  if(!confirmed) return;
-  // Set up renderer state for the retry run, mirroring startRun()'s lead-in.
-  isRunning=true;
-  refreshRunBtn();
-  go('run');
-  if(!API.startAutomation){alert('Internal error: automation API not available.');isRunning=false;refreshRunBtn();return;}
-  const runId = Date.now().toString();
-  currentRunId = runId;
-  // Fresh stats for the retry run.
-  runOk=0;runErr=0;runSkip=0;runRowsDone=0;runStartTime=Date.now();
-  runTotal = n;  // for progress %, "n of n" rather than "n of source-total"
-  const failedRowsToRetry = _failedRowIndexesThisRun.slice();
-  // Reset trackers BEFORE calling startAutomation so the new run's row-error events
-  // populate a fresh _failedRowIndexesThisRun (in case the retry itself has failures).
-  _failedRowIndexesThisRun = [];
-  document.getElementById('retryFailedBtn').style.display='none';
-  updateRunStats(0,0,0,0);
-  startElapsedTicker();
-  { const _ll=document.getElementById('liveLog'); if(_ll) _ll.innerHTML=''; }
-  addLiveLog('Retry run starting — '+n+' rows','info');
-  document.getElementById('runStatusMsg').textContent='Starting retry…';
-  document.getElementById('runStatusMsg').style.color='var(--blue)';
-  document.getElementById('runBtn').style.display='none';
-  document.getElementById('stopBtn').style.display='';
-  document.getElementById('nb-run').style.display='';
-  const _smSel=document.getElementById('startModeSel');if(_smSel)_smSel.disabled=true;
-  const result = await API.startAutomation({
-    stepsJson: snap.stepsJson,
-    spreadsheetPath: snap.spreadsheetPath,
-    profileId: snap.profileId,
-    headless: snap.headless,
-    runId,
-    resumeFromRow: 0,
-    errHandle: snap.errHandle,
-    rowDelayMin: snap.rowDelayMin,
-    rowDelayMax: snap.rowDelayMax,
-    selectorTimeout: snap.selectorTimeout,
-    pageLoadMode: snap.pageLoadMode,
-    retryCount: snap.retryCount,
-    reauthInterval: snap.reauthInterval,
-    retryRowIndexes: failedRowsToRetry,
-    startMode: snap.startMode
-  });
-  if(!result.ok){alert('Failed to start retry: '+(result.error||'Unknown error'));runStopped();return;}
-  currentLogPath=result.logPath;
-  // Update the snapshot so a Retry-of-the-retry would also work, with the latest config.
-  _lastRunSnapshot = Object.assign({}, snap);  // same config, distinct object
-  document.getElementById('openLogBtn').style.display='';
-  document.getElementById('openLastLogBtn').style.display='';
-}
+// R11: the single-runner start path is gone with the shim. ONE run path: stage the
+// current flow as a pool job and run it (fresh-read, validation, confirm — all in
+// poolRunClick/poolStageCurrent).
+async function startRun(){ return poolRunClick(); }
 
-// v1.2.5 item 2.4: Single stop path. Both toolbar Stop and pause-panel Stop route here.
-// Uses clean-shutdown semantics (stdin command -> runner's __STOP__ sentinel -> finally block
-// runs with all the 2.7 checkpoint preservation logic). Disables Run button immediately so
-// a double-click during the stop window doesn't hit "already running."
-// v1.3.0 Item 3: added a 5-second safety timer. If the clean exit path doesn't fire runStopped()
-// (because the runner is hung, the close event got lost, etc.), the timer forces runStopped()
-// so the UI never gets permanently stuck on "Stopping…".
-let _stopInProgress = false;
-async function requestStop(){
-  console.log('[run] requestStop: called, isRunning=' + isRunning + ', _stopInProgress=' + _stopInProgress + ', currentRunId=' + currentRunId);
-  if(_stopInProgress) return;  // ignore double-clicks during stop window
-  if(!confirm('Stop the automation? The current row will finish, the log will be saved, and you can resume next launch from the Discard/Resume modal.')) return;
-  _stopInProgress = true;
-  // Disable both Stop buttons too — clicking them again won't hurt but is misleading.
-  document.getElementById('runBtn').disabled = true;
-  document.getElementById('stopBtn').disabled = true;
-  // v1.3.4 Item I (3/4): reveal the Force-stop escape hatch now that a clean stop is underway.
-  { const _fb = document.getElementById('forceStopBtn'); if(_fb){ _fb.style.display=''; _fb.disabled=false; } }
-  document.getElementById('runStatusMsg').textContent = 'Stopping… finishing current row (can take up to ~60s on a slow page). Use Force stop now if it hangs.';
-  document.getElementById('runStatusMsg').style.color = 'var(--amber)';
-  hidePause();
-  // v1.3.0 Item 3: safety timer. Capture currentRunId so a later run doesn't get its UI nuked
-  // by a stale timer if the user starts a new run within 5 seconds of stopping the previous one.
-  const _stopRunId = currentRunId;
-  // v1.3.4 Item I (2/4): clean stop waits for the current row to finish, which on a slow
-  // PestPac page can legitimately take ~60s. The old 5s timer fired mid-row and only reset
-  // the UI (runStopped) while the worker kept running — the exact "Stop did nothing" bug.
-  // New behavior: 90s window (comfortably past one slow row), and on timeout actually
-  // FORCE-KILL the worker (stopAutomation) before resetting the UI, so a truly hung row
-  // can never outlive the stop request.
-  setTimeout(async () => {
-    if (_stopInProgress && currentRunId === _stopRunId) {
-      console.warn('[run] requestStop: SAFETY TIMER fired after 90s — clean stop did not complete, force-killing worker.');
-      try { if (API.stopAutomation) await API.stopAutomation({ runId: _stopRunId }); } catch(e){}
-      runStopped();
-    }
-  }, 90000);
-  if(API.runControl){
-    console.log('[run] requestStop: sending runControl({cmd:stop})');
-    // v1.3.4 Item I (4/4): check the result. If the stdin write to the worker failed (e.g. the
-    // worker already exited, or the pipe is gone), the clean-stop command never landed — surface
-    // it and force-kill immediately rather than waiting out the 90s timer on a dead worker.
-    const _res = await API.runControl({runId: currentRunId, cmd: 'stop'});
-    if(_res && _res.ok === false){
-      console.warn('[run] requestStop: runControl stop failed ('+(_res.error||'unknown')+') — force-killing now.');
-      try { if(API.stopAutomation) await API.stopAutomation({ runId: currentRunId }); } catch(e){}
-      runStopped();
-    }
-  }else if(API.stopAutomation){
-    // Fallback for older preload bridges. Force-kill is worse but better than nothing.
-    console.log('[run] requestStop: runControl unavailable, falling back to stopAutomation (force-kill)');
-    await API.stopAutomation();
-    runStopped();  // synchronous fallback since force-kill bypasses the done event
-  }
-  // Don't call runStopped() here on the clean path — the runner's exit will fire
-  // 'done' or 'closed' and handleRunEvent will call runStopped() then.
-}
+// R11: retryFailedRows died with the single-runner. Rerun-file + journal reconciliation
+// is the real retry workflow; the R12 error strip surfaces failures live.
+// R11: the single-runner stop path is gone. Stop = pool stop (step-boundary abandon +
+// 10s fuse + prompt logout sweep — all Phase 3 behavior).
+async function requestStop(){ return stopWorkerPool(); }
 
 async function stopRun(){
   // v2.0.0: if the elastic pool is running, Stop drains the pool. Otherwise single-run stop.
@@ -2315,16 +2091,9 @@ async function paneStop(){return requestStop();}
 // v1.3.4 Item I (3/4): Force-stop escape hatch. Immediately kills the worker process
 // (force-kill via stopAutomation), abandoning the current row, then resets the UI. Used
 // when a clean stop is hanging on a dead page. Resume/retry recovers the abandoned row.
-async function forceStopNow(){
-  console.log('[run] forceStopNow: force-killing worker runId=' + currentRunId);
-  const _fb = document.getElementById('forceStopBtn'); if(_fb) _fb.disabled = true;
-  document.getElementById('runStatusMsg').textContent = 'Force-stopping…';
-  try { if(API.stopAutomation) await API.stopAutomation({ runId: currentRunId }); } catch(e){}
-  runStopped();
-}
-// v1.3.0 Item 11: togglePause() removed. The function called API.pauseRun / API.resumeRun
-// which were never exposed by preload.js, so the button never did anything. Stop already
-// provides graceful safe-boundary halt.
+// R11: force-stop = pool stop; Phase 3's 10s fuse already makes it near-immediate.
+async function forceStopNow(){ return stopWorkerPool(); }
+
 function runStopped(){
   // v1.3.0 Item 3: log entry state so we can see whether multiple callers raced into runStopped
   // (clean path + safety timer + done event, etc.). The idempotent short-circuit below covers it.
@@ -2367,161 +2136,10 @@ function runStopped(){
 let _currentOrphan=null;
 let _resumeResolver=null;
 
-function handleRunEvent(evt){
-  // v2.0.0: the elastic pool uses its OWN event channel (onPoolStatus), not automation-event.
-  // This handler now only serves single-run mode. (Legacy static-pool routing removed.)
-  if(evt.type==='start'){runTotal=evt.totalRows||0;updateRunStats(0,0,0,0);addLiveLog('Starting — '+runTotal.toLocaleString()+' rows','info');}
-  else if(evt.type==='log'){addLiveLog(evt.message,'info');}
-  else if(evt.type==='mode'){
-    currentRunMode=evt.mode||'run-all';
-    addLiveLog('Mode: '+currentRunMode,'info');
-    // v1.2.8: 'mode' fires right at the start of the row-loop phase. If a phase indicator
-    // is showing, mark Main as running here.
-    if(document.getElementById('phaseIndicator').style.display !== 'none'){
-      updatePhaseIndicator('main','running');
-    }
-  }
-  // v1.2.8: phase events from the three-phase pipeline. Each phase emits a phase-start,
-  // zero or more phase-step (one per step), then phase-end with status.
-  else if(evt.type==='phase-start'){
-    const phaseLabel = evt.phase === 'setup' ? 'Setup' : (evt.phase === 'teardown' ? 'Teardown' : evt.phase);
-    addLiveLog(phaseLabel + ' phase starting (' + (evt.stepCount||0) + ' steps)','info');
-    updatePhaseIndicator(evt.phase, 'running');
-    document.getElementById('runStatusMsg').textContent = phaseLabel + ' phase…';
-    document.getElementById('runStatusMsg').style.color = 'var(--blue)';
-  }
-  else if(evt.type==='phase-step'){
-    // Per-step granularity — useful during long setup/teardown flows. The phase-step event
-    // is informational; we log it but don't update major UI counters (those are per-row).
-    const phaseLabel = evt.phase === 'setup' ? 'Setup' : (evt.phase === 'teardown' ? 'Teardown' : evt.phase);
-    addLiveLog('  ' + phaseLabel + ' step ' + (evt.stepIndex+1) + '/' + evt.totalSteps + ': ' + (evt.stepLabel||evt.stepType),'info');
-  }
-  else if(evt.type==='phase-end'){
-    const phaseLabel = evt.phase === 'setup' ? 'Setup' : (evt.phase === 'teardown' ? 'Teardown' : evt.phase);
-    const durSec = evt.durationMs ? (Math.round(evt.durationMs/100)/10) + 's' : '';
-    if(evt.status === 'success'){
-      addLiveLog('✓ ' + phaseLabel + ' phase complete ' + (durSec ? '('+durSec+')' : ''),'ok');
-      updatePhaseIndicator(evt.phase, 'done');
-    } else {
-      addLiveLog('✗ ' + phaseLabel + ' phase failed at step ' + ((evt.stepIndex||0)+1) + ': ' + (evt.error||'unknown'),'err');
-      updatePhaseIndicator(evt.phase, 'failed');
-    }
-  }
-  else if(evt.type==='pause-step'){
-    currentRunMode='step';
-    // v2.1.0 (#5): paused BEFORE a step on this row — the row isn't finished, so a pool handoff
-    // should resume AT this row. Only data rows carry a cursor (setup/teardown have none).
-    if(evt.phase!=='setup' && evt.phase!=='teardown' && evt.rowIndex>0) manualRowCursor = evt.rowIndex;
-    showPause('step', evt);
-    // v1.3.0 Item 9: phase-aware live-log line (setup/teardown have no row).
-    if(evt.phase==='setup' || evt.phase==='teardown'){
-      addLiveLog('Paused before '+evt.phase+' step '+(evt.stepIndex+1)+'/'+evt.totalSteps,'warn');
-    } else {
-      addLiveLog('Paused before step '+(evt.stepIndex+1)+'/'+evt.totalSteps+' on row '+evt.rowIndex,'warn');
-    }
-  }
-  else if(evt.type==='pause-row'){
-    currentRunMode='step-row';
-    // v2.1.0 (#5): paused AFTER finishing this row — a pool handoff should resume at the NEXT row.
-    if(evt.rowIndex>0) manualRowCursor = evt.rowIndex + 1;
-    showPause('step-row', evt);
-    addLiveLog('Paused after row '+evt.rowIndex+'/'+evt.totalRows,'warn');
-  }
-  else if(evt.type==='stopped'){
-    addLiveLog('Stopped by user at row '+evt.rowIndex,'warn');
-    document.getElementById('runStatusMsg').textContent='Stopped at row '+evt.rowIndex;
-    document.getElementById('runStatusMsg').style.color='var(--red)';
-    hidePause();
-  }
-  else if(evt.type==='row-start'){
-    // v1.3.0 Item 3a: do NOT hidePause() here. Earlier code hid the pause panel on every
-    // row-start, then the next pause-step event re-mounted it — producing a visible flicker
-    // between steps in step mode. The next pause event updates the panel content correctly;
-    // hiding/re-showing serves no purpose. hidePause() is still called from the deliberate
-    // "leaving paused state" paths: paneNextStep, paneNextRow, paneRunAll, runStopped, and
-    // the stopped/fatal/complete event handlers.
-    addLiveLog('Row '+evt.rowIndex+'/'+evt.totalRows+': '+(evt.url||''),'info');
-    document.getElementById('runStatusMsg').textContent='Row '+evt.rowIndex+' of '+evt.totalRows.toLocaleString()+'…';
-    document.getElementById('runStatusMsg').style.color='var(--blue)';
-  }
-  else if(evt.type==='row-error'){runRowsDone=evt.rowIndex;runErr=evt.errs||runErr+1;runOk=evt.ok||runOk;runSkip=evt.skipped||runSkip;
-    // v1.2.5 item 2.10 (Phase 8): runner now passes evt.status so we can distinguish
-    // 'skip' (BUU gave up after retries / errHandle=skip) from 'error' (true failure).
-    // Pre-2.10, the runner emitted plain row-error and the renderer always wrote 'FAILED'
-    // even when the actual log entry said status='skip'. Cosmetic but confusing.
-    const _wasSkip = evt.status === 'skip';
-    const _liveLabel = _wasSkip ? 'SKIPPED' : 'FAILED';
-    const _liveCls = _wasSkip ? 'warn' : 'err';
-    const _liveIcon = _wasSkip ? '⊘' : '✗';
-    // Build a richer one-liner using the new error-attribution fields when present.
-    let _liveExtra='';
-    if(evt.errorCategory) _liveExtra += ' ['+evt.errorCategory+']';
-    if(evt.stepIndex) _liveExtra += ' '+evt.stepIndex;
-    addLiveLog(_liveIcon+' Row '+evt.rowIndex+' '+_liveLabel+_liveExtra+': '+evt.error,_liveCls);
-    updateRunStats(runRowsDone,runOk,runErr,runSkip);
-    // v1.2.5 item 2.12: track failed rows for the post-completion Retry button.
-    if(typeof evt.rowIndex==='number') _failedRowIndexesThisRun.push(evt.rowIndex);
-  }
-  else if(evt.type==='row-retry'){addLiveLog('↺ Retrying row '+evt.rowIndex+'…','warn');}
-  else if(evt.type==='dialog'){addLiveLog('Dialog: '+evt.message+' → '+evt.action,'warn');}
-  else if(evt.type==='log-error'){addLiveLog('⚠ Excel log save FAILED: '+(evt.message||'unknown')+' — check the logs folder. The run is continuing but its Excel report may be incomplete or absent.','err');}
-  else if(evt.type==='heartbeat'){
-    // Quiet "still alive" signal — updates status during slow phases (login, cleanup) but stays out of the way during active rows so row-start/row-done events keep status fresh.
-    if(evt.phase==='logging-in'){document.getElementById('runStatusMsg').textContent='Logging in…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
-    else if(evt.phase==='starting'){document.getElementById('runStatusMsg').textContent='Starting…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
-    else if(evt.phase==='cleanup'){document.getElementById('runStatusMsg').textContent='Logging out and saving…';document.getElementById('runStatusMsg').style.color='var(--blue)';}
-    // v1.2.5 item 2.11 (Phase 7): re-auth phases. Three reasons map to one user-visible message.
-    else if(evt.phase && evt.phase.indexOf('reauth-')===0){
-      const reason=evt.phase.replace('reauth-','');
-      const friendly = reason==='timer' ? 'session refresh (scheduled)'
-                     : reason==='connectivity-wait' ? 'session refresh (after long outage)'
-                     : reason==='detected-login-page' ? 'session refresh (login page detected)'
-                     : 'session refresh ('+reason+')';
-      document.getElementById('runStatusMsg').textContent='Re-authenticating — '+friendly+'…';
-      document.getElementById('runStatusMsg').style.color='var(--blue)';
-    }
-    // v1.2.5 item 2.8 (Phase 7): network-aware retry. Wait loop emits this every backoff iteration.
-    else if(evt.phase==='waiting-for-internet'){
-      const totalSec=Math.round((evt.totalWaitedMs||0)/1000);
-      const mins=Math.floor(totalSec/60), secs=totalSec%60;
-      const elapsedStr=mins>0?(mins+'m '+secs+'s'):(secs+'s');
-      document.getElementById('runStatusMsg').textContent='Waiting for internet (attempt '+(evt.attempt||1)+', '+elapsedStr+' so far)…';
-      document.getElementById('runStatusMsg').style.color='var(--amber)';
-      addLiveLog('Network probe failed — waiting '+Math.round((evt.waitMs||0)/1000)+'s before retry (total '+elapsedStr+' offline)','warn');
-    }
-  }
-  else if(evt.type==='fatal'){addLiveLog('FATAL: '+evt.error,'err');document.getElementById('runStatusMsg').textContent='Fatal error — stopped';document.getElementById('runStatusMsg').style.color='var(--red)';hidePause();runStopped();}
-  else if(evt.type==='complete'){
-    // v1.2.8: mark Main phase complete in the indicator (teardown phase will fire its own
-    // phase-end event after this on flows that have teardown). For flows without teardown,
-    // this is the final state for the Main pip.
-    if(document.getElementById('phaseIndicator').style.display !== 'none'){
-      updatePhaseIndicator('main','done');
-    }
-    const processed=evt.ok+evt.errs+evt.skipped;const msg='Complete — '+processed+' rows ('+evt.ok+' ok, '+evt.errs+' errors, '+evt.skipped+' skipped)';addLiveLog(msg,'ok');document.getElementById('runStatusMsg').textContent=msg;document.getElementById('runStatusMsg').style.color='var(--green)';document.getElementById('runProgBar').style.width='100%';document.getElementById('rs-pct').textContent='100%';hidePause();runStopped();if(evt.logPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';addLiveLog('Log: '+evt.logPath,'info');}
-    // v2.1.0 (#5): run reached the end — nothing left to hand off, so clear the cursor. (A user
-    // STOP mid-run preserves it, so they can hand the remaining rows to the pool.)
-    manualRowCursor = null;
-    // v1.2.5 item 2.12: surface a Retry-failed-rows button if any rows failed.
-    if(_failedRowIndexesThisRun.length > 0 && _lastRunSnapshot){
-      const btn=document.getElementById('retryFailedBtn');
-      if(btn){
-        btn.textContent='↺ Retry '+_failedRowIndexesThisRun.length+' failed row'+(_failedRowIndexesThisRun.length===1?'':'s');
-        btn.style.display='';
-      }
-    }
-  }
-  else if(evt.type==='done'||evt.type==='closed'){
-    // v1.3.0 Item 3: log the done/closed event so we can confirm it actually fires (the
-    // "can't run second flow" symptom is consistent with this never reaching the renderer).
-    console.log('[run] handleRunEvent: ' + evt.type + ' received, code=' + (evt.code||0) + ', isRunning=' + isRunning + ', runId=' + (evt.runId||'(none)'));
-    if(isRunning){addLiveLog('Process exited (code '+( evt.code||0)+')','warn');hidePause();runStopped();}
-    if(evt.logPath&&!currentLogPath){currentLogPath=evt.logPath;document.getElementById('openLogBtn').style.display='';document.getElementById('openLastLogBtn').style.display='';}
-  }
-}
-
-// ── PAUSE-STATE UI (v1.2.4) ─────────────────────────────────────────────────
-// kind: 'step' (pause-step event) | 'step-row' (pause-row event)
+// R11: handleRunEvent (the automation-event dispatcher) is GONE with the shim.
+// Its jobs now live where the data actually is: stats + status line come from
+// renderCoordStatus (pool-status), completion from onPoolComplete, pauses from
+// onPoolPause, per-row errors from onPoolRowError, phase display from pool-status.
 function showPause(kind, evt){
   const panel=document.getElementById('pausePanel');
   if(!panel) return;
@@ -2715,7 +2333,6 @@ let elapsedTicker=null;
 function fmtElapsed(ms){const sec=Math.floor(ms/1000);const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h>0?(h+'h '+m+'m'):(m>0?(m+'m '+s+'s'):(s+'s'));}
 function startElapsedTicker(){stopElapsedTicker();const el=document.getElementById('rs-elapsed');if(!el)return;elapsedTicker=setInterval(function(){if(!runStartTime){el.textContent='-';return;}el.textContent=fmtElapsed(Date.now()-runStartTime);},1000);}
 function stopElapsedTicker(){if(elapsedTicker){clearInterval(elapsedTicker);elapsedTicker=null;}}
-function updateRunStats(done,ok,err,skip){document.getElementById('rs-done').textContent=done.toLocaleString();document.getElementById('rs-ok').textContent=ok.toLocaleString();document.getElementById('rs-err').textContent=err.toLocaleString();if(runTotal>0){const pct=Math.round(done/runTotal*100);document.getElementById('runProgBar').style.width=pct+'%';document.getElementById('rs-pct').textContent=pct+'%';}if(done>0&&runStartTime&&runStartTime>0){const elapsed=(Date.now()-runStartTime)/1000/60;const rate=elapsed>0?Math.round(done/elapsed):0;document.getElementById('rs-rate').textContent=rate.toLocaleString();if(runTotal>0){const remaining=runTotal-done;const etaMin=rate>0?Math.round(remaining/rate):0;document.getElementById('rs-eta').textContent=etaMin>60?Math.round(etaMin/60)+'h':etaMin+'m';}}}
 function openCurrentLog(){if(currentLogPath&&API.openFile)API.openFile(currentLogPath);}
 
 // v2.0.0: true while the elastic coordinator pool is running (drives Stop routing).
@@ -3150,6 +2767,10 @@ if(API.onPoolPause) API.onPoolPause(function(p){
     paneSetPaused();
     addLiveLog('Pool: paused after row '+p.row, 'warn');
   }
+});
+// R11: direct per-row ERROR feed (ok rows stay counter-only — the D3 flood lesson).
+if(API.onPoolRowError) API.onPoolRowError(function(d){
+  addLiveLog('\u2717 Row '+d.row+' FAILED'+(d.reason?' ['+d.reason+']':'')+': '+(d.error||''),'err');
 });
 if(API.onPoolComplete) API.onPoolComplete(function(d){
   document.getElementById('runStatusMsg').textContent='Pool complete';
