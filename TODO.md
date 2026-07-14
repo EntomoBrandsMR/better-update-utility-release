@@ -305,13 +305,15 @@ merge at launch). PARKED: D5 needs Matthew's step-debugger pass over the add-not
 to name the trigger step (R3 makes handling deliberate regardless); D6 rides R11.
 **NEXT: PHASE 4 REBUILD** per the locked R-order. DONE: R1 journal rework (7efc1cc, offline
 unit test scripts/_test-r1-journal.js), R2 unified Click (5db7343; legacy waitFor honored,
-If-click migrated at load + engine alias backstop), R3 dialog checkboxes (068de03).
+If-click migrated at load + engine alias backstop), R3 dialog checkboxes (068de03),
+R4 adaptive scaling (bd52b4e; one eval timer composes license+pressure+manual;
+sequential ramp; live sliders; NOTE: on pool-RESUME the eval timer only starts when
+elastic was on — align to always-on at the R14 pool-settings pass).
 **R3 SPEC DEVIATION, flagged:** plan said Handle Dialog folds into the PREVIOUS step, but
 the step's real semantics arm the FUTURE dialog (dialog steps sit BEFORE their triggering
 clicks — verified in the golden flow). Migration folds FORWARD into the next action step;
 dialogMatch is dropped (per-step scoping replaces it). Engine keeps a legacy 'dialog'
-backstop case. NEXT UP: R4 (adaptive scaling sliders outside the status-rebuilt region),
-R5 step debugger (persistent pane per Matthew's 2026-07-10 note), R6+ per plan.
+backstop case. NEXT UP: R5 step debugger (persistent pane per Matthew's 2026-07-10 note), then R6+ per plan.
 Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
