@@ -976,8 +976,9 @@ textarea { resize: vertical; min-height: 60px; }
   </div>
   <div class="card" id="pausePanel" style="display:none;border-left:3px solid var(--amber)">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-      <div style="font-size:13px;font-weight:700;color:var(--amber);text-transform:uppercase;letter-spacing:.04em">⏸ Paused</div>
+      <div id="pauseTitle" style="font-size:13px;font-weight:700;color:var(--amber);text-transform:uppercase;letter-spacing:.04em">⏸ Paused</div>
       <div id="pausePos" style="font-size:12px;color:var(--t2)"></div>
+      <div id="pauseExec" style="font-size:12px;color:var(--t2);display:none;font-family:monospace"></div>
     </div>
     <div id="pausePreview" style="display:none;background:var(--bg2);padding:10px 12px;border-radius:6px;margin-bottom:10px">
       <div style="font-size:11px;color:var(--t3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">About to execute</div>
@@ -993,7 +994,11 @@ textarea { resize: vertical; min-height: 60px; }
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn pri" id="paneNextStepBtn" onclick="paneNextStep()" style="display:none">Next step →</button>
-      <button class="btn" id="paneNextRowBtn" onclick="paneNextRow()" style="display:none">Next row →</button>
+      <button class="btn sm" id="paneRedoStepBtn" onclick="paneCursorCmd('redo-step','Re-running previous step')" title="Re-execute the previously executed step, then pause here again">Redo step</button>
+      <button class="btn sm" id="paneLastStepBtn" onclick="paneCursorCmd('last-step','Moving cursor back')" title="Move the cursor back one step WITHOUT executing anything (page state is not undone)">Last step</button>
+      <button class="btn sm" id="paneSkipStepBtn" onclick="paneCursorCmd('skip-step','Skipping step')" title="Skip this step without executing it">Skip step</button>
+      <button class="btn sm" id="paneRestartRowBtn" onclick="paneCursorCmd('restart-row','Restarting row')" title="Restart this row from step 1 (page state is not reset - your eyes decide if that is safe)">Restart row</button>
+      <button class="btn" id="paneNextRowBtn" title="Skip this row - it is recorded as an error (reason: manual)" onclick="paneNextRow()" style="display:none">Next row →</button>
       <button class="btn grn" onclick="paneRunAll()">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><polygon points="3,2 14,8 3,14"/></svg>
         Run all (release)
@@ -2545,16 +2550,72 @@ function showPause(kind, evt){
   document.getElementById('runStatusMsg').style.color='var(--amber)';
 }
 function hidePause(){
+  // R5: while a step session is live the pane is STICKY — legacy hide requests become
+  // the disabled/Running state instead of a vanishing panel (stalls were invisible).
+  if(stepPaneSticky) return;
   const panel=document.getElementById('pausePanel');
   if(panel) panel.style.display='none';
 }
 
+// R5: PERSISTENT step pane. On 2.2.9 the pane vanished while a step executed and only
+// reappeared at the next pause — a stalled step was indistinguishable from a dead run.
+// Now: sticky from step-mode launch until Stop/Release; buttons DISABLE during execution;
+// a live status line + elapsed ticker names what is running so stalls show at a glance.
+let stepPaneSticky = false;
+let lastPauseEvt = null;
+let _paneExecTimer = null, _paneExecStart = 0, _paneExecMsg = '';
+const PANE_BTN_IDS = ['paneNextStepBtn','paneRedoStepBtn','paneLastStepBtn','paneSkipStepBtn','paneRestartRowBtn','paneNextRowBtn','paneRunAllBtn'];
+function paneButtonsEnabled(on){
+  for(const id of PANE_BTN_IDS){ const b=document.getElementById(id); if(b){ b.disabled=!on; b.style.opacity=on?'':'0.45'; } }
+}
+function paneSetExecuting(msg){
+  const panel=document.getElementById('pausePanel'); if(panel) panel.style.display='';
+  const t=document.getElementById('pauseTitle'); if(t){ t.textContent='▶ Running'; t.style.color='var(--blue)'; }
+  const ex=document.getElementById('pauseExec');
+  _paneExecMsg = msg || 'Executing';
+  _paneExecStart = Date.now();
+  let ctx = '';
+  if(lastPauseEvt && lastPauseEvt.step){
+    ctx = ' · step '+((lastPauseEvt.stepIndex||0)+1)+'/'+(lastPauseEvt.totalSteps||'?')+' · '+(lastPauseEvt.step.type||'')+(lastPauseEvt.step.selector?(' · '+String(lastPauseEvt.step.selector).slice(0,60)):'');
+  }
+  if(ex){ ex.style.display=''; ex.textContent=_paneExecMsg+ctx+' (0s)'; }
+  clearInterval(_paneExecTimer);
+  _paneExecTimer = setInterval(function(){
+    const e2=document.getElementById('pauseExec');
+    if(e2 && e2.style.display!=='none'){
+      const secs=Math.round((Date.now()-_paneExecStart)/1000);
+      e2.textContent=e2.textContent.replace(/ \(\d+s\)$/, '')+' ('+secs+'s)';
+      if(secs>=45) e2.style.color='var(--amber)'; // stall suspicion
+    }
+  }, 1000);
+  paneButtonsEnabled(false);
+}
+function paneSetPaused(){
+  const t=document.getElementById('pauseTitle'); if(t){ t.textContent='⏸ Paused'; t.style.color='var(--amber)'; }
+  const ex=document.getElementById('pauseExec'); if(ex){ ex.style.display='none'; ex.style.color='var(--t2)'; }
+  clearInterval(_paneExecTimer); _paneExecTimer=null;
+  paneButtonsEnabled(true);
+}
+function forceHidePause(){
+  stepPaneSticky=false;
+  clearInterval(_paneExecTimer); _paneExecTimer=null;
+  const panel=document.getElementById('pausePanel');
+  if(panel) panel.style.display='none';
+}
+async function paneCursorCmd(cmd, msg){
+  if(!(currentPoolPause && API.poolRunControl)) return;
+  paneSetExecuting(msg);
+  currentPoolPause = null;
+  await API.poolRunControl({cmd:cmd});
+}
+
 async function paneNextStep(){
-  // v2.2.2 Session 2C: pool step pauses route through poolRunControl. Single-runner pauses
-  // route through runControl as before. currentPoolPause is set by the onPoolPause subscriber
-  // below when a pool worker emits pause-step / pause-row.
+  // R5: pool step pauses keep the pane visible — flip to Running, disable, send.
   if (currentPoolPause && API.poolRunControl) {
+    paneSetExecuting('Executing step');
+    currentPoolPause = null;
     await API.poolRunControl({cmd:'next-step'});
+    return;
   } else if (API.runControl) {
     await API.runControl({runId:currentRunId, cmd:'next-step'});
   }
@@ -2563,7 +2624,10 @@ async function paneNextStep(){
 }
 async function paneNextRow(){
   if (currentPoolPause && API.poolRunControl) {
+    paneSetExecuting('Skipping row (recorded as error, reason: manual)');
+    currentPoolPause = null;
     await API.poolRunControl({cmd:'next-row'});
+    return;
   } else if (API.runControl) {
     await API.runControl({runId:currentRunId, cmd:'next-row'});
   }
@@ -2578,7 +2642,7 @@ async function paneRunAll(){
   }
   currentRunMode='run-all';
   currentPoolPause = null;
-  hidePause();
+  forceHidePause(); // R5: Release ends the step session — the sticky pane goes away
   addLiveLog('Released — running through to end','info');
 }
 // Note: paneStop is defined earlier (it routes to requestStop per v1.2.5 item 2.4).
@@ -2686,6 +2750,11 @@ const _smSel = document.getElementById('startModeSel');
 const startMode = (_smSel && _smSel.value) || 'run-all';
 const res = await API.poolStart({ workerCount:n, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier: parseInt((document.getElementById('poolScaleMult')||{}).value)||3 });
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
+
+  // R5: in step modes the pane appears AT LAUNCH — worker login was the first invisible
+  // stall on 2.2.9. Buttons stay disabled until the first pause arrives.
+  const _sm5=(document.getElementById('startModeSel')||{}).value;
+  if(_sm5==='step'||_sm5==='step-row'){ stepPaneSticky=true; paneSetExecuting('Starting — worker logging in'); }
   poolUIActive(true);
   go('run');
 }
@@ -2806,6 +2875,7 @@ function renderCoordStatus(st){
         if(st.licenseCap!=null) _t+=' \u00b7 lic cap '+st.licenseCap;
         _se.textContent=_t;
       } else _se.textContent='';
+      if(st && !st.active && stepPaneSticky) forceHidePause(); // R5: pool died/ended
     }
   }catch(e){}
   const grid=document.getElementById('workerGrid');
@@ -2975,7 +3045,10 @@ if(API.onPoolPause) API.onPoolPause(function(p){
       mode: p.mode,
       phase: '',              // pool pauses are always main-flow (not setup/teardown)
     };
+    stepPaneSticky = true;
+    lastPauseEvt = evt;
     showPause('step', evt);
+    paneSetPaused();
     addLiveLog('Pool: paused before step '+(p.stepIndex+1)+'/'+p.totalSteps+' on row '+p.row, 'warn');
   } else if (p.kind === 'row') {
     currentRunMode = 'step-row';
@@ -2985,12 +3058,16 @@ if(API.onPoolPause) API.onPoolPause(function(p){
       totalRows: 0,
       mode: p.mode,
     };
+    stepPaneSticky = true;
+    lastPauseEvt = evt;
     showPause('step-row', evt);
+    paneSetPaused();
     addLiveLog('Pool: paused after row '+p.row, 'warn');
   }
 });
 if(API.onPoolComplete) API.onPoolComplete(function(d){
   document.getElementById('runStatusMsg').textContent='Pool complete';
+  forceHidePause(); // R5: step session over
   // Phase 3: end-of-run license-leak summary.
   if(d && Array.isArray(d.possibleLeaks) && d.possibleLeaks.length){
     addLiveLog('WARNING: '+d.possibleLeaks.length+' worker(s) exited without verified logout - possible PestPac license leak: '+d.possibleLeaks.map(function(x){return String(x).slice(-6);}).join(', ')+'. The logout sweep is the failsafe; check License Manager if it reports lingering sessions.','warn');

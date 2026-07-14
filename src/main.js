@@ -722,7 +722,7 @@ ipcMain.handle('pool-stop', async () => {
 // configured worker target stored in COORD.startModeTarget at pool-start.
 ipcMain.handle('pool-run-control', async (_, { cmd }) => {
   if (!COORD.active) return { ok: false, error: 'Pool not running.' };
-  if (!['next-step','next-row','run-all','stop','mode'].includes(cmd) && !(cmd && cmd.startsWith('mode:'))) {
+  if (!['next-step','next-row','run-all','stop','mode','redo-step','last-step','skip-step','restart-row'].includes(cmd) && !(cmd && cmd.startsWith('mode:'))) {
     return { ok: false, error: 'Unknown command: ' + cmd };
   }
   // 'stop' here means user clicked Stop during a step pause. Treat it like pool-stop —

@@ -121,6 +121,12 @@ _rl.on('line', function(line){
         const r = _pendingPauseResolve; _pendingPauseResolve = null; r('auto');
       }
       break;
+    // R5 debugger cursor commands — all just release the pending pause with their name;
+    // the step loop interprets them.
+    case 'redo-step':
+    case 'last-step':
+    case 'skip-step':
+    case 'restart-row':
     case 'next-step':
     case 'next-row':
     case 'run-all':
@@ -259,8 +265,9 @@ async function processRow(page, row, creds, rowNum){
   const attempt=async()=>{
     done.length=0;
     row.__stepTrail = []; // reset on retry too
+    let _autoOnce = false; // R5: redo-step executes the repositioned step without pausing first
     for(let si=0;si<DATA_STEPS.length;si++){
-      const s=DATA_STEPS[si];
+      let s=DATA_STEPS[si];
       emit({type:'step', row:rowNum, step:si+1, totalSteps:DATA_STEPS.length});
       // Pause BEFORE each step in step mode. Dialog steps skip the pause — they register an
       // invisible page.on('dialog') listener; pausing here makes the user click Next on a no-op,
@@ -268,13 +275,28 @@ async function processRow(page, row, creds, rowNum){
       // Phase 3 (D2): honor Stop at EVERY step boundary in every mode — abandon the row
       // instead of grinding remaining steps/waits/retries for minutes after Stop.
       if(currentMode === 'stop') throw new Error('__STOP__');
-      if(currentMode === 'step' && s.type !== 'dialog'){
+      const _skipPause = _autoOnce; _autoOnce = false;
+      if(currentMode === 'step' && s.type !== 'dialog' && !_skipPause){
         const _preview = resolvePreview(s, row, creds);
         emit({type:'pause-step', row:rowNum, stepIndex:si, totalSteps:DATA_STEPS.length, step:_preview, mode:currentMode});
         const cmd = await waitForCommand();
         if(currentMode === 'stop') throw new Error('__STOP__');
         if(cmd === 'next-row') throw new Error('__NEXT_ROW__');
+        // R5 debugger cursor commands (we are paused BEFORE executing step si):
+        //   skip-step: do not execute si; pause at si+1
+        //   last-step: cursor back one, NO execution (no undo of page state); pause at si-1
+        //   restart-row: cursor to step 1, trail cleared; pause there (page state untouched)
+        //   redo-step: re-execute the previously executed step (si-1), then pause here again
+        if(cmd === 'skip-step'){
+          row.__stepTrail.push({ index: si, label: s._label || s.type, type: s.type, ok: true, note: 'skipped by user', ms: 0, ts: new Date().toISOString() });
+          emit({type:'log', message:'Step '+(si+1)+' skipped by user'});
+          continue;
+        }
+        if(cmd === 'last-step'){ si = Math.max(-1, si - 2); continue; }
+        if(cmd === 'restart-row'){ done.length = 0; row.__stepTrail = []; si = -1; emit({type:'log', message:'Row '+rowNum+' restarted from step 1 by user'}); continue; }
+        if(cmd === 'redo-step'){ si = Math.max(-1, si - 2); _autoOnce = true; continue; }
         // 'next-step' / 'run-all' / 'auto' fall through.
+        s = DATA_STEPS[si] || s; // rebind (cheap now; load-bearing once R5b live reload lands)
       }
       const _stepStart = Date.now();
       // v2.2.9: steps may leave a branch note on the row (ifclick: 'clicked' / 'not present').
