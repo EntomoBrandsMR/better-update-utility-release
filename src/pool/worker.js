@@ -457,7 +457,8 @@ async function captureRowDiagnostic(page, row, rowNum, res, durationMs){
 
 async function main(){
   const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
-  const ALL_ROWS = loadAllRows(SPREADSHEET);
+  // R15: spreadsheet-free once-flow — one synthetic empty row = one pass of the steps.
+  const ALL_ROWS = SPREADSHEET === '__none__' ? [{}] : loadAllRows(SPREADSHEET);
   // v2.2.4: regression fix from v2.2.2 — when the single-runner was killed and step-by-step
   // was routed through the pool worker, the worker kept its headless:true setting. That made
   // step-by-step useless because the user can't watch what's happening. Now we honor

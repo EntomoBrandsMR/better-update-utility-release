@@ -270,7 +270,7 @@ async function coordSpawnWorker(){
   const entry = { workerId, jobId, process: null, status: 'starting', batch: [], done:0, ok:0, err:0, startedAt: Date.now(), runnerLogStream, runnerPath, credPath, logPath };
   COORD.workers.set(workerId, entry);
 
-  const proc = spawn(process.execPath, [runnerPath, job.spreadsheetPath, credPath], { stdio:['pipe','pipe','pipe'], env });
+  const proc = spawn(process.execPath, [runnerPath, job.spreadsheetPath || '__none__', credPath], { stdio:['pipe','pipe','pipe'], env });
   coordPidfileAdd(proc.pid);
   entry.process = proc;
 

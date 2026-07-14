@@ -538,7 +538,10 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
 // 'pool-start' spawns workers to drain them. flowSteps is the full allSteps array.
 ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, resumeFromRow, retryCount, retryRowIndexes, reauthIntervalMin }) => {
   if (COORD.active) return { ok: false, error: 'Pool is already running. Stop it before staging new jobs.' };
-  const total = countRowsSync(spreadsheetPath);
+  // R15: spreadsheet-free once-flow — one synthetic pass; the pool runtime is reused
+  // unchanged with totalRows 1 (its single journal row is the summary log).
+  const sheetFree = !spreadsheetPath;
+  const total = sheetFree ? 1 : countRowsSync(spreadsheetPath);
   if (total <= 0) return { ok: false, error: 'Could not read rows from ' + spreadsheetPath };
   const jobId = 'job' + Date.now() + '-' + Math.floor(Math.random()*1000);
   // v2.1.0 (#5) step-by-step -> pool handoff: if the user was stepping through this sheet in
