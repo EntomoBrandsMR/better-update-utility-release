@@ -830,6 +830,10 @@ textarea { resize: vertical; min-height: 60px; }
         <input type="radio" name="runMode" value="once" id="runModeOnce" onchange="setRunMode('once')"/>
         <span>Once-flow (no spreadsheet)</span>
       </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer" title="Automation flows are meant for scheduled/unattended runs and save into flows\automation. Nothing is flagged automatically - only this checkbox.">
+        <input type="checkbox" id="flowAutomation" onchange="flowAutomation=this.checked"/>
+        <span>Automation flow</span>
+      </label>
     </div>
     <div id="composeFields" class="row" style="display:flex;gap:12px;flex-wrap:wrap">
       <div class="fg" style="flex:1;min-width:200px">
@@ -3340,6 +3344,8 @@ async function refreshOnceFlowDropdowns(){
   });
 }
 
+let flowAutomation = false; // R9: saves into flows\automation when checked
+
 async function saveFlow(){
   // R6: system tokens ({{TODAY}}/{{RUNDATE}}) WIN over same-named columns — warn loudly
   // at save time when the loaded sheet has a column that will be shadowed.
@@ -3353,6 +3359,7 @@ async function saveFlow(){
     version: '1.1',
     name: flowName || (document.getElementById('flowNotes').value.trim().replace(/[^a-z0-9_\-]/gi,'_').slice(0,40) || 'buu-flow'),
     runMode: runMode,
+    automation: flowAutomation, // R9
     setupFlowId: setupFlowId,
     teardownFlowId: teardownFlowId,
     steps,
@@ -3371,7 +3378,7 @@ async function saveFlow(){
   const json = JSON.stringify(flow, null, 2);
   if(API.saveFlow){
     const saveName = flow.name;
-    const p = await API.saveFlow({ json, name: saveName });
+    const p = await API.saveFlow({ json, name: saveName, sub: runMode === 'once' ? 'once' : (flowAutomation ? 'automation' : 'general') });
     if(p) {
       alert('Flow saved to ' + p);
       // v1.2.8: if we just saved a once-flow, it should appear in setup/teardown
@@ -3434,6 +3441,8 @@ async function loadFlow(){
   setupFlowId = data.setupFlowId || null;
   teardownFlowId = data.teardownFlowId || null;
   flowName = data.name || '';
+  flowAutomation = !!data.automation; // R9
+  { const _fa = document.getElementById('flowAutomation'); if (_fa) _fa.checked = flowAutomation; }
   steps = migrateLoadedSteps(data.steps || []);
   nid = steps.reduce((mx,s) => Math.max(mx, typeof s.id === 'number' ? s.id + 1 : 1), 1);
   const c = data.config || {};

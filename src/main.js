@@ -1323,11 +1323,14 @@ ipcMain.handle('archive-spreadsheet', async (_, { spreadsheetPath }) => {
   }
 });
 
-ipcMain.handle('save-flow', async (_, { json, name }) => {
+ipcMain.handle('save-flow', async (_, { json, name, sub }) => {
   const defaultName = (name || 'buu-flow') + '.json';
+  ensureFlowSubdirs(getFlowsDir());
+  // R9: default into the folder matching the flow type (once / automation / general).
+  const _sub = FLOW_SUBS.includes(sub) ? sub : 'general';
   const r = await dialog.showSaveDialog(mainWindow, {
     title: 'Save flow',
-    defaultPath: path.join(getFlowsDir(), defaultName),
+    defaultPath: path.join(getFlowsDir(), app.isPackaged ? _sub : '', defaultName), // dev saves flat (shared with installed app)
     filters: [{ name: 'BUU Flow', extensions: ['json'] }]
   });
   if (r.canceled) return null;
@@ -1359,9 +1362,12 @@ ipcMain.handle('read-flow-by-name', async (_, { name }) => {
   try {
     const safe = String(name || '').replace(/[\\/:*?"<>|]/g, '_');
     if (!safe) return null;
-    const fp = path.join(getFlowsDir(), safe + '.json');
-    if (!fs.existsSync(fp)) return null;
-    return { json: fs.readFileSync(fp, 'utf8'), mtime: fs.statSync(fp).mtimeMs, path: fp };
+    // R9: search the flow folders (flat root first for pre-R9 stragglers).
+    for (const sub of ['', 'general', 'automation', 'once']) {
+      const fp = path.join(getFlowsDir(), sub, safe + '.json');
+      if (fs.existsSync(fp)) return { json: fs.readFileSync(fp, 'utf8'), mtime: fs.statSync(fp).mtimeMs, path: fp };
+    }
+    return null;
   } catch (e) { return null; }
 });
 
@@ -1382,16 +1388,20 @@ ipcMain.handle('load-flow', async () => {
 // as errors — the renderer dropdown should always work even if a stray file is corrupt.
 ipcMain.handle('list-once-flows', async () => {
   const dir = getFlowsDir();
+  ensureFlowSubdirs(dir);
   let entries = [];
-  try {
-    entries = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.json'));
-  } catch (e) {
-    return { ok: false, error: 'Cannot read flows directory: ' + e.message, flows: [] };
+  // R9: the setup/teardown picker reads flows\once\ plus any flat stragglers at the
+  // root (pre-R9 saves, or files dropped in by hand).
+  for (const d of [path.join(dir, 'once'), dir]) {
+    let names = [];
+    try { names = fs.readdirSync(d).filter(f => f.toLowerCase().endsWith('.json')); } catch (e) { continue; }
+    for (const f of names) entries.push({ filename: f, dir: d });
   }
   const results = [];
   const errors = [];
-  for (const filename of entries) {
-    const fp = path.join(dir, filename);
+  for (const ent of entries) {
+    const filename = ent.filename;
+    const fp = path.join(ent.dir, filename);
     try {
       const raw = fs.readFileSync(fp, 'utf8');
       const data = JSON.parse(raw);
@@ -1637,6 +1647,32 @@ if (!gotLock) {
 // workers run under the app's exe via ELECTRON_RUN_AS_NODE, which is exactly why they
 // blend into Task Manager and lingered invisibly — D1). (2) Merge worker spill files
 // into pool journals before any Resume offer, so crash-finished rows are not re-run.
+// R9: flow folders. flows\once\ (setup/teardown once-flows), flows\automation\
+// (ONLY flows the user explicitly flags — nothing is auto-flagged), flows\general\
+// (everything else). Startup migration sorts flat legacy flows by runMode.
+const FLOW_SUBS = ['automation', 'once', 'general'];
+function ensureFlowSubdirs(dir) {
+  for (const s2 of FLOW_SUBS) { const p2 = path.join(dir, s2); if (!fs.existsSync(p2)) { try { fs.mkdirSync(p2, { recursive: true }); } catch (e) {} } }
+}
+function migrateFlowsIntoFolders() {
+  try {
+    // PACKAGED ONLY: dev shares userData with the installed app — never re-sort its live flat flows.
+    if (!app.isPackaged) return;
+    const dir = getFlowsDir();
+    ensureFlowSubdirs(dir);
+    const entries = fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.isFile() && e.name.toLowerCase().endsWith('.json'));
+    let moved = 0;
+    for (const e of entries) {
+      const fp = path.join(dir, e.name);
+      let sub = 'general';
+      try { const d = JSON.parse(fs.readFileSync(fp, 'utf8')); if (d.runMode === 'once') sub = 'once'; } catch (err) {}
+      const dst = path.join(dir, sub, e.name);
+      try { if (!fs.existsSync(dst)) { fs.renameSync(fp, dst); moved++; } } catch (err) {}
+    }
+    if (moved) console.log('[r9] sorted ' + moved + ' flat flow(s) into folders');
+  } catch (e) {}
+}
+
 // R8: one-time migration from the old %APPDATA%\buu-2 layout into the install root.
 // Copy (not move) so a rollback to a pre-R8 build still finds its data.
 function migrateAppDataToBuuRoot() {
@@ -1683,6 +1719,7 @@ function sweepOrphanWorkers() {
 
 app.whenReady().then(() => {
   migrateAppDataToBuuRoot();
+  migrateFlowsIntoFolders();
   sweepOrphanWorkers();
     createWindow();
     // v2.2.3 Session 3E (B4): log retention. Runs asynchronously after window creation so a
