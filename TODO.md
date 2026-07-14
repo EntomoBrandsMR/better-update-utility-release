@@ -313,13 +313,16 @@ elastic was on — align to always-on at the R14 pool-settings pass), R5 step de
 pane w/ elapsed ticker, flow-update at pauses, fresh disk read at launch; fixed R2's
 loadFlow-scoped migrateLoadedSteps), R6 tokens (3601de4; TODAY live / RUNDATE frozen
 at pool start, +/-N days, MM/DD/YYYY, system-wins + collision warning, green chips,
-9-case offline check), R7 pressAfter (ff6e2c6).
+9-case offline check), R7 pressAfter (ff6e2c6), R8 C:\BUU install layout (7468ce7;
+build verified, macros compiled; BEHAVIORAL upgrade-preserve test PENDING on the
+laptop/VM - do NOT run the unreleased installer on CORP-5QD5QJ4, it would hijack the
+live 2.2.9 install; test = install old build, add a flow, install new build, flow
+survives).
 **R3 SPEC DEVIATION, flagged:** plan said Handle Dialog folds into the PREVIOUS step, but
 the step's real semantics arm the FUTURE dialog (dialog steps sit BEFORE their triggering
 clicks — verified in the golden flow). Migration folds FORWARD into the next action step;
 dialogMatch is dropped (per-step scoping replaces it). Engine keeps a legacy 'dialog'
-backstop case. NEXT UP: R8 installer/C:\BUU layout (MUST build+test the upgrade-preserve
-before any release lands on real flows), then R9+ per plan.
+backstop case. NEXT UP: R9 flow folders, R10 flow-name UX, then R11+ per plan.
 Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
