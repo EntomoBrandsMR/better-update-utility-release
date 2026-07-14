@@ -43,7 +43,17 @@ const COORD = {
   sweepRunning: false,
   possibleLeaks: [],   // Phase 3: workerIds that exited without VERIFIED logout (license may be held)
   stopping: false,     // Phase 3 (D2): pool-stop in progress — gates stall-guard respawn + prompt sweep
-  _stopSweepFired: false,  // v2.1.1: guards against double-spawning the logout sweeper
+  _stopSweepFired: false,
+  // R4 adaptive scaling state
+  autoScale: true,       // pressure auto only ever reduces below the manual slider
+  manualTarget: 1,       // the Workers slider — manual wins over auto
+  scaleMultiplier: 3,    // cores × this = comfortable hardware cap (advisory; amber past it)
+  licenseCap: Infinity,  // set by coordLicenseScale each eval when elastic is on
+  _durBaseline: [],      // first 50 OK-row durations (median = baseline)
+  _durRolling: [],       // last 30 OK-row durations (ring)
+  _pressureHigh: 0,      // consecutive high-pressure evaluations
+  pressure: null,
+  capReason: 'manual',  // v2.1.1: guards against double-spawning the logout sweeper
   setupScope: 'per-worker', // v2.1.1 (#8): 'per-worker' | 'per-job' | 'global'
   startMode: 'run-all',     // v2.2.2 Session 2C: 'run-all' | 'step' | 'step-row'. Forces
                             // workers=1 batch=1 when 'step'/'step-row'. Transitions via
@@ -167,7 +177,7 @@ function _coordEmitStatusNow(){
   }));
   ctx.mainWindow.webContents.send('pool-status', {
     active: COORD.active,
-    desiredWorkers: COORD.desiredWorkers, liveWorkers: COORD.workers.size,
+    desiredWorkers: COORD.desiredWorkers, pressure: COORD.pressure, capReason: COORD.capReason, manualTarget: COORD.manualTarget, licenseCap: Number.isFinite(COORD.licenseCap) ? COORD.licenseCap : null, liveWorkers: COORD.workers.size,
     jobs, workers,
   });
 }
@@ -441,6 +451,12 @@ function coordHandleWorkerMessage(workerId, msg){
       if(job && job.completedRows) job.completedRows.add(msg.row);
       w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else w.err++;
       if(job){ job.done++; if(msg.status==='ok'||msg.status==='ok (retry)') job.ok++; else job.err++; }
+      // R4: collect OK-row durations for PestPac-pressure sensing.
+      if(String(msg.status||'').indexOf('ok')===0 && Number.isFinite(msg.durationMs)){
+        if(COORD._durBaseline.length < 50) COORD._durBaseline.push(msg.durationMs);
+        COORD._durRolling.push(msg.durationMs);
+        if(COORD._durRolling.length > 30) COORD._durRolling.shift();
+      }
       // v2.2.0: collect read-field values into a per-job buffer for the dedicated results workbook.
       if(job && msg.reads && typeof msg.reads === 'object'){
         if(!job.readResults) job.readResults = [];
@@ -659,7 +675,20 @@ async function coordScaleTo(target){
     // drain them even after nextRow has passed totalRows — otherwise lazily-reclaimed rows strand.
     let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, j.totalRows - (j.nextRow - 1)) + (j.requeue ? j.requeue.length : 0);
     const canSpawn = Math.min(target - live, Math.max(0, totalRemaining));
-    for (let i = 0; i < canSpawn; i++) await coordSpawnWorker();
+    // R4: strictly sequential ramp — each worker must log in and pull its first row
+    // (status 'running') before the next spawns. 90s per-worker ramp budget; a worker
+    // that dies or finishes during ramp releases the loop immediately.
+    for (let i = 0; i < canSpawn; i++) {
+      const _id = await coordSpawnWorker();
+      if (!_id) break;
+      const _t0 = Date.now();
+      while (Date.now() - _t0 < 90000) {
+        const _w = COORD.workers.get(_id);
+        if (!_w) break;
+        if (_w.status === 'running' || _w.status === 'shut-down' || _w.status === 'error' || _w.status === 'done') break;
+        await new Promise(rs => setTimeout(rs, 500));
+      }
+    }
   } else if (target < live) {
     let toRetire = live - target;
     for (const w of COORD.workers.values()) {
@@ -676,6 +705,46 @@ async function coordScaleTo(target){
 
 // Elastic license scaling: re-scrape free licenses and scale workers to (free - buffer),
 // also bounded by hardware. Runs on a timer when elastic mode is enabled.
+function _median(a){ if(!a || !a.length) return null; const s2=[...a].sort((x,y)=>x-y); const m=Math.floor(s2.length/2); return s2.length%2 ? s2[m] : (s2[m-1]+s2[m])/2; }
+
+// R4: the ONE evaluation path — composes license cap (elastic), PestPac pressure, and
+// the manual slider. Manual wins over auto: auto only ever reduces below the slider.
+// Pressure = median(last 30 OK rows)/median(first 50): >1.4 sustained 2 checks → drop
+// ~20% of live workers; 1.15–1.4 → hold; <1.15 → creep back +1 per tick (drop fast,
+// recover slow). Changes apply at row boundaries (scale-down drains; ramp is sequential).
+async function coordEvalScale(){
+  if(!COORD.active || COORD.stopping) return;
+  if(COORD.elasticParams){
+    try{ await coordLicenseScale(COORD.elasticParams.licenseProfileId, COORD.elasticParams.licenseBuffer, COORD.elasticParams.hwCap); }catch(e){}
+  } else COORD.licenseCap = Infinity;
+  let target = Math.max(1, Math.min(parseInt(COORD.manualTarget) || 1, MAX_WORKERS_HARD_CEILING));
+  let reason = 'manual';
+  if(Number.isFinite(COORD.licenseCap) && COORD.licenseCap < target){ target = COORD.licenseCap; reason = 'license'; }
+  if(COORD.autoScale){
+    const base = COORD._durBaseline.length >= 50 ? _median(COORD._durBaseline) : null;
+    const roll = COORD._durRolling.length >= 30 ? _median(COORD._durRolling) : null;
+    if(base && roll){
+      COORD.pressure = Math.round((roll / base) * 100) / 100;
+      if(COORD.pressure > 1.4) COORD._pressureHigh++; else COORD._pressureHigh = 0;
+      if(COORD._pressureHigh >= 2){
+        const dropped = Math.max(1, Math.floor(COORD.workers.size * 0.8));
+        if(dropped < target){ target = dropped; reason = 'pressure'; }
+        COORD._pressureHigh = 0;
+      } else if(COORD.pressure >= 1.15){
+        const hold = Math.max(1, COORD.workers.size);
+        if(hold < target){ target = hold; reason = 'pressure-hold'; }
+      } else if(COORD.workers.size < target){
+        const creep = COORD.workers.size + 1;
+        if(creep < target){ target = creep; reason = reason === 'manual' ? 'recovering' : reason; }
+      }
+    }
+  }
+  COORD.capReason = reason;
+  COORD.desiredWorkers = target;
+  await coordScaleTo(target);
+  coordEmitStatus();
+}
+
 async function coordLicenseScale(profileId, buffer, hwCap){
   if (!COORD.active) return;
   const BUF = (buffer != null) ? Math.max(0, parseInt(buffer)) : 10;
@@ -714,10 +783,11 @@ async function coordLicenseScale(profileId, buffer, hwCap){
     // free here is measured WHILE our workers are logged in, so it already reflects our usage.
     // The number of additional workers we can safely add is (free - buffer); never go below 1.
     const headroom = free - BUF;
-    const newTarget = Math.max(1, Math.min(COORD.workers.size + headroom, hwCap, MAX_WORKERS_HARD_CEILING));
+    const newTarget = Math.max(1, COORD.workers.size + headroom); // R4: pure license cap; composition happens in coordEvalScale
     if (ctx.mainWindow) ctx.mainWindow.webContents.send('pool-license-update', { freeLicenses: free, buffer: BUF, newTarget, liveWorkers: COORD.workers.size });
-    COORD.desiredWorkers = newTarget;
-    await coordScaleTo(newTarget);
+    // R4: license math yields a CAP; the ONE evaluation path (coordEvalScale) composes
+    // it with pressure + the manual slider and does the actual scaling.
+    COORD.licenseCap = newTarget;
   } catch (e) {
     try { if (browser) await browser.close(); } catch(_){}
     if (ctx.mainWindow) ctx.mainWindow.webContents.send('pool-license-update', { error: e.message });
@@ -808,5 +878,5 @@ async function coordRunOnceFlows(phase){
 
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────
 
-return { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows };
+return { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows, coordEvalScale };
 };

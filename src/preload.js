@@ -205,6 +205,7 @@ contextBridge.exposeInMainWorld('api', {
   poolStart:           (d)     => ipcRenderer.invoke('pool-start', d),
   poolStop:            ()      => ipcRenderer.invoke('pool-stop'),
   poolSetWorkers:      (d)     => ipcRenderer.invoke('pool-set-workers', d),
+  poolSetScaling:      (d)     => ipcRenderer.invoke('pool-set-scaling', d), // R4 live sliders
   poolStopWorker:      (d)     => ipcRenderer.invoke('pool-stop-worker', d),
   poolLogoutSweep:     ()      => ipcRenderer.invoke('pool-logout-sweep'),
   poolGetStatus:       ()      => ipcRenderer.invoke('pool-get-status'),

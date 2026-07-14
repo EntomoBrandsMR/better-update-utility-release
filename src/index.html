@@ -703,18 +703,22 @@ textarea { resize: vertical; min-height: 60px; }
        handlers as before — only the layout changed (inline strip -> stacked sidebar panel). -->
   <div class="sb-sec">Worker pool</div>
   <div id="poolControls" style="padding:4px 14px 8px;display:flex;flex-direction:column;gap:7px">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-      <span style="font-size:11px;color:var(--t3)">Workers</span>
-      <input id="poolWorkerCount" type="number" min="1" max="100" value="4" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="How many workers to start with. Use Auto to size it by hardware and free licenses.">
+    <div style="display:flex;flex-direction:column;gap:2px">
+      <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;color:var(--t3)">Workers</span><span id="poolWorkersVal" style="font-size:11px;font-weight:700;color:var(--t1)">4</span></div>
+      <input id="poolWorkerCount" type="range" min="1" max="150" value="4" step="1" style="width:100%" oninput="poolScalingLive()" title="Manual worker target. Manual wins over auto - auto-scale only ever reduces below this. Amber = beyond the comfortable hardware cap (deliberate overdrive).">
+    </div>
+    <div style="display:flex;flex-direction:column;gap:2px">
+      <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;color:var(--t3)" title="Comfortable hardware cap = CPU cores x this multiplier, bounded by free RAM. Advisory only.">HW multiplier</span><span id="poolScaleMultVal" style="font-size:11px;font-weight:700;color:var(--t1)">3</span></div>
+      <input id="poolScaleMult" type="range" min="1" max="8" value="3" step="1" style="width:100%" oninput="poolScalingLive()">
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
       <span style="font-size:11px;color:var(--t3)" title="Licenses to always keep free. Used by Auto and by Auto-scale.">Buffer</span>
       <input id="poolLicBuffer" type="number" min="0" max="100" value="10" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Keep this many PestPac licenses free (never consumed by workers)">
     </div>
     <label style="font-size:11px;color:var(--t3);display:flex;align-items:center;gap:5px" title="While running, periodically re-check free licenses and scale workers up or down automatically"><input id="poolElastic" type="checkbox" style="margin:0" onchange="poolToggleAutoScale()">Auto-scale</label>
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-      <span id="poolIntervalLbl" style="font-size:11px;color:var(--t3);opacity:.4" title="How often Auto-scale re-checks licenses (minutes)">Every (min)</span>
-      <input id="poolLicInterval" type="number" min="1" max="120" value="5" disabled style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px;opacity:.4" title="Auto-scale re-check interval (minutes)">
+    <div style="display:flex;flex-direction:column;gap:2px">
+      <div style="display:flex;align-items:center;justify-content:space-between"><span id="poolIntervalLbl" style="font-size:11px;color:var(--t3)" title="How often the pool re-evaluates scaling: license check (when Auto-scale is on) + PestPac pressure. Minutes.">Eval every (min)</span><span id="poolLicIntervalVal" style="font-size:11px;font-weight:700;color:var(--t1)">2</span></div>
+      <input id="poolLicInterval" type="range" min="1" max="10" value="2" step="1" style="width:100%" oninput="poolScalingLive()">
       <span id="poolIntervalUnit" style="display:none">min</span>
     </div>
     <div style="display:flex;gap:6px;margin-top:2px">
@@ -735,6 +739,7 @@ textarea { resize: vertical; min-height: 60px; }
       <label style="font-size:11px;color:var(--t3);display:flex;align-items:center;gap:5px"><input id="poolDiagCapture" type="checkbox" checked style="margin:0;cursor:pointer"> Diagnostic capture</label>
       <input id="poolDiagCap" type="number" min="1" max="1000" value="10" title="Captures per (status, error category) bucket" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:11px">
     </div>
+    <div id="scaleStatus" style="font-size:10px;color:var(--t3);line-height:1.5"></div>
     <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" style="width:100%" title="Start the worker pool">Run pool</button>
     <button class="tbtn" id="poolSweepBtn" onclick="poolLogoutSweepClick()" style="width:100%;margin-top:2px" title="Log out any BUU sessions still logged in on PestPac (License Manager). Use if you see stuck sessions.">Log out stuck sessions</button>
   </div>
@@ -1217,7 +1222,7 @@ async function offerPoolResume(p){
     + done.toLocaleString()+' of '+total.toLocaleString()+' rows completed · '+p.totalRemaining.toLocaleString()+' remaining\n\n'+jobLines
     + inflight + '\n\nResume it now? (Cancel lets you discard or ignore it.)';
   if(confirm(msg)){
-    const n = Math.max(1, Math.min(100, parseInt((document.getElementById('poolWorkerCount')||{}).value)||4));
+    const n = Math.max(1, Math.min(150, parseInt((document.getElementById('poolWorkerCount')||{}).value)||4));
     const elastic = !!(document.getElementById('poolElastic')||{}).checked;
     const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
     const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
@@ -2593,14 +2598,37 @@ function openCurrentLog(){if(currentLogPath&&API.openFile)API.openFile(currentLo
 // (Survivor of the v1.3.4 parallel-runner block removed in the Phase 2 teardown.)
 let coordActive = false;
 
+// R4: live scaling updates. Debounced push of slider values to the coordinator; applies
+// mid-run. The response carries the comfortable hardware cap for the amber styling.
+let _scaleT=null, _hwCapCache=null;
+function poolScalingLive(){
+  const w=document.getElementById('poolWorkerCount'), wl=document.getElementById('poolWorkersVal');
+  const m=document.getElementById('poolScaleMult'), ml=document.getElementById('poolScaleMultVal');
+  const iv=document.getElementById('poolLicInterval'), il=document.getElementById('poolLicIntervalVal');
+  if(wl&&w) wl.textContent=w.value;
+  if(ml&&m) ml.textContent=m.value;
+  if(il&&iv) il.textContent=iv.value;
+  poolScalingAmber();
+  clearTimeout(_scaleT);
+  _scaleT=setTimeout(async function(){
+    if(!API.poolSetScaling) return;
+    try{
+      const r=await API.poolSetScaling({ workers: parseInt((w||{}).value)||1, multiplier: parseInt((m||{}).value)||3, intervalMin: parseInt((iv||{}).value)||2 });
+      if(r&&r.hwCap){ _hwCapCache=r.hwCap; poolScalingAmber(); }
+    }catch(e){}
+  }, 300);
+}
+function poolScalingAmber(){
+  const w=document.getElementById('poolWorkerCount'), wl=document.getElementById('poolWorkersVal');
+  if(!w||!wl||!_hwCapCache) return;
+  const over=parseInt(w.value)>_hwCapCache;
+  wl.style.color=over?'var(--amber)':'var(--t1)';
+  wl.title=over?('Beyond the comfortable hardware cap ('+_hwCapCache+') - deliberate overdrive'):('Comfortable cap: '+_hwCapCache);
+}
 function poolToggleAutoScale(){
-  const on=!!(document.getElementById("poolElastic")||{}).checked;
-  const iv=document.getElementById("poolLicInterval");
-  const lbl=document.getElementById("poolIntervalLbl");
-  const unit=document.getElementById("poolIntervalUnit");
-  if(iv){ iv.disabled=!on; iv.style.opacity=on?"1":".4"; }
-  if(lbl) lbl.style.opacity=on?"1":".4";
-  if(unit) unit.style.opacity=on?"1":".4";
+  // R4: the eval interval applies to every pool (pressure sensing runs regardless);
+  // the Auto-scale checkbox now only controls the LICENSE part of each evaluation.
+  poolScalingLive();
 }
 
 async function poolFillAuto(){
@@ -2636,7 +2664,7 @@ async function poolFillAuto(){
 // jobs first via "Add job to pool" before clicking Run pool. Workers pull batches from main;
 // no row pre-division. Optional elastic license scaling.
 async function poolRunClick(){
-  const n = Math.max(1, Math.min(100, parseInt(document.getElementById('poolWorkerCount').value)||1));
+  const n = Math.max(1, Math.min(150, parseInt(document.getElementById('poolWorkerCount').value)||1));
   // If no jobs are staged yet, stage the current flow/sheet as a single job.
   const status = API.poolGetStatus ? await API.poolGetStatus() : {jobs:0};
   if(!status.jobs){
@@ -2656,7 +2684,7 @@ async function poolRunClick(){
 // it just doubles up so pool runs can also be stepped through.
 const _smSel = document.getElementById('startModeSel');
 const startMode = (_smSel && _smSel.value) || 'run-all';
-const res = await API.poolStart({ workerCount:n, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });
+const res = await API.poolStart({ workerCount:n, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier: parseInt((document.getElementById('poolScaleMult')||{}).value)||3 });
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
   poolUIActive(true);
   go('run');
@@ -2768,6 +2796,18 @@ async function stopWorkerPool(){
 // + aggregate strip from main's COORD state. Also renders the staged-jobs list (which shows
 // even when the pool is NOT running, so you can review/remove before launch).
 function renderCoordStatus(st){
+  // R4: live scaling readout — e.g. "8 live / target 12 (cap: license) · pressure 1.1".
+  try{
+    const _se=document.getElementById('scaleStatus');
+    if(_se){
+      if(st && st.active){
+        let _t=(st.workers?st.workers.length:0)+' live / target '+(st.desiredWorkers!=null?st.desiredWorkers:'?')+' (cap: '+(st.capReason||'manual')+')';
+        if(st.pressure!=null) _t+=' \u00b7 pressure '+st.pressure;
+        if(st.licenseCap!=null) _t+=' \u00b7 lic cap '+st.licenseCap;
+        _se.textContent=_t;
+      } else _se.textContent='';
+    }
+  }catch(e){}
   const grid=document.getElementById('workerGrid');
   const hd=document.getElementById('workerGridHd');
   // ── staged-jobs list (visible whenever jobs exist; remove buttons only when not running) ──

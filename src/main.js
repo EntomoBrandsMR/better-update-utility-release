@@ -33,15 +33,16 @@ const MAX_WORKERS_HARD_CEILING = 150;
 // (not the old 600MB guess — that was 6x too conservative and capped us near 30). We budget
 // ~150MB/worker for safety margin and use ~70% of free RAM so the machine stays responsive.
 // Workers are IO-bound (waiting on PestPac network), so the CPU factor is generous. Returns >=1.
-function computeHardwareCap() {
+// R4 "comfortable" hardware cap: min(cores × multiplier, floor(freeGB × 0.5 / 0.35GB)).
+// The multiplier is the tunable slider (default 3). ADVISORY only — the Workers slider
+// may deliberately exceed it (UI turns amber past the cap). Old formula (0.70×freeRAM/
+// 150MB, cores×6) retired with R4.
+function computeHardwareCap(mult) {
   try {
-    const freeBytes = os.freemem();
+    const freeGB = os.freemem() / (1024 * 1024 * 1024);
     const cpus = (os.cpus() || []).length || 2;
-    const perWorkerBytes = 150 * 1024 * 1024; // ~150MB per headless worker (measured ~103MB + margin)
-    const byRam = Math.floor((freeBytes * 0.70) / perWorkerBytes);
-    const byCpu = Math.max(1, Math.round(cpus * 6)); // ~6 workers/core; browser work is IO-bound, not CPU-bound
-    const cap = Math.max(1, Math.min(byRam, byCpu, MAX_WORKERS_HARD_CEILING));
-    return cap;
+    const m2 = (mult && isFinite(mult)) ? Math.max(1, mult) : 3;
+    return Math.max(1, Math.min(Math.round(cpus * m2), Math.floor((freeGB * 0.5) / 0.35), MAX_WORKERS_HARD_CEILING));
   } catch (e) {
     return 1; // safe fallback
   }
@@ -53,7 +54,7 @@ function getMaxConcurrentRuns() {
     const override = cfg && parseInt(cfg.maxWorkers);
     if (override && override > 0) return Math.min(override, MAX_WORKERS_HARD_CEILING);
   } catch (e) {}
-  return computeHardwareCap();
+  return computeHardwareCap(COORD.scaleMultiplier);
 }
 
 // Phase 2: coordinator (COORD + coord*) lives in src/pool/coordinator.js; wired at EOF.
@@ -300,7 +301,7 @@ ipcMain.handle('get-worker-caps', async () => {
   let cfgOverride = null;
   try { const c = readConfig(); if (c && parseInt(c.maxWorkers) > 0) cfgOverride = parseInt(c.maxWorkers); } catch(e){}
   return {
-    hardwareCap: computeHardwareCap(),
+    hardwareCap: computeHardwareCap(COORD.scaleMultiplier),
     configOverride: cfgOverride,
     effectiveCap: getMaxConcurrentRuns(),
     hardCeiling: MAX_WORKERS_HARD_CEILING,
@@ -593,7 +594,7 @@ ipcMain.handle('pool-clear-jobs', async () => {
 
 // Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
-ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap }) => {
+ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
@@ -639,12 +640,21 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
     try { await coordRunOnceFlows('setup'); coordMarkPhaseProgress('setupCompleted'); } catch(e) { console.error('[coord] setup once-flows error:', e.message); }
   }
 
-  const hwCap = computeHardwareCap();
+  const hwCap = computeHardwareCap(COORD.scaleMultiplier);
   // v2.2.2 Session 2C: in step/step-row mode, force a single worker regardless of configured
   // count. The configured count is stored in COORD.startModeTarget and applied when the user
   // clicks Run-All mid-step (via pool-run-control).
   const _modeWorkerCount = (COORD.startMode === 'step' || COORD.startMode === 'step-row') ? 1 : (parseInt(workerCount) || 1);
-  let target = Math.max(1, Math.min(_modeWorkerCount, MAX_WORKERS_HARD_CEILING, hwCap));
+  // R4: scaling state. The manual slider is authoritative (manual wins over auto) and
+  // may deliberately exceed the comfortable hardware cap — so hwCap is out of this clamp.
+  COORD.manualTarget = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING));
+  COORD.scaleMultiplier = Math.max(1, parseInt(scaleMultiplier) || 3);
+  COORD.autoScale = true;
+  COORD.licenseCap = Infinity;
+  COORD._durBaseline = []; COORD._durRolling = []; COORD._pressureHigh = 0;
+  COORD.pressure = null; COORD.capReason = 'manual';
+  COORD.hwCapAdvisory = computeHardwareCap(COORD.scaleMultiplier);
+  let target = Math.max(1, Math.min(_modeWorkerCount, MAX_WORKERS_HARD_CEILING));
   COORD.desiredWorkers = target;
 
   // Spawn initial workers (bounded by total rows available — no point spawning idle workers).
@@ -660,8 +670,11 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
   COORD.elasticParams = (elastic && licenseProfileId)
     ? { licenseProfileId, licenseBuffer, hwCap, intervalMs: Math.max(1, parseInt(licenseIntervalMin) || 5) * 60 * 1000 }
     : null;
-  if (elastic && licenseProfileId && COORD.startMode !== 'step' && COORD.startMode !== 'step-row') {
-    COORD.licenseTimer = setInterval(() => coordLicenseScale(licenseProfileId, licenseBuffer, hwCap), Math.max(1, parseInt(licenseIntervalMin) || 5) * 60 * 1000);
+  // R4: ONE evaluation timer — coordEvalScale composes license cap (when elastic),
+  // PestPac pressure, and the manual slider. Runs for every non-step pool so pressure
+  // sensing works without elastic. Still gated off in step modes (D4); Release starts it.
+  if (COORD.startMode !== 'step' && COORD.startMode !== 'step-row') {
+    COORD.licenseTimer = setInterval(() => coordEvalScale(), Math.max(1, parseInt(licenseIntervalMin) || 2) * 60 * 1000);
   }
   coordEmitStatus();
   return { ok: true, started: COORD.workers.size, desiredWorkers: COORD.desiredWorkers };
@@ -733,14 +746,14 @@ ipcMain.handle('pool-run-control', async (_, { cmd }) => {
     for (const w of COORD.workers.values()) {
       try { w.process.stdin.write(JSON.stringify({ cmd:'run-all' }) + '\n'); } catch {}
     }
-    // Phase 3 (D4): start the elastic license timer now that the user has Released.
-    if (COORD.elasticParams && !COORD.licenseTimer) {
-      const ep = COORD.elasticParams;
-      COORD.licenseTimer = setInterval(() => coordLicenseScale(ep.licenseProfileId, ep.licenseBuffer, ep.hwCap), ep.intervalMs);
+    // R4 (D4 gate): start the ONE evaluation timer now that the user has Released.
+    if (!COORD.licenseTimer) {
+      const _iv = (COORD.elasticParams && COORD.elasticParams.intervalMs) || 2 * 60 * 1000;
+      COORD.licenseTimer = setInterval(() => coordEvalScale(), _iv);
     }
     const tgt = (COORD.startModeTarget && COORD.startModeTarget.workers) || 1;
-    const hwCap = computeHardwareCap();
-    COORD.desiredWorkers = Math.max(1, Math.min(tgt, MAX_WORKERS_HARD_CEILING, hwCap));
+    COORD.manualTarget = Math.max(1, Math.min(tgt, MAX_WORKERS_HARD_CEILING));
+    COORD.desiredWorkers = COORD.manualTarget;
     await coordScaleTo(COORD.desiredWorkers);
     coordEmitStatus();
     return { ok: true, desiredWorkers: COORD.desiredWorkers };
@@ -763,10 +776,26 @@ ipcMain.handle('pool-logout-sweep', async () => {
 });
 
 // Set the worker target while running: spawn more, or mark surplus for retirement.
+// R4: live scaling-settings updates from the sidebar sliders. Applies mid-run; changes
+// take effect immediately via an evaluation when the pool is active (non-step).
+ipcMain.handle('pool-set-scaling', async (_, d) => {
+  d = d || {};
+  if (d.workers != null) COORD.manualTarget = Math.max(1, Math.min(MAX_WORKERS_HARD_CEILING, parseInt(d.workers) || 1));
+  if (d.autoScale != null) COORD.autoScale = !!d.autoScale;
+  if (d.multiplier != null) { COORD.scaleMultiplier = Math.max(1, parseInt(d.multiplier) || 3); COORD.hwCapAdvisory = computeHardwareCap(COORD.scaleMultiplier); }
+  if (d.intervalMin != null && COORD.licenseTimer) {
+    clearInterval(COORD.licenseTimer);
+    COORD.licenseTimer = setInterval(() => coordEvalScale(), Math.max(1, parseInt(d.intervalMin) || 2) * 60 * 1000);
+  }
+  if (COORD.active && COORD.startMode !== 'step' && COORD.startMode !== 'step-row') { try { await coordEvalScale(); } catch (e) {} }
+  return { ok: true, hwCap: COORD.hwCapAdvisory || computeHardwareCap(COORD.scaleMultiplier) };
+});
+
 ipcMain.handle('pool-set-workers', async (_, { workerCount }) => {
   if (!COORD.active) return { ok: false, error: 'Pool not running.' };
-  const hwCap = computeHardwareCap();
-  const target = Math.max(0, Math.min(parseInt(workerCount) || 0, MAX_WORKERS_HARD_CEILING, hwCap));
+  const hwCap = computeHardwareCap(COORD.scaleMultiplier);
+  const target = Math.max(0, Math.min(parseInt(workerCount) || 0, MAX_WORKERS_HARD_CEILING)); // R4: slider may exceed the (advisory) hardware cap
+  COORD.manualTarget = Math.max(1, target || 1);
   COORD.desiredWorkers = target;
   await coordScaleTo(target);
   return { ok: true, desiredWorkers: target, liveWorkers: COORD.workers.size };
@@ -874,14 +903,16 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseP
     console.log('[coord] resume: skipping setup (already completed in original session)');
   }
 
-  const hwCap = computeHardwareCap();
+  const hwCap = computeHardwareCap(COORD.scaleMultiplier);
   let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, j.totalRows - j.completedRows.size);
-  let target = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING, hwCap, Math.max(1, totalRemaining)));
+  let target = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING, Math.max(1, totalRemaining)));
+  COORD.manualTarget = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING));
+  COORD._durBaseline = []; COORD._durRolling = []; COORD._pressureHigh = 0; COORD.pressure = null; COORD.licenseCap = Infinity;
   COORD.desiredWorkers = target;
   for (let i = 0; i < target; i++) { await coordSpawnWorker(); }
 
   if (elastic && licenseProfileId) {
-    COORD.licenseTimer = setInterval(() => coordLicenseScale(licenseProfileId, licenseBuffer, hwCap), Math.max(1, parseInt(licenseIntervalMin) || 5) * 60 * 1000);
+    COORD.licenseTimer = setInterval(() => coordEvalScale(), Math.max(1, parseInt(licenseIntervalMin) || 2) * 60 * 1000);
   }
   coordEmitStatus();
   return { ok: true, resumed: true, totalRemaining, started: COORD.workers.size };
@@ -1653,4 +1684,4 @@ const __coordCtx = {
   get mainWindow() { return mainWindow; },
   get keytar() { return keytar; },
 };
-const { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows } = require('./pool/coordinator')(__coordCtx);
+const { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordEvalScale, coordRunOnceFlow, coordRunOnceFlows } = require('./pool/coordinator')(__coordCtx);
