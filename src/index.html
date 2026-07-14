@@ -2442,15 +2442,49 @@ function checkFlowColumnsAgainstSheet(){
 }
 
 // Stage the currently loaded flow+sheet+profile as one pool job.
+// R15: raw column-token collector — every {{token}} the DATA steps reference that is
+// NOT a system/credential token. Used to block spreadsheet-free launches with a list.
+function collectColumnTokensInFlow(){
+  const refs = new Set();
+  const scan = function(v){
+    if(typeof v !== 'string') return;
+    const mm = v.match(/\{\{([^}]+)\}\}/g) || [];
+    for(const t0 of mm){
+      const t = t0.slice(2,-2).trim();
+      if(/^CRED\./.test(t)) continue;
+      if(/^(TODAY|RUNDATE)([+-]\d+)?$/.test(t)) continue;
+      if(t==='RUNID' || t==='PROFILE_USERNAME') continue;
+      refs.add(t);
+    }
+  };
+  for(const s of steps){
+    if(s.locked) continue;
+    scan(s.url); scan(s.value); scan(s.selector); scan(s.matchText); scan(s.containerSel);
+    scan(s.waitFor); scan(s.afterSelector); scan(s.waitSel); scan(s.condCol); scan(s.expected); scan(s.pathCol);
+  }
+  return Array.from(refs);
+}
+
 async function poolStageCurrent(){
   if(!activeProfileId){ alert('Select a login profile first.'); go('profiles'); return false; }
   if(!steps.length){ alert('Build your flow first.'); go('builder'); return false; }
-  if(!ssPath){ alert('Load a spreadsheet first.'); go('import'); return false; }
+  // R15: spreadsheet-free flows. A once-flow runs its steps exactly one time — no
+  // sheet, no row loop, one summary journal line. Column tokens have no row to
+  // resolve from and BLOCK the launch by name; system tokens still work.
+  const _sheetFree = (runMode === 'once');
+  if(!_sheetFree && !ssPath){ alert('Load a spreadsheet first.'); go('import'); return false; }
+  if(_sheetFree){
+    const _bad = collectColumnTokensInFlow();
+    if(_bad.length){
+      alert('This is a spreadsheet-free (once) flow, but the steps reference column tokens:\n\n  '+_bad.join(', ')+'\n\nColumn tokens have no value without a sheet. Remove them or switch the flow type to per-row.');
+      go('builder'); return false;
+    }
+  }
   // v2.1.1: pre-run column/token check. The #1 cause of "ran but skipped everything" is a sheet
   // whose columns don't match the flow's {{tokens}} (e.g. flow needs {{URL}} but the sheet has
   // 'url' or is the wrong file). Catch it HERE, loudly, before launching the pool — instead of
   // silently skipping thousands of rows. Names are case-sensitive (the runner does row[ref]).
-  const colCheck = checkFlowColumnsAgainstSheet();
+  const colCheck = _sheetFree ? null : checkFlowColumnsAgainstSheet();
   if(colCheck && colCheck.missing.length){
     const have = ssHeaders && ssHeaders.length ? ssHeaders.join(', ') : '(none)';
     const miss = colCheck.missing.join(', ');
@@ -2498,9 +2532,9 @@ async function poolStageCurrent(){
   // R5b: snapshot of the DATA steps as submitted — the live-reload diff baseline.
   lastSubmittedDataJson = JSON.stringify(steps.filter(function(s){ return !s.locked && s.type !== 'pestpac-logout'; }));
   const res = await API.poolSubmitJob({
-    label: (flowName||'flow')+' · '+ssName,
+    label: (flowName||'flow') + (_sheetFree ? ' \u00b7 once' : ' \u00b7 '+ssName),
     flowSteps: allSteps(),
-    spreadsheetPath: ssPath,
+    spreadsheetPath: _sheetFree ? null : ssPath,
     profileId: activeProfileId,
     setupFlowId: _setupFlowId, teardownFlowId: _teardownFlowId,
     errHandle: (document.getElementById('errHandle')||{}).value || 'retry',
@@ -3180,7 +3214,7 @@ async function doUpdate(){if(!updInfo||!API.installUpdate)return;document.getEle
 // becomes "Open last log" instead of sitting disabled and gray. When the Run conditions
 // ARE met, it's the normal Run button. runBtnClick() routes to the right action.
 function runBtnClick(){
-  const canRun = (!isRunning && steps.length > 0 && activeProfileId && ssPath);
+  const canRun = (!isRunning && steps.length > 0 && activeProfileId && (ssPath || runMode === 'once')); // R15: once-flows need no sheet
   if(!isRunning && currentLogPath && !canRun){
     return API.openFile && API.openFile(currentLogPath);
   }
@@ -3190,7 +3224,7 @@ function refreshRunBtn(){
   const btn = document.getElementById('runBtn');
   const lbl = document.getElementById('runBtnLbl');
   const icon = document.getElementById('runBtnIcon');
-  const canRun = (!isRunning && steps.length > 0 && activeProfileId && ssPath);
+  const canRun = (!isRunning && steps.length > 0 && activeProfileId && (ssPath || runMode === 'once')); // R15: once-flows need no sheet
   // "Open last log" mode: idle, a log exists, Run conditions not met.
   if (!isRunning && currentLogPath && !canRun) {
     btn.disabled = false;

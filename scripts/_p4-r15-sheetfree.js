@@ -103,8 +103,10 @@ if (!h.includes('collectColumnTokensInFlow')) {
   h = rep(h, "    label: (flowName||'flow')+' · '+ssName,",
     "    label: (flowName||'flow') + (_sheetFree ? ' \\u00b7 once' : ' \\u00b7 '+ssName),", 'label');
   h = rep(h, '    spreadsheetPath: ssPath,', '    spreadsheetPath: _sheetFree ? null : ssPath,', 'payload path');
-  h = rep(h, '  const canRun = (!isRunning && steps.length > 0 && activeProfileId && ssPath);',
-    "  // R15: once-flows need no sheet — the Run button lights up without one.\n  const canRun = (!isRunning && steps.length > 0 && activeProfileId && (ssPath || runMode === 'once'));", 'run gate');
+  let _ng = 0;
+  h = h.replace(/const canRun = \(!isRunning && steps\.length > 0 && activeProfileId && ssPath\);/g, () => { _ng++;
+    return "const canRun = (!isRunning && steps.length > 0 && activeProfileId && (ssPath || runMode === 'once')); // R15: once-flows need no sheet"; });
+  if (_ng !== 2) throw new Error('run gate: expected 2, got ' + _ng);
   fs.writeFileSync(hp, h, 'utf8');
   console.log('index done');
 } else console.log('index already done');
