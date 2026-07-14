@@ -321,6 +321,17 @@ survives), R9 flow folders (6a7d2ab; packaged-only migration after a dev boot br
 sorted the live flat flows - restored, all 22 verified; dev reads keep flat fallbacks),
 R10 flow-name UX (dirty tracking + Save/Don't Save/Cancel on switch and close),
 R11 shim death + sidebar (602f234 + 493acc2; renderer consumes pool events directly,
+[cont] R12 error strip (e3ed3c6), R13 reorder buttons + locked-neighbor guard (c198294),
+R14 pool settings with flow + resume-timer alignment (af5202f), R15 spreadsheet-free
+flows (8d1d4fc + 840c517; once-flows run directly, __none__ sentinel, column tokens
+block launch), R16 scheduler (eb5a129; zone-computed fire times w/ 11/11 unit test,
+reserved blocks + overlap refusal, missed-at-boot popup, schedules panel).
+
+REBUILD COMPLETE: R1-R16 all landed. Rides unverified until Matthew's end test.
+PENDING ON MATTHEW: (1) R8 upgrade-preserve install test on laptop/VM - NEVER on
+CORP-5QD5QJ4; (2) full end test covering Phases 2-4 (golden gate was skipped by his
+call); (3) D5 trigger-step hunt (add-note flow); (4) D6 Add-Profile-vs-overlay retest.
+NO version bump / release yet - ship sequence runs when Matthew says, after tests.,
 pool-row-error feed, one start/stop path, index -408 lines, preload -161; D6 z-ladder
 documented but repro NOT confirmable in source - re-test Add Profile vs overlays in
 the end pass).
@@ -328,8 +339,7 @@ the end pass).
 the step's real semantics arm the FUTURE dialog (dialog steps sit BEFORE their triggering
 clicks — verified in the golden flow). Migration folds FORWARD into the next action step;
 dialogMatch is dropped (per-step scoping replaces it). Engine keeps a legacy 'dialog'
-backstop case. NEXT UP: R12 error strip (feed already exists: pool-row-error), R13
-reorder polish, R14 pool settings w/ flow, then R15/R16 (THE release).
+backstop case. REBUILD DONE - next milestone is Matthew's end test, then ship.
 Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
