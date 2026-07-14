@@ -921,9 +921,13 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseP
   COORD.desiredWorkers = target;
   for (let i = 0; i < target; i++) { await coordSpawnWorker(); }
 
-  if (elastic && licenseProfileId) {
-    COORD.licenseTimer = setInterval(() => coordEvalScale(), Math.max(1, parseInt(licenseIntervalMin) || 2) * 60 * 1000);
-  }
+  // R14: the resume eval timer is ALWAYS-ON (pressure sensing works without elastic),
+  // matching pool-start; elastic only gates the license part via elasticParams — which
+  // resume now sets, so a resumed elastic pool license-caps again.
+  COORD.elasticParams = (elastic && licenseProfileId)
+    ? { licenseProfileId, licenseBuffer, hwCap, intervalMs: Math.max(1, parseInt(licenseIntervalMin) || 2) * 60 * 1000 }
+    : null;
+  COORD.licenseTimer = setInterval(() => coordEvalScale(), Math.max(1, parseInt(licenseIntervalMin) || 2) * 60 * 1000);
   coordEmitStatus();
   return { ok: true, resumed: true, totalRemaining, started: COORD.workers.size };
 });

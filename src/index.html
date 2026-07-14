@@ -3020,6 +3020,16 @@ async function saveFlow(){
     name: flowName || (document.getElementById('flowNotes').value.trim().replace(/[^a-z0-9_\-]/gi,'_').slice(0,40) || 'buu-flow'),
     runMode: runMode,
     automation: flowAutomation, // R9
+    // R14: pool settings ride with the flow — applied as defaults on load; the sidebar
+    // sliders remain a per-run override that persists only on the next save.
+    poolSettings: {
+      workers: parseInt((document.getElementById('poolWorkerCount')||{}).value) || 1,
+      scaleMult: parseInt((document.getElementById('poolScaleMult')||{}).value) || 3,
+      evalMin: parseInt((document.getElementById('poolLicInterval')||{}).value) || 2,
+      elastic: !!(document.getElementById('poolElastic')||{}).checked,
+      diag: !!(document.getElementById('poolDiagCapture')||{}).checked,
+      diagCap: parseInt((document.getElementById('poolDiagCap')||{}).value) || 10,
+    },
     setupFlowId: setupFlowId,
     teardownFlowId: teardownFlowId,
     steps,
@@ -3115,6 +3125,19 @@ async function loadFlow(){
   flowName = data.name || '';
   flowAutomation = !!data.automation; // R9
   { const _fa = document.getElementById('flowAutomation'); if (_fa) _fa.checked = flowAutomation; }
+  // R14: apply the saved pool settings from the flow (spec defaults when absent:
+  // workers 1, multiplier 3, eval every 2 min, elastic off, diagnostics off).
+  {
+    const ps = data.poolSettings || {};
+    const _set = function(id, v){ const el = document.getElementById(id); if(el != null && v != null) el.value = v; };
+    _set('poolWorkerCount', ps.workers != null ? ps.workers : 1);
+    _set('poolScaleMult', ps.scaleMult != null ? ps.scaleMult : 3);
+    _set('poolLicInterval', ps.evalMin != null ? ps.evalMin : 2);
+    _set('poolDiagCap', ps.diagCap != null ? ps.diagCap : 10);
+    { const el = document.getElementById('poolElastic'); if(el) el.checked = !!ps.elastic; }
+    { const el = document.getElementById('poolDiagCapture'); if(el) el.checked = !!ps.diag; }
+    try { poolScalingLive(); } catch (e) {}
+  }
   clearFlowDirty(); // R10: freshly loaded = clean; also refreshes the builder title
   steps = migrateLoadedSteps(data.steps || []);
   nid = steps.reduce((mx,s) => Math.max(mx, typeof s.id === 'number' ? s.id + 1 : 1), 1);
