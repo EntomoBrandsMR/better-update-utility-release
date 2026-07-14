@@ -85,13 +85,20 @@ let keytar = null;
 try { keytar = require('keytar'); } catch(e) {}
 
 // ── PATHS ─────────────────────────────────────────────────────────────────────
+// R8: everything USER-FACING lives next to the app under the fixed install root
+// (C:\BUU when packaged): flows\, logs\, failures\. Internal state — journals,
+// spill files, pidfile, config, credentials — stays in userData. Dev mode keeps
+// userData for everything so repo runs never touch C:\.
+function buuRoot() {
+  return app.isPackaged ? path.dirname(process.execPath) : app.getPath('userData');
+}
 function getLogsDir() {
-  const dir = path.join(app.getPath('userData'), 'logs');
+  const dir = path.join(buuRoot(), 'logs');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 function getFlowsDir() {
-  const dir = path.join(app.getPath('userData'), 'flows');
+  const dir = path.join(buuRoot(), 'flows');
   const fresh = !fs.existsSync(dir);
   if (fresh) fs.mkdirSync(dir, { recursive: true });
   // v2.0.0: one-time migration of Legacy's saved flows into BUU 2.0 (copy, not share).
@@ -1630,6 +1637,23 @@ if (!gotLock) {
 // workers run under the app's exe via ELECTRON_RUN_AS_NODE, which is exactly why they
 // blend into Task Manager and lingered invisibly — D1). (2) Merge worker spill files
 // into pool journals before any Resume offer, so crash-finished rows are not re-run.
+// R8: one-time migration from the old %APPDATA%\buu-2 layout into the install root.
+// Copy (not move) so a rollback to a pre-R8 build still finds its data.
+function migrateAppDataToBuuRoot() {
+  try {
+    if (!app.isPackaged) return;
+    const rootDir = buuRoot();
+    const ud = app.getPath('userData');
+    if (path.resolve(rootDir) === path.resolve(ud)) return;
+    for (const d of ['flows', 'logs']) {
+      const src = path.join(ud, d), dst = path.join(rootDir, d);
+      if (fs.existsSync(src) && !fs.existsSync(dst)) {
+        try { fs.cpSync(src, dst, { recursive: true }); console.log('[r8] migrated ' + d + ' -> ' + dst); } catch (e) { console.warn('[r8] migration of ' + d + ' failed: ' + e.message); }
+      }
+    }
+  } catch (e) {}
+}
+
 function sweepOrphanWorkers() {
   try {
     const pf = path.join(app.getPath('userData'), 'worker-pids.json');
@@ -1658,6 +1682,7 @@ function sweepOrphanWorkers() {
 }
 
 app.whenReady().then(() => {
+  migrateAppDataToBuuRoot();
   sweepOrphanWorkers();
     createWindow();
     // v2.2.3 Session 3E (B4): log retention. Runs asynchronously after window creation so a

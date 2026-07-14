@@ -94,7 +94,10 @@ process.stdout.on('error', function(){});
 // journal-spill-*.jsonl into the pool journal before offering Resume.
 let _coordinatorDead = false;
 const SPILL_PATH = (function(){
-  try { return path.join(path.dirname(path.dirname(LOG_PATH)), 'journal-spill-' + (RUN_CONTEXT.runId || ('w'+process.pid)) + '.jsonl'); }
+  // R8: logs moved out of userData (C:\BUU\logs) so the old dirname(dirname(LOG_PATH))
+  // derivation no longer lands where mergeSpillFiles scans. The coordinator now passes
+  // userData explicitly; the derivation stays as the fallback for old runContexts.
+  try { return path.join(RUN_CONTEXT.userDataDir || path.dirname(path.dirname(LOG_PATH)), 'journal-spill-' + (RUN_CONTEXT.runId || ('w'+process.pid)) + '.jsonl'); }
   catch(e){ return null; }
 })();
 function spillResult(row, status, error){

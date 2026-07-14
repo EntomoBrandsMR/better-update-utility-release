@@ -257,7 +257,7 @@ async function coordSpawnWorker(){
     diagnosticCapture: !!COORD.diagnosticCapture,
     captureDir: captureDir,
     captureBucketCap: COORD.captureBucketCap || 10,
-    runContext: { runId: workerId, poolId: COORD.poolId, jobId, runStartTs: parseInt(String(COORD.poolId||'').replace(/^pool/,''), 10) || Date.now() /* R6: {{RUNDATE}} base - pool start */, profileUsername: prof.username || '' },
+    runContext: { runId: workerId, poolId: COORD.poolId, jobId, userDataDir: app.getPath('userData'), runStartTs: parseInt(String(COORD.poolId||'').replace(/^pool/,''), 10) || Date.now() /* R6: {{RUNDATE}} base - pool start */, profileUsername: prof.username || '' },
   });
   fs.writeFileSync(runnerPath, script);
 

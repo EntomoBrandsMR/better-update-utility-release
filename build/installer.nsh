@@ -12,3 +12,41 @@
 !macro customUnInit
   nsExec::Exec 'taskkill /F /IM "BUU 2.0.exe" /T'
 !macroend
+
+; R8: fixed install root C:\BUU. A stable path means taskbar pins survive updates
+; (the old per-user versioned paths broke pins) and everything BUU lives in one place:
+; app files + flows\ + logs\ + failures\.
+!macro preInit
+  SetRegView 64
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "C:\BUU"
+  WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "C:\BUU"
+  SetRegView 32
+  WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "C:\BUU"
+  WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "C:\BUU"
+!macroend
+
+; R8: preserve user data through UPDATES. electron-builder runs the OLD uninstaller
+; first, which removes $INSTDIR recursively — park flows\/logs\/failures\ in %TEMP%
+; on the way down (updates only; a real uninstall leaves nothing parked), then
+; customInstall restores them after the new files land. Rename is same-volume (C:)
+; so this is instant regardless of size.
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    Goto buu_preserve_done
+  ${endIf}
+  CreateDirectory "$TEMP\buu-preserve"
+  Rename "$INSTDIR\flows" "$TEMP\buu-preserve\flows"
+  Rename "$INSTDIR\logs" "$TEMP\buu-preserve\logs"
+  Rename "$INSTDIR\failures" "$TEMP\buu-preserve\failures"
+  buu_preserve_done:
+!macroend
+
+!macro customInstall
+  IfFileExists "$TEMP\buu-preserve\flows\*.*" 0 +2
+    Rename "$TEMP\buu-preserve\flows" "$INSTDIR\flows"
+  IfFileExists "$TEMP\buu-preserve\logs\*.*" 0 +2
+    Rename "$TEMP\buu-preserve\logs" "$INSTDIR\logs"
+  IfFileExists "$TEMP\buu-preserve\failures\*.*" 0 +2
+    Rename "$TEMP\buu-preserve\failures" "$INSTDIR\failures"
+  RMDir "$TEMP\buu-preserve"
+!macroend
