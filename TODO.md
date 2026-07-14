@@ -308,12 +308,15 @@ unit test scripts/_test-r1-journal.js), R2 unified Click (5db7343; legacy waitFo
 If-click migrated at load + engine alias backstop), R3 dialog checkboxes (068de03),
 R4 adaptive scaling (bd52b4e; one eval timer composes license+pressure+manual;
 sequential ramp; live sliders; NOTE: on pool-RESUME the eval timer only starts when
-elastic was on — align to always-on at the R14 pool-settings pass).
+elastic was on — align to always-on at the R14 pool-settings pass), R5 step debugger
+(bfa7b70 core + 9c04daf live-reload/Tier-1; cursor cmds redo/last/skip/restart, sticky
+pane w/ elapsed ticker, flow-update at pauses, fresh disk read at launch; fixed R2's
+loadFlow-scoped migrateLoadedSteps).
 **R3 SPEC DEVIATION, flagged:** plan said Handle Dialog folds into the PREVIOUS step, but
 the step's real semantics arm the FUTURE dialog (dialog steps sit BEFORE their triggering
 clicks — verified in the golden flow). Migration folds FORWARD into the next action step;
 dialogMatch is dropped (per-step scoping replaces it). Engine keeps a legacy 'dialog'
-backstop case. NEXT UP: R5 step debugger (persistent pane per Matthew's 2026-07-10 note), then R6+ per plan.
+backstop case. NEXT UP: R6 tokens, then R7+ per plan.
 Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
