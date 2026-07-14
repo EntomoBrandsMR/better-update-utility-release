@@ -67,6 +67,18 @@ contextBridge.exposeInMainWorld('api', {
   onPoolLicenseUpdate: (cb)    => ipcRenderer.on('pool-license-update', (_, d) => cb(d)),
   onPoolPause:         (cb)    => ipcRenderer.on('pool-pause', (_, d) => cb(d)),
   onPoolRowError:      (cb)    => ipcRenderer.on('pool-row-error', (_, d) => cb(d)), // R11 direct error feed
+
+  // R16: scheduler surface.
+  schedulesList:       ()      => ipcRenderer.invoke('schedules-list'),
+  scheduleSave:        (s)     => ipcRenderer.invoke('schedule-save', s),
+  scheduleDelete:      (d)     => ipcRenderer.invoke('schedule-delete', d),
+  scheduleToggle:      (d)     => ipcRenderer.invoke('schedule-toggle', d),
+  scheduleRunNow:      (d)     => ipcRenderer.invoke('schedule-run-now', d),
+  scheduleSkipMissed:  (d)     => ipcRenderer.invoke('schedule-skip-missed', d),
+  scheduleResult:      (d)     => ipcRenderer.send('schedule-result', d),
+  onScheduleFire:      (cb)    => ipcRenderer.on('schedule-fire', (_, d) => cb(d)),
+  onSchedulesMissed:   (cb)    => ipcRenderer.on('schedules-missed', (_, d) => cb(d)),
+  onSchedulesChanged:  (cb)    => ipcRenderer.on('schedules-changed', (_, d) => cb(d)),
   // v2.2.3 Session 3A (A3): per-worker dialog events. Captures every dialog (alert/confirm/
   // prompt/beforeunload) along with its text and the row it fired during. Renderer can show
   // a "recent dialogs" pane or attach to a worker card.

@@ -1756,6 +1756,26 @@ app.whenReady().then(() => {
   migrateAppDataToBuuRoot();
   migrateFlowsIntoFolders();
   sweepOrphanWorkers();
+  // R16: the scheduler. Fires spreadsheet-free (once) flows at their zone-computed
+  // times; launch goes through the renderer as a dumb pipe into the existing pool
+  // IPC. Schedules persist under <buuRoot>/schedules/ (userData in dev).
+  try { require('./scheduler').initScheduler({
+    app, ipcMain,
+    buuRoot,
+    COORD,
+    getWindow: () => mainWindow,
+    readFlowByName: (name) => {
+      try {
+        const safe = String(name || '').replace(/[\\/:*?"<>|]/g, '_');
+        if (!safe) return null;
+        for (const sub of ['', 'general', 'automation', 'once']) {
+          const fp = path.join(getFlowsDir(), sub, safe + '.json');
+          if (fs.existsSync(fp)) return { json: fs.readFileSync(fp, 'utf8'), path: fp };
+        }
+      } catch (e) {}
+      return null;
+    },
+  }); } catch (e) { console.error('[r16] scheduler init failed:', e.message); }
     createWindow();
     // v2.2.3 Session 3E (B4): log retention. Runs asynchronously after window creation so a
     // slow disk doesn't delay startup. Reads logRetentionDays from config; default 30.
