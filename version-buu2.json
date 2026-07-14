@@ -1,5 +1,5 @@
 {
-  "version": "2.2.9",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v2.2.9/BUU-2.0-Setup-2.2.9.exe",
-  "notes": "BUU 2.0 v2.2.9 - new If-click step (conditional click for popup handling). Add it like a normal Click step: give it the popup button's CSS selector and a presence window (default 1 second). If the element appears within the window it gets clicked and the flow continues; if it never appears the flow continues with no error. The branch taken (clicked / not present) is recorded per row in the step trail and in fieldsWritten, so it is never silent. Existing flows are unaffected."
+    "version":  "2.3.0",
+    "downloadUrl":  "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v2.3.0/BUU-2.0-Setup-2.3.0.exe",
+    "notes":  "BUU 2.0 v2.3.0 - the rebuild. New: Schedules page (run spreadsheet-free flows at set times - daily/weekly/monthly/once, timezone-aware, missed-run recovery), spreadsheet-free once-flows run directly from the Run button, step debugger with a persistent pane (redo/back/skip/restart controls, live flow reload while paused), {{TODAY}}/{{RUNDATE}} date tokens with +/-N day math, press-key-after-typing on Type steps, unified Click options, dialog accept/decline checkboxes, adaptive worker scaling, error strip on the run screen, step reorder buttons, flow folders, unsaved-changes prompts, and pool settings saved with each flow. NOTE: this update moves BUU to C:\\BUU - your first launch copies flows and logs over automatically (the old copies in AppData are left untouched), and taskbar pins survive future updates from now on."
 }
