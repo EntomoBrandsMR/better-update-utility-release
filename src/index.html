@@ -276,6 +276,11 @@ textarea { resize: vertical; min-height: 60px; }
 .paste-btn:hover { background: #251545; border-color: var(--purple); }
 
 /* ── PASTE MODAL ── */
+/* R11b (D6 audit): the overlay z ladder, explicit and in ONE place.
+   10   sticky in-page headers
+   400  .setup-overlay   (first-boot Chromium blocker)
+   500  .modal-bg        (paste modal etc. — must sit above the setup overlay)
+   Every overlay defaults hidden and is shown explicitly (.open / .show). */
 .modal-bg {
   display: none; position: fixed; inset: 0;
   background: rgba(0,0,0,.7); z-index: 500;
@@ -692,6 +697,15 @@ textarea { resize: vertical; min-height: 60px; }
   </div>
 
   <div class="sb-sep"></div>
+  <!-- R11b: flow-building + run-launch controls consolidated in the sidebar (spec:
+       flow name, Save Flow, single Run button — the Run pool button below is it;
+       the pool sliders moved here back in v2.1.0/R4). -->
+  <div class="sb-sec">Flow</div>
+  <div style="padding:2px 14px 6px;display:flex;flex-direction:column;gap:6px">
+    <div id="sbFlowName" style="font-size:12px;font-weight:700;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="Active flow">Building</div>
+    <button class="tbtn" onclick="saveFlow()" style="width:100%">Save flow</button>
+  </div>
+  <div class="sb-sep"></div>
   <div class="sb-sec">Live</div>
   <div class="nav" id="nav-run" onclick="go('run')">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="3,2 14,8 3,14"/></svg>
@@ -951,10 +965,6 @@ textarea { resize: vertical; min-height: 60px; }
       </div>
     </div>
     <div class="btn-row">
-      <button class="btn grn" onclick="startRun()">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"><polygon points="3,2 14,8 3,14"/></svg>
-        Run automation
-      </button>
     </div>
   </div>
 </div>
@@ -1154,7 +1164,6 @@ let runOk = 0, runErr = 0, runSkip = 0;
 // Snapshot of the run config used for the just-completed run, so a Retry click reuses
 // the right spreadsheet/profile/settings without depending on UI state that may have
 // drifted (user edits steps, swaps spreadsheet, etc).
-let _lastRunSnapshot = null;
 
 const LOGIN_STEPS = [
   {id:'pp1',type:'pestpac-login',locked:true,_label:'Log in to PestPac'},
@@ -2094,42 +2103,7 @@ async function paneStop(){return requestStop();}
 // R11: force-stop = pool stop; Phase 3's 10s fuse already makes it near-immediate.
 async function forceStopNow(){ return stopWorkerPool(); }
 
-function runStopped(){
-  // v1.3.0 Item 3: log entry state so we can see whether multiple callers raced into runStopped
-  // (clean path + safety timer + done event, etc.). The idempotent short-circuit below covers it.
-  console.log('[run] runStopped: entered, isRunning=' + isRunning + ', _stopInProgress=' + _stopInProgress + ', currentRunId=' + currentRunId);
-  // v1.3.0 Item 3: idempotent short-circuit. Safe to call from both the 'done' event handler
-  // AND the requestStop() safety timer. Whichever runs second is a no-op.
-  if (!isRunning && !_stopInProgress) {
-    console.log('[run] runStopped: already idle, short-circuiting');
-    return;
-  }
-  isRunning=false;
-  // v1.2.5 item 2.4: clear stop-in-progress and re-enable buttons disabled by requestStop().
-  _stopInProgress=false;
-  // v1.3.0 Item 3: reset additional state that previously leaked across runs. currentRunMode
-  // and the phase-indicator pip styles were not cleared, so a flow with a setup/teardown left
-  // pips lit on the next Run. These additions don't change Stop semantics, they just make sure
-  // every visible piece of state matches "idle" after a stop.
-  currentRunMode='run-all';
-  if (typeof updatePhaseIndicator === 'function') {
-    try {
-      ['setup','main','teardown'].forEach(p => updatePhaseIndicator(p, 'pending'));
-    } catch {}
-  }
-  const runBtn=document.getElementById('runBtn');runBtn.style.display='';runBtn.disabled=false;
-  const stopBtn=document.getElementById('stopBtn');stopBtn.style.display='none';stopBtn.disabled=false;
-  // v1.3.4 Item I (3/4): hide + reset the Force-stop escape hatch on return to idle.
-  { const _fb=document.getElementById('forceStopBtn'); if(_fb){ _fb.style.display='none'; _fb.disabled=false; } }
-  document.getElementById('nb-run').style.display='none';
-  document.getElementById('runStatusMsg').textContent='Stopped';
-  document.getElementById('runStatusMsg').style.color='var(--red)';
-  refreshRunBtn();stopElapsedTicker();
-  const _smSel=document.getElementById('startModeSel');if(_smSel)_smSel.disabled=false;
-  currentRunId=null;
-  const _pp=document.getElementById('pausePanel');if(_pp)_pp.style.display='none';
-  console.log('[run] runStopped: complete, state reset');
-}
+// R11b: runStopped deleted — poolUIActive owns the UI reset; nothing called it since R11a.
 
 // ── RESUME-ON-LAUNCH ──────────────────────────────────────────────────────
 // Tracks the orphan currently being decided on. Used by resumeChoice() callbacks.
@@ -2294,8 +2268,6 @@ async function paneNextStep(){
     currentPoolPause = null;
     await API.poolRunControl({cmd:'next-step'});
     return;
-  } else if (API.runControl) {
-    await API.runControl({runId:currentRunId, cmd:'next-step'});
   }
   currentPoolPause = null;
   hidePause();
@@ -2306,8 +2278,6 @@ async function paneNextRow(){
     currentPoolPause = null;
     await API.poolRunControl({cmd:'next-row'});
     return;
-  } else if (API.runControl) {
-    await API.runControl({runId:currentRunId, cmd:'next-row'});
   }
   currentPoolPause = null;
   hidePause();
@@ -2315,8 +2285,6 @@ async function paneNextRow(){
 async function paneRunAll(){
   if (currentPoolPause && API.poolRunControl) {
     await API.poolRunControl({cmd:'run-all'});
-  } else if (API.runControl) {
-    await API.runControl({runId:currentRunId, cmd:'run-all'});
   }
   currentRunMode='run-all';
   currentPoolPause = null;
@@ -2987,6 +2955,9 @@ let flowDirty = false;
 function updateBuilderTitle(){
   const el = document.getElementById('builderFlowName');
   if(el) el.textContent = '\u2014 ' + (flowName || 'Building') + (flowDirty ? ' \u2022' : '');
+
+  const sb = document.getElementById('sbFlowName');
+  if(sb) sb.textContent = (flowName || 'Building') + (flowDirty ? ' \u2022' : '');
 }
 function markFlowDirty(){
   if(flowDirty) return;
