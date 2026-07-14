@@ -311,12 +311,15 @@ sequential ramp; live sliders; NOTE: on pool-RESUME the eval timer only starts w
 elastic was on — align to always-on at the R14 pool-settings pass), R5 step debugger
 (bfa7b70 core + 9c04daf live-reload/Tier-1; cursor cmds redo/last/skip/restart, sticky
 pane w/ elapsed ticker, flow-update at pauses, fresh disk read at launch; fixed R2's
-loadFlow-scoped migrateLoadedSteps).
+loadFlow-scoped migrateLoadedSteps), R6 tokens (3601de4; TODAY live / RUNDATE frozen
+at pool start, +/-N days, MM/DD/YYYY, system-wins + collision warning, green chips,
+9-case offline check), R7 pressAfter (ff6e2c6).
 **R3 SPEC DEVIATION, flagged:** plan said Handle Dialog folds into the PREVIOUS step, but
 the step's real semantics arm the FUTURE dialog (dialog steps sit BEFORE their triggering
 clicks — verified in the golden flow). Migration folds FORWARD into the next action step;
 dialogMatch is dropped (per-step scoping replaces it). Engine keeps a legacy 'dialog'
-backstop case. NEXT UP: R6 tokens, then R7+ per plan.
+backstop case. NEXT UP: R8 installer/C:\BUU layout (MUST build+test the upgrade-preserve
+before any release lands on real flows), then R9+ per plan.
 Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
