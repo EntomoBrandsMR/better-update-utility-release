@@ -317,12 +317,15 @@ at pool start, +/-N days, MM/DD/YYYY, system-wins + collision warning, green chi
 build verified, macros compiled; BEHAVIORAL upgrade-preserve test PENDING on the
 laptop/VM - do NOT run the unreleased installer on CORP-5QD5QJ4, it would hijack the
 live 2.2.9 install; test = install old build, add a flow, install new build, flow
-survives).
+survives), R9 flow folders (6a7d2ab; packaged-only migration after a dev boot briefly
+sorted the live flat flows - restored, all 22 verified; dev reads keep flat fallbacks),
+R10 flow-name UX (dirty tracking + Save/Don't Save/Cancel on switch and close).
 **R3 SPEC DEVIATION, flagged:** plan said Handle Dialog folds into the PREVIOUS step, but
 the step's real semantics arm the FUTURE dialog (dialog steps sit BEFORE their triggering
 clicks — verified in the golden flow). Migration folds FORWARD into the next action step;
 dialogMatch is dropped (per-step scoping replaces it). Engine keeps a legacy 'dialog'
-backstop case. NEXT UP: R9 flow folders, R10 flow-name UX, then R11+ per plan.
+backstop case. NEXT UP: R11 sidebar consolidation + renderer consumes pool events
+directly (shim + dispatcher die; D6 rides along), R12 error strip, then R13+ per plan.
 Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
