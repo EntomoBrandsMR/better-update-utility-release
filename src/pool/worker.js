@@ -101,6 +101,7 @@ function spillResult(row, status, error){
   if(!SPILL_PATH) return;
   try { fs.appendFileSync(SPILL_PATH, JSON.stringify({ poolId: RUN_CONTEXT.poolId||null, j: RUN_CONTEXT.jobId||null, r: row, s: status, error: error||'', ts: new Date().toISOString() }) + '\n'); } catch(e){}
 }
+let _pendingCursor = null; // R5b: set by flow-update with a cursor; consumed at the pause loop
 _rl.on('line', function(line){
   let msg; try{ msg = JSON.parse(line); }catch(e){ return; }
   if(!msg || !msg.cmd) return;
@@ -119,6 +120,21 @@ _rl.on('line', function(line){
       // If we just switched out of step modes, release any pending pause so the row loop continues.
       if((currentMode === 'run-all' || currentMode === 'stop') && _pendingPauseResolve){
         const r = _pendingPauseResolve; _pendingPauseResolve = null; r('auto');
+      }
+      break;
+    case 'flow-update':
+      // R5b: live flow reload at a pause boundary. Replaces the DATA steps with the
+      // renderer's current editor state (same locked/logout filter as boot); optional
+      // cursor repositions (0-based data-step index). Without a cursor the pending
+      // pause stays pending — edits apply from the current step forward via the
+      // rebind in the step loop.
+      if(Array.isArray(msg.steps)){
+        DATA_STEPS.length = 0;
+        for(const _st of msg.steps){ if(!_st.locked && _st.type !== 'pestpac-logout') DATA_STEPS.push(_st); }
+      }
+      if(msg.cursor != null && _pendingPauseResolve){
+        _pendingCursor = Math.max(0, parseInt(msg.cursor) || 0);
+        const r = _pendingPauseResolve; _pendingPauseResolve = null; r('reposition');
       }
       break;
     // R5 debugger cursor commands — all just release the pending pause with their name;
@@ -295,8 +311,10 @@ async function processRow(page, row, creds, rowNum){
         if(cmd === 'last-step'){ si = Math.max(-1, si - 2); continue; }
         if(cmd === 'restart-row'){ done.length = 0; row.__stepTrail = []; si = -1; emit({type:'log', message:'Row '+rowNum+' restarted from step 1 by user'}); continue; }
         if(cmd === 'redo-step'){ si = Math.max(-1, si - 2); _autoOnce = true; continue; }
+        if(cmd === 'reposition'){ si = (_pendingCursor != null ? _pendingCursor : si + 1) - 1; _pendingCursor = null; continue; }
         // 'next-step' / 'run-all' / 'auto' fall through.
-        s = DATA_STEPS[si] || s; // rebind (cheap now; load-bearing once R5b live reload lands)
+        s = DATA_STEPS[si]; // R5b: rebind — a live flow update may have replaced the steps
+        if(!s) break; // flow shrank below the cursor — the row is done
       }
       const _stepStart = Date.now();
       // v2.2.9: steps may leave a branch note on the row (ifclick: 'clicked' / 'not present').

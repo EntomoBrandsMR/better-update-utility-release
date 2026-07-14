@@ -720,9 +720,10 @@ ipcMain.handle('pool-stop', async () => {
 // or step-row mode the pool is forced to 1 worker so there's exactly one target. On
 // 'run-all', this transitions the pool out of step mode and scales up to the
 // configured worker target stored in COORD.startModeTarget at pool-start.
-ipcMain.handle('pool-run-control', async (_, { cmd }) => {
+ipcMain.handle('pool-run-control', async (_, _rcPayload) => {
+  const { cmd } = _rcPayload || {};
   if (!COORD.active) return { ok: false, error: 'Pool not running.' };
-  if (!['next-step','next-row','run-all','stop','mode','redo-step','last-step','skip-step','restart-row'].includes(cmd) && !(cmd && cmd.startsWith('mode:'))) {
+  if (!['next-step','next-row','run-all','stop','mode','redo-step','last-step','skip-step','restart-row','flow-update'].includes(cmd) && !(cmd && cmd.startsWith('mode:'))) {
     return { ok: false, error: 'Unknown command: ' + cmd };
   }
   // 'stop' here means user clicked Stop during a step pause. Treat it like pool-stop —
@@ -763,7 +764,9 @@ ipcMain.handle('pool-run-control', async (_, { cmd }) => {
   // (e.g. mid Run-All transition) we forward to all — only the one actually paused will
   // act on it.
   for (const w of COORD.workers.values()) {
-    try { w.process.stdin.write(JSON.stringify({ cmd }) + '\n'); } catch {}
+    // R5b: flow-update carries the new steps (+ optional cursor) through to the worker.
+    const _msg = cmd === 'flow-update' ? { cmd, steps: _rcPayload.steps, cursor: _rcPayload.cursor } : { cmd };
+    try { w.process.stdin.write(JSON.stringify(_msg) + '\n'); } catch {}
   }
   return { ok: true };
 });
@@ -1342,6 +1345,19 @@ ipcMain.handle('save-flow', async (_, { json, name }) => {
   fs.writeFileSync(r.filePath, json);
   return r.filePath;
 });
+// R5b Tier 1: silent flow read by display name (the filename is the source of truth
+// for flow names since v1.2.8.1). Returns { json, mtime, path } or null. The pool
+// launch path uses this so what RUNS is always the saved file, deterministically.
+ipcMain.handle('read-flow-by-name', async (_, { name }) => {
+  try {
+    const safe = String(name || '').replace(/[\\/:*?"<>|]/g, '_');
+    if (!safe) return null;
+    const fp = path.join(getFlowsDir(), safe + '.json');
+    if (!fs.existsSync(fp)) return null;
+    return { json: fs.readFileSync(fp, 'utf8'), mtime: fs.statSync(fp).mtimeMs, path: fp };
+  } catch (e) { return null; }
+});
+
 ipcMain.handle('load-flow', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
     title: 'Load flow',

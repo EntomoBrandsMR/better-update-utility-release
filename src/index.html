@@ -2562,6 +2562,7 @@ function hidePause(){
 // Now: sticky from step-mode launch until Stop/Release; buttons DISABLE during execution;
 // a live status line + elapsed ticker names what is running so stalls show at a glance.
 let stepPaneSticky = false;
+let lastSubmittedDataJson = null; // R5b: DATA steps as submitted — live-reload diff baseline
 let lastPauseEvt = null;
 let _paneExecTimer = null, _paneExecStart = 0, _paneExecMsg = '';
 const PANE_BTN_IDS = ['paneNextStepBtn','paneRedoStepBtn','paneLastStepBtn','paneSkipStepBtn','paneRestartRowBtn','paneNextRowBtn','paneRunAllBtn'];
@@ -2602,6 +2603,43 @@ function forceHidePause(){
   const panel=document.getElementById('pausePanel');
   if(panel) panel.style.display='none';
 }
+// R5b: LIVE FLOW RELOAD at a step-pause boundary (never during full-speed runs — this
+// only fires from the pause hook). If the editor steps differ from what was submitted:
+//  - changes at/below the cursor: push silently; they apply from the current step forward
+//  - shape changed ABOVE the cursor: warn, pick "continue from step N", push + reposition
+async function maybePushFlowUpdate(p){
+  try{
+    if(!API.poolRunControl || lastSubmittedDataJson == null) return;
+    const dataNow = steps.filter(function(s){ return !s.locked && s.type !== 'pestpac-logout'; });
+    const nowJson = JSON.stringify(dataNow);
+    if(nowJson === lastSubmittedDataJson) return;
+    const oldData = JSON.parse(lastSubmittedDataJson || '[]');
+    const cur = p.stepIndex || 0;
+    let aboveChanged = oldData.length !== dataNow.length;
+    if(!aboveChanged){
+      for(let i=0;i<cur && i<dataNow.length;i++){
+        if(JSON.stringify(oldData[i]) !== JSON.stringify(dataNow[i])){ aboveChanged = true; break; }
+      }
+    }
+    if(aboveChanged){
+      const pick = prompt('Flow shape changed above the current step.\nContinue from step N (1-'+dataNow.length+')?', String(Math.min(cur+1, dataNow.length)));
+      if(pick === null){
+        addLiveLog('Flow edits NOT pushed (cancelled) — the worker keeps running the old flow.','warn');
+        return;
+      }
+      const n = Math.max(1, Math.min(dataNow.length, parseInt(pick)||cur+1));
+      paneSetExecuting('Reloading flow — repositioning to step '+n);
+      currentPoolPause = null;
+      lastSubmittedDataJson = nowJson;
+      await API.poolRunControl({cmd:'flow-update', steps: steps, cursor: n-1});
+    } else {
+      lastSubmittedDataJson = nowJson;
+      await API.poolRunControl({cmd:'flow-update', steps: steps});
+      addLiveLog('Flow updated live — edits apply from the current step forward.','info');
+    }
+  }catch(e){}
+}
+
 async function paneCursorCmd(cmd, msg){
   if(!(currentPoolPause && API.poolRunControl)) return;
   paneSetExecuting(msg);
@@ -2819,6 +2857,30 @@ async function poolStageCurrent(){
   // v2.1.0 (#5): if the user was stepping this sheet manually and stopped partway, hand the
   // row cursor to the pool so it resumes where stepping left off instead of restarting at row 1.
   const _resumeFromRow = (Number.isFinite(manualRowCursor) && manualRowCursor > 1) ? manualRowCursor : 0;
+  // R5b Tier 1: the pool runs the SAVED flow file, read fresh at every launch — disk
+  // wins, deterministically, with a loud warn when in-memory edits differed (save first
+  // if you meant them; the R10 unsaved-changes prompt lands later). Flows never saved
+  // under a name in the flows folder fall back to the in-memory steps.
+  if (flowName && API.readFlowByName) {
+    try {
+      const _fr = await API.readFlowByName({ name: flowName });
+      if (_fr && _fr.json) {
+        const _fresh = JSON.parse(_fr.json);
+        if (Array.isArray(_fresh.steps) && _fresh.steps.length) {
+          const _memJson = JSON.stringify(steps);
+          const _mig = migrateLoadedSteps(_fresh.steps);
+          if (JSON.stringify(_mig) !== _memJson) {
+            steps = _mig;
+            renderSteps();
+            addLiveLog('Flow "'+flowName+'" re-read from disk for this launch — unsaved in-memory edits were NOT used (save first if you meant them).','warn');
+          }
+        }
+        if (_fr.mtime) addLiveLog('Flow last saved: ' + new Date(_fr.mtime).toLocaleString(), 'info');
+      }
+    } catch (e) {}
+  }
+  // R5b: snapshot of the DATA steps as submitted — the live-reload diff baseline.
+  lastSubmittedDataJson = JSON.stringify(steps.filter(function(s){ return !s.locked && s.type !== 'pestpac-logout'; }));
   const res = await API.poolSubmitJob({
     label: (flowName||'flow')+' · '+ssName,
     flowSteps: allSteps(),
@@ -3049,6 +3111,7 @@ if(API.onPoolPause) API.onPoolPause(function(p){
     lastPauseEvt = evt;
     showPause('step', evt);
     paneSetPaused();
+    maybePushFlowUpdate(p);
     addLiveLog('Pool: paused before step '+(p.stepIndex+1)+'/'+p.totalSteps+' on row '+p.row, 'warn');
   } else if (p.kind === 'row') {
     currentRunMode = 'step-row';
@@ -3311,6 +3374,27 @@ async function saveFlow(){
     a.click();
   }
 }
+  // R2: If-click is absorbed into the unified Click. Migrate on load; the flow persists
+  // migrated on its next save. (The engine also keeps a legacy alias as a backstop.)
+  function migrateLoadedSteps(list){
+    for(const st of list){ if(st && st.type === 'ifclick'){ st.type = 'click'; st.notFound = 'skip'; st.presenceSec = st.presenceSec || 1; } }
+    // R3: Handle Dialog folds into the NEXT action step (the step armed the FUTURE dialog;
+    // dialog steps sit before their triggering action — folding backward would break flows).
+    // dialogMatch has no checkbox equivalent and is dropped: per-step scoping replaces it.
+    // A trailing dialog step with no following action stays put (engine keeps a backstop).
+    const ACT = { click:1, type:1, select:1, checkbox:1, navigate:1 };
+    for(let i2 = 0; i2 < list.length; i2++){
+      const st2 = list[i2];
+      if(!st2 || st2.type !== 'dialog') continue;
+      let k2 = i2 + 1; while(k2 < list.length && !(list[k2] && ACT[list[k2].type])) k2++;
+      if(k2 >= list.length) continue;
+      if(st2.dialogAction === 'dismiss'){ list[k2].dialogDecline = true; list[k2].dialogAccept = false; }
+      else { list[k2].dialogAccept = true; list[k2].dialogDecline = false; }
+      list.splice(i2, 1); i2--;
+    }
+    return list;
+  }
+
 async function loadFlow(){
   let json;
   if(API.loadFlow){
@@ -3340,26 +3424,6 @@ async function loadFlow(){
   teardownFlowId = data.teardownFlowId || null;
   flowName = data.name || '';
   steps = migrateLoadedSteps(data.steps || []);
-  // R2: If-click is absorbed into the unified Click. Migrate on load; the flow persists
-  // migrated on its next save. (The engine also keeps a legacy alias as a backstop.)
-  function migrateLoadedSteps(list){
-    for(const st of list){ if(st && st.type === 'ifclick'){ st.type = 'click'; st.notFound = 'skip'; st.presenceSec = st.presenceSec || 1; } }
-    // R3: Handle Dialog folds into the NEXT action step (the step armed the FUTURE dialog;
-    // dialog steps sit before their triggering action — folding backward would break flows).
-    // dialogMatch has no checkbox equivalent and is dropped: per-step scoping replaces it.
-    // A trailing dialog step with no following action stays put (engine keeps a backstop).
-    const ACT = { click:1, type:1, select:1, checkbox:1, navigate:1 };
-    for(let i2 = 0; i2 < list.length; i2++){
-      const st2 = list[i2];
-      if(!st2 || st2.type !== 'dialog') continue;
-      let k2 = i2 + 1; while(k2 < list.length && !(list[k2] && ACT[list[k2].type])) k2++;
-      if(k2 >= list.length) continue;
-      if(st2.dialogAction === 'dismiss'){ list[k2].dialogDecline = true; list[k2].dialogAccept = false; }
-      else { list[k2].dialogAccept = true; list[k2].dialogDecline = false; }
-      list.splice(i2, 1); i2--;
-    }
-    return list;
-  }
   nid = steps.reduce((mx,s) => Math.max(mx, typeof s.id === 'number' ? s.id + 1 : 1), 1);
   const c = data.config || {};
   if(c.rowDelayMin) document.getElementById('rowDelayMin').value = c.rowDelayMin;

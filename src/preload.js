@@ -183,6 +183,7 @@ contextBridge.exposeInMainWorld('api', {
   // upcoming/ into upcoming/Finished/ so the user stops hand-moving files mid-process.
   archiveSpreadsheet:  (d)     => ipcRenderer.invoke('archive-spreadsheet', d),
   saveFlow:            (d)     => ipcRenderer.invoke('save-flow', d),
+  readFlowByName:      (d)     => ipcRenderer.invoke('read-flow-by-name', d), // R5b Tier 1
   loadFlow:            ()      => ipcRenderer.invoke('load-flow'),
   listOnceFlows:       ()      => ipcRenderer.invoke('list-once-flows'),
   validateFlowRefs:    (d)     => ipcRenderer.invoke('validate-flow-references', d),
