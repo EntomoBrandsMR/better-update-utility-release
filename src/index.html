@@ -1465,6 +1465,10 @@ function renderSteps() {
         (s.locked
           ? '<span style="font-size:15px;color:var(--purple);margin-left:auto;padding-right:4px;opacity:.7">PestPac login — locked</span>'
           : '<div class="step-acts">' +
+              // R13: ▲/▼ reorder — disabled at the ends of the MOVABLE range (locked
+              // login steps don't count as neighbors you can displace).
+              '<button class="ibtn" onclick="mv(event,' + s.id + ',-1)" title="Move up"' + ((i===0 || (steps[i-1]&&steps[i-1].locked)) ? ' disabled style="opacity:.25;pointer-events:none"' : '') + '><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><path d="M8 12V4M4.5 7.5 8 4l3.5 3.5"/></svg></button>' +
+              '<button class="ibtn" onclick="mv(event,' + s.id + ',1)" title="Move down"' + ((i===steps.length-1 || (steps[i+1]&&steps[i+1].locked)) ? ' disabled style="opacity:.25;pointer-events:none"' : '') + '><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px"><path d="M8 4v8M4.5 8.5 8 12l3.5-3.5"/></svg></button>' +
               '<span class="drag-handle" draggable="true" title="Drag to reorder"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:13px;height:13px"><path d="M4 5h8M4 8h8M4 11h8"/></svg></span>' +
               '<button class="ibtn del" onclick="delStep(event,' + s.id + ')" title="Delete"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M6 4V2h4v2M5 4l.5 9h5L11 4"/></svg></button>' +
             '</div>') +
@@ -1817,7 +1821,7 @@ function esc2(v) { return (v||'').toString().replace(/'/g,"\\'"); }
 function toggleStep(id) { const s=steps.find(x=>x.id===id); if(s){s.open=!s.open;renderSteps();} }
 function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s){ s[f]=v; markFlowDirty(); } scheduleValidationRefresh(); }
 function delStep(e,id) { e.stopPropagation(); steps=steps.filter(s=>s.id!==id); markFlowDirty(); renderSteps(); }
-function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id); const ni=i+d; if(ni<0||ni>=steps.length)return; [steps[i],steps[ni]]=[steps[ni],steps[i]]; markFlowDirty(); renderSteps(); }
+function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id); const ni=i+d; if(ni<0||ni>=steps.length)return; if(steps[ni]&&steps[ni].locked)return; [steps[i],steps[ni]]=[steps[ni],steps[i]]; markFlowDirty(); renderSteps(); }
 function addStep(type) { const st={id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}; if(type==='readfield'){ st.readMode='both'; st.readOnMissing='blank'; } if(type==='ifclick'){ st.presenceSec=1; } steps.push(st); markFlowDirty(); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
 function toggleAddMenu() { document.getElementById('addMenu').classList.toggle('open'); }
 function syncDelayMax() {
