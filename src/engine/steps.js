@@ -6,6 +6,25 @@
 //   fs (node builtin, used by fileupload).
 // Extracted verbatim from buildPoolWorker template — Phase 2 refactor, 2026-07-10.
 // ifclick + dialog handlers intentionally survive Phase 2; they die with R2/R3.
+// R6 system date tokens. {{TODAY}} is LIVE per resolution (crosses midnight mid-run);
+// {{RUNDATE}} is frozen at pool start (runContext.runStartTs). Both accept ±N days:
+// {{TODAY-1}}, {{RUNDATE+30}}. MM/DD/YYYY zero-padded, straight day arithmetic (the
+// local-date constructor normalizes month/DST rollover). System tokens WIN over
+// same-named columns; the save-time warning covers the collision. Returns null when
+// ref is not a system date token so column resolution proceeds.
+function buuSystemToken(ref, runContext){
+  const m = /^(TODAY|RUNDATE)([+-]\d+)?$/.exec(String(ref||'').trim());
+  if(!m) return null;
+  let base;
+  if(m[1] === 'TODAY') base = new Date();
+  else {
+    const ts = runContext && runContext.runStartTs;
+    base = ts ? new Date(ts) : new Date();
+  }
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + (m[2] ? parseInt(m[2], 10) : 0));
+  return String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getDate()).padStart(2,'0') + '/' + d.getFullYear();
+}
+
 async function runStep(page, step, row, creds){
 
   // R3: per-step dialog checkboxes on action steps. Armed BEFORE the action so even a
@@ -19,7 +38,7 @@ async function runStep(page, step, row, creds){
     page.on('dialog', _r3Handler);
   }
   try {
-  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
+  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ const _sys=buuSystemToken(ref, typeof RUN_CONTEXT!=='undefined'?RUN_CONTEXT:null); if(_sys!==null)return _sys; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
     case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:NAV_TIMEOUT}); break;}
@@ -174,4 +193,4 @@ async function runStep(page, step, row, creds){
     if (_r3Handler) { try { page.off('dialog', _r3Handler); } catch (e) {} }
   }
 }
-if (typeof module !== "undefined" && module.exports) { module.exports = { runStep }; }
+if (typeof module !== "undefined" && module.exports) { module.exports = { runStep, buuSystemToken }; }

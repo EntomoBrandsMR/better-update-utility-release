@@ -257,7 +257,7 @@ async function coordSpawnWorker(){
     diagnosticCapture: !!COORD.diagnosticCapture,
     captureDir: captureDir,
     captureBucketCap: COORD.captureBucketCap || 10,
-    runContext: { runId: workerId, poolId: COORD.poolId, jobId, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
+    runContext: { runId: workerId, poolId: COORD.poolId, jobId, runStartTs: parseInt(String(COORD.poolId||'').replace(/^pool/,''), 10) || Date.now() /* R6: {{RUNDATE}} base - pool start */, profileUsername: prof.username || '' },
   });
   fs.writeFileSync(runnerPath, script);
 
@@ -829,7 +829,7 @@ function coordRunOnceFlow(job, phase){
         const runnerPath = path.join(os.tmpdir(), `buu2-once-${onceId}.js`);
         fs.writeFileSync(runnerPath, buildOnceFlowRunner({
           chromiumExePath: chromiumExe, loginSteps, onceSteps,
-          runContext: { runId: onceId, phase, today: new Date().toISOString().slice(0,10), profileUsername: prof.username || '' },
+          runContext: { runId: onceId, phase, runStartTs: parseInt(String(COORD.poolId||'').replace(/^pool/,''), 10) || Date.now() /* R6: {{RUNDATE}} base - pool start */, profileUsername: prof.username || '' },
         }));
         const env = { ...process.env };
         const nodeModulesPath = app.isPackaged

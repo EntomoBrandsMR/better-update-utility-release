@@ -180,7 +180,7 @@ function resolvePreview(step, row, creds){
             .replace(/{{CRED:username}}/g, creds.username||'')
             .replace(/{{CRED:password}}/g, creds.password||'')
             .replace(/{{([^}]+)}}/g, function(_, ref){
-              if(ref === 'TODAY') return RUN_CONTEXT.today || '';
+              const _sys = buuSystemToken(ref, RUN_CONTEXT); if(_sys !== null) return _sys; // R6 (hoisted decl from the inlined steps source)
               if(ref === 'RUNID') return RUN_CONTEXT.runId || '';
               if(ref === 'PROFILE_USERNAME') return RUN_CONTEXT.profileUsername || '';
               return row[ref] !== undefined ? String(row[ref]) : '';
