@@ -1605,6 +1605,19 @@ function createWindow() {
     backgroundColor: '#0f0f11', show: false, title: 'BUU 2.0'
   });
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
+  // R10: intercept close while a flow has unsaved changes.
+  mainWindow.on('close', (e) => {
+    if (forceClosing || !flowDirtyMain) return;
+    e.preventDefault();
+    dialog.showMessageBox(mainWindow, {
+      type: 'warning', buttons: ['Save', "Don't Save", 'Cancel'], defaultId: 0, cancelId: 2,
+      title: 'Unsaved changes', message: 'This flow has unsaved changes.', detail: 'Save before closing BUU?',
+    }).then(r => {
+      if (r.response === 0) { try { mainWindow.webContents.send('save-flow-then-close'); } catch (e2) {} }
+      else if (r.response === 1) { forceClosing = true; mainWindow.close(); }
+      // Cancel: stay open.
+    }).catch(() => {});
+  });
   // v1.3.1 Item 6 (real fix): the per-class CSS font bumps didn't visibly change anything
   // because nearly every element in index.html pins its own px font-size, so bumping `body`
   // never cascaded. Native Chromium zoom scales the ENTIRE rendered UI uniformly — fonts,
@@ -1647,6 +1660,21 @@ if (!gotLock) {
 // workers run under the app's exe via ELECTRON_RUN_AS_NODE, which is exactly why they
 // blend into Task Manager and lingered invisibly — D1). (2) Merge worker spill files
 // into pool journals before any Resume offer, so crash-finished rows are not re-run.
+// R10: unsaved-changes prompt on app close. The renderer keeps us informed of dirty
+// state; close is intercepted once and prompted natively (Save / Don’t Save / Cancel).
+// Save round-trips through the renderer — the save dialog lives there.
+let flowDirtyMain = false;
+let forceClosing = false;
+ipcMain.on('flow-dirty-state', (_, v) => { flowDirtyMain = !!v; });
+ipcMain.on('flow-close-now', () => { forceClosing = true; try { mainWindow.close(); } catch (e) {} });
+ipcMain.handle('confirm-unsaved', async () => {
+  const r = await dialog.showMessageBox(mainWindow, {
+    type: 'warning', buttons: ['Save', "Don't Save", 'Cancel'], defaultId: 0, cancelId: 2,
+    title: 'Unsaved changes', message: 'This flow has unsaved changes.', detail: 'Save them before switching flows?',
+  });
+  return r.response;
+});
+
 // R9: flow folders. flows\once\ (setup/teardown once-flows), flows\automation\
 // (ONLY flows the user explicitly flags — nothing is auto-flagged), flows\general\
 // (everything else). Startup migration sorts flat legacy flows by runMode.

@@ -184,6 +184,11 @@ contextBridge.exposeInMainWorld('api', {
   archiveSpreadsheet:  (d)     => ipcRenderer.invoke('archive-spreadsheet', d),
   saveFlow:            (d)     => ipcRenderer.invoke('save-flow', d),
   readFlowByName:      (d)     => ipcRenderer.invoke('read-flow-by-name', d), // R5b Tier 1
+
+  setFlowDirty:        (v)     => ipcRenderer.send('flow-dirty-state', !!v), // R10
+  confirmUnsaved:      ()      => ipcRenderer.invoke('confirm-unsaved'),     // R10
+  flowCloseNow:        ()      => ipcRenderer.send('flow-close-now'),        // R10
+  onSaveFlowThenClose: (cb)    => ipcRenderer.on('save-flow-then-close', () => cb()), // R10
   loadFlow:            ()      => ipcRenderer.invoke('load-flow'),
   listOnceFlows:       ()      => ipcRenderer.invoke('list-once-flows'),
   validateFlowRefs:    (d)     => ipcRenderer.invoke('validate-flow-references', d),

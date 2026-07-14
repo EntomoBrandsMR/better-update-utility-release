@@ -809,7 +809,7 @@ textarea { resize: vertical; min-height: 60px; }
 <!-- ══ BUILDER ══ -->
 <div class="panel" id="panel-builder">
   <div class="page-header">
-    <div class="page-title">Build steps</div>
+    <div class="page-title">Build steps <span id="builderFlowName" style="font-size:13px;font-weight:600;color:var(--t3);margin-left:8px">— Building</span></div>
     <div class="page-sub">Define what the automation does on each page</div>
   </div>
 
@@ -831,7 +831,7 @@ textarea { resize: vertical; min-height: 60px; }
         <span>Once-flow (no spreadsheet)</span>
       </label>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer" title="Automation flows are meant for scheduled/unattended runs and save into flows\automation. Nothing is flagged automatically - only this checkbox.">
-        <input type="checkbox" id="flowAutomation" onchange="flowAutomation=this.checked"/>
+        <input type="checkbox" id="flowAutomation" onchange="flowAutomation=this.checked;markFlowDirty()"/>
         <span>Automation flow</span>
       </label>
     </div>
@@ -1295,6 +1295,19 @@ async function openSpreadsheet() {
   document.getElementById('previewCard').style.display = 'block';
   document.getElementById('previewMeta').textContent = 'showing first ' + ssRows.length + ' rows';
   renderColChips(); renderPreview(); renderSteps(); refreshRunBtn();
+  // R10: delegated dirty catch-all — any input/change inside the builder (step fields,
+  // flow-type controls, run config) marks the flow dirty. Explicit hooks cover the
+  // button-driven mutations (add/delete/reorder) that fire no input events.
+  try{
+    const _pb = document.getElementById('panel-builder');
+    if(_pb){ _pb.addEventListener('input', markFlowDirty, true); _pb.addEventListener('change', markFlowDirty, true); }
+    updateBuilderTitle();
+  }catch(e){}
+  if(API.onSaveFlowThenClose) API.onSaveFlowThenClose(async function(){
+    // R10 app-close Save path: save, then let main proceed; a cancelled save stays open.
+    const ok = await saveFlow();
+    if(ok && API.flowCloseNow) API.flowCloseNow();
+  });
 }
 
 function renderColChips() {
@@ -1547,6 +1560,7 @@ function initDragDrop() {
     if(toIdx < 0){ steps.splice(fromIdx, 0, moved); dragSrcId = null; return; }
     const insertAt = before ? toIdx : toIdx + 1;
     steps.splice(insertAt, 0, moved);
+    markFlowDirty();
     dragSrcId = null;
     renderSteps();
   });
@@ -1792,10 +1806,10 @@ function bodyHTML(s) {
 function esc(v) { return (v||'').toString().replace(/"/g,'&quot;'); }
 function esc2(v) { return (v||'').toString().replace(/'/g,"\\'"); }
 function toggleStep(id) { const s=steps.find(x=>x.id===id); if(s){s.open=!s.open;renderSteps();} }
-function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s) s[f]=v; scheduleValidationRefresh(); }
-function delStep(e,id) { e.stopPropagation(); steps=steps.filter(s=>s.id!==id); renderSteps(); }
-function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id); const ni=i+d; if(ni<0||ni>=steps.length)return; [steps[i],steps[ni]]=[steps[ni],steps[i]]; renderSteps(); }
-function addStep(type) { const st={id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}; if(type==='readfield'){ st.readMode='both'; st.readOnMissing='blank'; } if(type==='ifclick'){ st.presenceSec=1; } steps.push(st); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
+function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s){ s[f]=v; markFlowDirty(); } scheduleValidationRefresh(); }
+function delStep(e,id) { e.stopPropagation(); steps=steps.filter(s=>s.id!==id); markFlowDirty(); renderSteps(); }
+function mv(e,id,d) { e.stopPropagation(); const i=steps.findIndex(s=>s.id===id); const ni=i+d; if(ni<0||ni>=steps.length)return; [steps[i],steps[ni]]=[steps[ni],steps[i]]; markFlowDirty(); renderSteps(); }
+function addStep(type) { const st={id:nid++,type,open:true,checkAction:'check',waitType:'fixed'}; if(type==='readfield'){ st.readMode='both'; st.readOnMissing='blank'; } if(type==='ifclick'){ st.presenceSec=1; } steps.push(st); markFlowDirty(); document.getElementById('addMenu').classList.remove('open'); renderSteps(); }
 function toggleAddMenu() { document.getElementById('addMenu').classList.toggle('open'); }
 function syncDelayMax() {
   const min = parseFloat(document.getElementById('rowDelayMin').value||0);
@@ -3228,7 +3242,7 @@ function cancelProfile(){document.getElementById('profileForm').style.display='n
 // v1.2.8: flow-meta UI handlers. Keep renderer state and DOM in sync.
 // setRunMode changes the active mode; toggles which UI elements are visible
 // (composition fields, once-flow notice, spreadsheet-dependent inputs).
-function setRunMode(mode){
+function setRunMode(mode){ markFlowDirty();
   runMode = (mode === 'once') ? 'once' : 'per-row';
   // Sync the radios in case this was called from code (e.g. loadFlow).
   const r1 = document.getElementById('runModePerRow');
@@ -3346,6 +3360,25 @@ async function refreshOnceFlowDropdowns(){
 
 let flowAutomation = false; // R9: saves into flows\automation when checked
 
+// R10: dirty tracking + active-flow-name display. 'Building' = new/unsaved flow; a
+// dot marks unsaved changes. Main is kept informed so app-close can prompt.
+let flowDirty = false;
+function updateBuilderTitle(){
+  const el = document.getElementById('builderFlowName');
+  if(el) el.textContent = '\u2014 ' + (flowName || 'Building') + (flowDirty ? ' \u2022' : '');
+}
+function markFlowDirty(){
+  if(flowDirty) return;
+  flowDirty = true;
+  updateBuilderTitle();
+  if(API.setFlowDirty) API.setFlowDirty(true);
+}
+function clearFlowDirty(){
+  flowDirty = false;
+  updateBuilderTitle();
+  if(API.setFlowDirty) API.setFlowDirty(false);
+}
+
 async function saveFlow(){
   // R6: system tokens ({{TODAY}}/{{RUNDATE}}) WIN over same-named columns — warn loudly
   // at save time when the loaded sheet has a column that will be shadowed.
@@ -3380,16 +3413,21 @@ async function saveFlow(){
     const saveName = flow.name;
     const p = await API.saveFlow({ json, name: saveName, sub: runMode === 'once' ? 'once' : (flowAutomation ? 'automation' : 'general') });
     if(p) {
+      // R10: the filename is the flow's name (v1.2.8.1 rule) — sync it, clear dirty.
+      flowName = String(p).replace(/\\/g,'/').split('/').pop().replace(/\.json$/i,'');
+      clearFlowDirty();
       alert('Flow saved to ' + p);
       // v1.2.8: if we just saved a once-flow, it should appear in setup/teardown
       // dropdowns immediately so users can chain it without restarting.
       if(runMode === 'once') refreshOnceFlowDropdowns();
     }
+    return !!p;
   } else {
     const a = document.createElement('a');
     a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(json);
     a.download = (flow.name || 'buu-flow') + '.json';
     a.click();
+    return false; // browser fallback cannot confirm a save landed
   }
 }
   // R2: If-click is absorbed into the unified Click. Migrate on load; the flow persists
@@ -3414,6 +3452,13 @@ async function saveFlow(){
   }
 
 async function loadFlow(){
+  // R10: unsaved-changes gate on flow switch — Save / Don't Save / Cancel via a
+  // native 3-button dialog (confirm() can only do two).
+  if(flowDirty){
+    const r = API.confirmUnsaved ? await API.confirmUnsaved() : (confirm('Discard unsaved changes?') ? 1 : 2);
+    if(r === 2) return;
+    if(r === 0){ const ok = await saveFlow(); if(!ok) return; }
+  }
   let json;
   if(API.loadFlow){
     json = await API.loadFlow();
@@ -3443,6 +3488,7 @@ async function loadFlow(){
   flowName = data.name || '';
   flowAutomation = !!data.automation; // R9
   { const _fa = document.getElementById('flowAutomation'); if (_fa) _fa.checked = flowAutomation; }
+  clearFlowDirty(); // R10: freshly loaded = clean; also refreshes the builder title
   steps = migrateLoadedSteps(data.steps || []);
   nid = steps.reduce((mx,s) => Math.max(mx, typeof s.id === 'number' ? s.id + 1 : 1), 1);
   const c = data.config || {};
