@@ -1,0 +1,30 @@
+v2.3.0: the rebuild release. Phases 2-4 complete.
+
+Refactor: monolithic main.js split into engine/login, engine/locate, engine/steps,
+pool/worker, pool/coordinator, journal. Teardown removed Run Log tab, unused step
+types, verify-after-action, circuit breaker, batching, skip status, No-URL alert.
+
+Bug fixes (Phase 3): one-URL logout with LEAK badges and possibleLeaks accounting;
+reauth = logout-then-login with login-probe + retry-once failure recovery; stop =
+step-boundary abandon + 10s fuse + prompt logout sweep; before-quit worker kill;
+status throttling; crash safety (stdin-close spill files, pidfile + name-verified
+orphan sweep, spill merge on resume).
+
+Rebuild (R1-R16): journal flush-per-row with single reader driving resume + orphan
+scan; unified Click (when-to-act, per-step timeout, if-not-found, after-click;
+ifclick absorbed); dialog accept/decline checkboxes on action steps; adaptive worker
+scaling (comfortable cap + pressure sensing + license cap on ONE eval path, manual
+wins, sequential ramp); step debugger (persistent pane, redo/last/skip/restart-row
+cursor commands, live flow reload at pauses, fresh disk read at launch); system date
+tokens TODAY/RUNDATE +/-N days; pressAfter on type steps; C:\BUU fixed install root
+with upgrade-preserve installer and copy-based appdata migration; flow folders
+(once/automation/general) with filtered pickers; flow-name UX with dirty tracking
+and Save/Don't Save/Cancel on switch + close; shim layer deleted (renderer consumes
+pool events directly, pool-row-error feed, one start/stop path); error strip; step
+reorder buttons; pool settings saved with the flow; spreadsheet-free once-flows run
+directly; scheduler (zone-computed fire times, reserved blocks with overlap refusal,
+missed-at-boot popup, schedules panel).
+
+Install note: this release moves the install to C:\BUU. First launch COPIES flows
+and logs from %APPDATA%\buu-2 (originals untouched). Taskbar pins survive future
+updates from here on.
