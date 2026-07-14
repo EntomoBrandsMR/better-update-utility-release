@@ -1056,6 +1056,10 @@ textarea { resize: vertical; min-height: 60px; }
          are enough at pool scale. -->
     <div id="workerGridHd" style="display:none;font-size:11px;font-weight:600;color:var(--t3);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em">Workers</div>
     <div id="workerGrid" style="display:none;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px"></div>
+    <!-- R12: error strip — last N errors, newest first, click for detail. Replaces the
+         Run Log tab deleted in the Phase 2 teardown. Fed by pool-row-error (R11a). -->
+    <div id="errStripHd" style="display:none;font-size:11px;font-weight:600;color:var(--red);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em">Recent errors</div>
+    <div id="errStrip" style="display:none;flex-direction:column;gap:4px"></div>
   </div>
 </div>
 
@@ -2546,6 +2550,9 @@ function renderCoordStatus(st){
         _se.textContent=_t;
       } else _se.textContent='';
       if(st && !st.active && stepPaneSticky) forceHidePause(); // R5: pool died/ended
+      // R12: clear the error strip when a NEW pool goes active.
+      if(st && st.active && !_errStripActive){ _errStripActive=true; _errStrip=[]; renderErrorStrip(); }
+      if(st && !st.active) _errStripActive=false;
     }
   }catch(e){}
   const grid=document.getElementById('workerGrid');
@@ -2737,7 +2744,31 @@ if(API.onPoolPause) API.onPoolPause(function(p){
   }
 });
 // R11: direct per-row ERROR feed (ok rows stay counter-only — the D3 flood lesson).
+// R12: error-strip ring buffer (newest first, cap 25).
+let _errStrip = [];
+let _errStripActive = false;
+function renderErrorStrip(){
+  const hd=document.getElementById('errStripHd'), el=document.getElementById('errStrip');
+  if(!hd||!el) return;
+  if(!_errStrip.length){ hd.style.display='none'; el.style.display='none'; el.innerHTML=''; return; }
+  hd.style.display=''; hd.textContent='Recent errors ('+_errStrip.length+(_errStrip.length>=25?', latest 25':'')+')';
+  el.style.display='flex';
+  el.innerHTML=_errStrip.map(function(e,i){
+    const one=(e.error||'').split('\n')[0].slice(0,110);
+    return '<div class="card" style="padding:6px 10px;border:1px solid var(--bdr2);border-radius:8px;background:var(--surf2);cursor:pointer" onclick="toggleErrDetail('+i+')">'
+      +'<div style="display:flex;gap:10px;font-size:11px;align-items:baseline"><span style="font-weight:700;color:var(--red)">row '+e.row+'</span>'
+      +(e.step?'<span style="color:var(--t3)">'+esc(String(e.step)).slice(0,40)+'</span>':'')
+      +(e.reason?'<span style="color:var(--amber)">['+esc(e.reason)+']</span>':'')
+      +'<span style="color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+esc(one)+'</span></div>'
+      +'<div id="errDetail-'+i+'" style="display:none;font-size:11px;color:var(--t2);margin-top:5px;white-space:pre-wrap;font-family:monospace">'+esc(e.error||'')+(e.workerId?'\nworker: '+esc(String(e.workerId)):'')+(e.ts?'\nat: '+e.ts:'')+'</div></div>';
+  }).join('');
+}
+function toggleErrDetail(i){ const d=document.getElementById('errDetail-'+i); if(d) d.style.display = d.style.display==='none'?'':'none'; }
+
 if(API.onPoolRowError) API.onPoolRowError(function(d){
+  _errStrip.unshift({ row:d.row, step:d.step, reason:d.reason, error:d.error, workerId:d.workerId, ts:new Date().toLocaleTimeString() });
+  if(_errStrip.length>25) _errStrip.length=25;
+  renderErrorStrip();
   addLiveLog('\u2717 Row '+d.row+' FAILED'+(d.reason?' ['+d.reason+']':'')+': '+(d.error||''),'err');
 });
 if(API.onPoolComplete) API.onPoolComplete(function(d){

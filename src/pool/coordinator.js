@@ -451,7 +451,7 @@ function coordHandleWorkerMessage(workerId, msg){
       // R11: direct error feed to the renderer (errors only — the D3 lesson says no
       // per-row event floods; OK rows are visible through the counters).
       if(String(msg.status||'').indexOf('ok') !== 0 && ctx.mainWindow){
-        try { ctx.mainWindow.webContents.send('pool-row-error', { workerId: w.workerId, jobId: w.jobId, row: msg.row, error: msg.error || '', reason: msg.errorCategory || undefined }); } catch (e) {}
+        try { ctx.mainWindow.webContents.send('pool-row-error', { workerId: w.workerId, jobId: w.jobId, row: msg.row, error: msg.error || '', reason: msg.errorCategory || undefined, step: msg.phase || undefined }); } catch (e) {}
       }
       if(job && job.completedRows) job.completedRows.add(msg.row);
       w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else w.err++;
