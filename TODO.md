@@ -540,12 +540,15 @@ ALSO IN 3.0.3:
        and a background write must never make the user think they have edits).
      - MUST NOT touch renderer in-memory flow state (no clobbering live edits).
      - Flow not saved to disk yet => skip silently, no error.
-   On flow load: if lastGoodWorkers exists, it seeds the Start box, so the next run
-   begins where the last one settled instead of rediscovering it from scratch.
+   WHERE IT LIVES: inside the flow's OWN .json, as one extra top-level key
+   ("lastGoodWorkers": 6). NOT a master file, NOT one global value. Each flow carries
+   its own number because each flow does different work - one may settle at 6 while a
+   heavier flow settles at 3; a single shared value would be wrong for both.
+   ON FLOW LOAD (Matthew, decided): lastGoodWorkers REPLACES the 9 in the Start box.
+   9 is only the default for a brand-new flow with no history. "that flow knows whats
+   best for it".
    RATIONALE (measured): throughput at a fixed 13 workers naturally wobbles
    1.32-1.63 rows/sec (+/-10%), so a single 60s sample cannot tell "8 beats 9" from
    luck. Honest climb rate is ~1 step per eval tick => 1->9 would waste ~20 minutes
    of every run. Seeding from last-good removes that cost entirely.
-   OPEN (needs Matthew): does a saved lastGoodWorkers silently overwrite the Start
-   box on load, or only prefill it if the user has not set one? Assuming
-   "seeds the Start box on load" until told otherwise.
+
