@@ -510,3 +510,42 @@ ALSO IN 3.0.3:
  - Selector timeout is NOT a usable row ceiling: it is PER-SELECTOR, not per-row.
    p99 row = 18s, max = 621s (10.4 min) because a row with 10 steps can spend 30s
    on each. "% of the available 30s" has no fixed denominator.
+
+-----------------------------------------------------------------------------
+3.0.3 WORKER POOL — refinements (Matthew, same session)
+-----------------------------------------------------------------------------
+1. CLIMB CADENCE = THE EXISTING EVAL INTERVAL. No second timer. Whatever the
+   "Eval every (min)" box says IS the recalculation cadence — set it to 2 and the
+   throughput climb re-evaluates every 2 min. (Matthew: "i would set the time to
+   whatever the auto time check is first of so if its at 2 then it recalculates
+   at 2".) This also self-documents: one visible number controls how twitchy the
+   whole system is.
+
+2. START BOX = 9 BY DEFAULT, AND IT IS **NOT A FLOOR**. It sets the INITIAL worker
+   count only. The heuristics may take the pool BELOW it — explicitly allowed.
+   (Matthew: "do not have it be a clam so the run can go under that".)
+   So Start is a seed, Max is a lid, heuristics own everything in between:
+       initial W  = Start
+       ongoing W  = min( Max, licenseCap, hwCap*(hw/4), W_optimal*(pp/4) )
+                    ... and this may be < Start. That is correct, not a bug.
+
+3. LAST-GOOD W AUTO-SAVES TO THE FLOW — AND NOTHING ELSE RIDES ALONG.
+   (Matthew: "i think the last good should jus save by default to the flow, not
+   saving anything else in the porcess just taht number".)
+   Implementation constraints, because this writes to disk with no user action:
+     - Write ONLY the lastGoodWorkers field. Read the flow JSON from disk, set the
+       one key, write back. NEVER rewrite the whole poolSettings block — that would
+       silently capture whatever the sliders happen to be at right now.
+     - MUST NOT mark the flow dirty (that is what fires the unsaved-changes prompt,
+       and a background write must never make the user think they have edits).
+     - MUST NOT touch renderer in-memory flow state (no clobbering live edits).
+     - Flow not saved to disk yet => skip silently, no error.
+   On flow load: if lastGoodWorkers exists, it seeds the Start box, so the next run
+   begins where the last one settled instead of rediscovering it from scratch.
+   RATIONALE (measured): throughput at a fixed 13 workers naturally wobbles
+   1.32-1.63 rows/sec (+/-10%), so a single 60s sample cannot tell "8 beats 9" from
+   luck. Honest climb rate is ~1 step per eval tick => 1->9 would waste ~20 minutes
+   of every run. Seeding from last-good removes that cost entirely.
+   OPEN (needs Matthew): does a saved lastGoodWorkers silently overwrite the Start
+   box on load, or only prefill it if the user has not set one? Assuming
+   "seeds the Start box on load" until told otherwise.
