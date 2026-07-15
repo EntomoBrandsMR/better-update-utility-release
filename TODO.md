@@ -403,3 +403,110 @@ build → gh release (dash-separated exe name) → version-buu2.json on main BOM
 unused step types (grep his real flows dir on the MAIN rig — %APPDATA%\buu-2\flows —
 this VM has none); D5 trigger step (one step-debugger pass over the add-note flow
 once the debugger exists, or on current build).
+
+=============================================================================
+3.0.3 — WORKER POOL REBUILD (agreed with Matthew 2026-07-15, data-backed)
+=============================================================================
+Supersedes R4. The R4 spec line "Manual IS the default (manual wins over auto)"
+was MY sentence, not Matthew's, and it was wrong: it made auto incapable of ever
+adding a worker, so every line of scaling code could only ever subtract from a
+number the user already set. That is why auto "never worked" — it structurally
+could not.
+
+WHAT MATTHEW ASKED FOR (verbatim intent):
+ - a box to set MAXIMUM  -> hard ceiling, nothing exceeds it, LIVE (lower it below
+   the current live count mid-run and workers drain down to it, same as sliders)
+ - a box to set STARTING number (new; he notes he had not asked before)
+ - TWO sliders with heuristics: one PestPac, one hardware. Range 1-5.
+   4 = regular use = 100%. 5 = slight overdrive. DEFAULT 4.
+ - Buffer box, Auto-scale checkbox, and everything south of it in the worker pool
+   area: KEEP AS IS.
+ - Eval every (min): change BACK to a box (it is a slider now).
+ - Hardware slider stays even though this machine is not hw-bound: other machines
+   (VMs) will be.
+
+THE MODEL — heuristics DECIDE, Max CLAMPS:
+   effective target = min( Max,
+                           licenseCap,
+                           hwCap      * (hwSlider/4),
+                           W_optimal  * (ppSlider/4) )
+ Max is an override/lid, NOT the target. Do not collapse this back into
+ "manual wins" — that is the exact mistake being fixed.
+
+THE METRIC — OVERALL ROWS/MIN, never per-row latency:
+ Matthew: "focus on the overall". Throughput T = live workers / median row
+ duration. Per-row latency is actively misleading, PROVEN on his 2026-07-15 run:
+ 4->13 workers took row time 3.4s -> 7.5s (MORE than doubled) while throughput
+ went 1.15 -> 1.55 rows/sec (35% BETTER). A "time doubled = bad" rule backs off
+ at 13, which was a good place to be.
+ Rule that captures both his cases in one formula: doubling row time only pays if
+ you MORE than double workers.
+   - his 4->7 @2x time: 34 -> 30 rows/min = WORSE (he was right)
+   - real 4->13 @2.2x time: better
+
+MEASURED ON THE REAL RUN (pool1784152504826, 4027 OK rows) — throughput by live
+worker count. THIS IS THE EVIDENCE, not opinion:
+   live   med row   rows/sec   per-worker
+      1     7.1s      0.19       0.194
+      4     3.4s      1.15       0.288   <- best efficiency per worker
+      9     5.3s      1.61       0.179   <- PEAK OVERALL THROUGHPUT
+     13     7.5s      1.55       0.119
+     23     9.7s      1.12       0.049
+     27     9.3s      1.35       0.050   <- WORSE than 9, at 3x the licenses
+ => W_optimal was ~9. 27 workers did LESS work than 9 while burning 3x licenses
+    and 3x logins. Matthew predicted exactly this.
+
+WHY IT COLLAPSED TO 1 (three compounding faults, all mine):
+ 1. THRESHOLD INSIDE THE NOISE. Consecutive 30-row medians naturally swing:
+    p50 1.01, p90 1.11, p95 1.15, MAX 1.46. The code drops at 1.4 — BELOW the
+    observed noise maximum. It fires on nothing.
+ 2. DROP COMPOUNDS WITH NO FLOOR. floor(workers*0.8) repeatedly:
+    13->10->8->6->4->3->2->1. Recovery is +1 per eval (2 min) => 1->13 takes 24
+    MINUTES. One false positive costs half an hour.
+ 3. BASELINE IS MEANINGLESS. baseline = median of first 50 OK rows, captured at
+    1 WORKER on whatever accounts happened to be first. Evidence: 1 worker at
+    5:55 = 7.1s/row; 1 worker at 6:10 = 3.1s/row. Same worker count, 2.3x apart —
+    pure account variance. The ratio measured row complexity, not load.
+ FIXES: rolling re-based baseline (never frozen at first-50, never captured at a
+ different worker count); step DOWN to last-known-good W, never blind 20%
+ compounding; sample = 50 rows or 60s whichever is larger (30 rows at 13 workers
+ is only 19s — too twitchy).
+
+CONTAINMENT BUG (this is how 4 became 29 — Matthew watched it, I twice said it
+was impossible, he was right both times):
+ coordEvalScale/coordScaleTo are ASYNC and RE-ENTRANT with NO GUARD anywhere.
+ coordScaleTo reads `const live = COORD.workers.size` ONCE at entry, then sits in
+ an await loop up to 90s PER WORKER (sequential ramp). Meanwhile FIVE callers can
+ re-enter it: the eval timer (main.js 728/804/842/974) and EVERY slider move
+ (main.js 844, via pool-set-scaling). Each concurrent call computes canSpawn from
+ an already-stale `live` and spawns independently. They compound. Ceiling is 150,
+ so nothing stops 29.
+ FIX: a single in-flight mutex on the eval/scale path; re-read live count after
+ every await; re-assert the clamp before every spawn.
+
+LICENSE — NON-NEGOTIABLE, ALWAYS ON:
+ Today: `licenseProfileId: elastic ? activeProfileId : null`. Untick Auto-scale
+ and licenseProfileId is null -> elasticParams null -> COORD.licenseCap = Infinity
+ -> NO license counting and the buffer is IGNORED ENTIRELY. Matthew has been clear
+ since the beginning that knowing seats in use and respecting the buffer is a hard
+ requirement. It is a SAFETY CONSTRAINT, not a feature of a checkbox.
+ FIX: license cap runs unconditionally, with its own profile picker. Never gated.
+
+CHURN — DO NOT "FIX" IT (I proposed holding workers logged-in-but-idle; Matthew
+ stopped me and he was right): idle workers still HOLD PESTPAC LICENSES while
+ doing nothing, which directly violates the buffer rule. Killing on scale-down is
+ CORRECT — exiting frees the seat. The login cost is the right price. This idea is
+ dead, not deferred.
+
+ALSO IN 3.0.3:
+ - JOURNAL NEEDS A WORKER ID. Schema is {j,r,s,ms,ts} — no worker field, so the
+   journal cannot answer "which worker did this row". R1 made the journal more
+   reliable and LESS informative. Add `w`.
+ - Worker grid: live workers only.
+ - _hwCapCache only refreshes when a slider moves, never during a run => stale =>
+   amber lies (slider 4 showed amber while the real cap was 21).
+ - Reset Defaults button (in the R4 doc, never built — no excuse).
+ - Buffer as a slider (R4 doc said ALL settings are sliders, never built).
+ - Selector timeout is NOT a usable row ceiling: it is PER-SELECTOR, not per-row.
+   p99 row = 18s, max = 621s (10.4 min) because a row with 10 steps can spend 30s
+   on each. "% of the available 30s" has no fixed denominator.
