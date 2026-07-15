@@ -700,6 +700,15 @@ async function coordScaleTo(target){
     // (status 'running') before the next spawns. 90s per-worker ramp budget; a worker
     // that dies or finishes during ramp releases the loop immediately.
     for (let i = 0; i < canSpawn; i++) {
+
+      // v3.0.3: re-assert against the LIVE count every iteration. `live` above is a
+
+      // snapshot and this loop awaits for up to 90s per worker — by now it can be stale,
+
+      // and anything that re-entered must not be able to push us past the target.
+
+      if (COORD.workers.size >= target) break;
+
       const _id = await coordSpawnWorker();
       if (!_id) break;
       const _t0 = Date.now();
@@ -733,8 +742,18 @@ function _median(a){ if(!a || !a.length) return null; const s2=[...a].sort((x,y)
 // Pressure = median(last 30 OK rows)/median(first 50): >1.4 sustained 2 checks → drop
 // ~20% of live workers; 1.15–1.4 → hold; <1.15 → creep back +1 per tick (drop fast,
 // recover slow). Changes apply at row boundaries (scale-down drains; ramp is sequential).
+// v3.0.3: RE-ENTRANCY GUARD. This function awaits (license scrape, and a ramp that can
+// run 90s per worker) while five callers can fire it — the eval timer and every slider
+// move. Concurrent passes each read a stale worker count and spawn independently, which
+// is how a manual cap of 4 produced 29 live workers. Coalesce rather than drop: a request
+// arriving mid-pass sets _evalPending so the LAST intent still gets applied once.
+let _evalInFlight = false;
+let _evalPending = false;
 async function coordEvalScale(){
   if(!COORD.active || COORD.stopping) return;
+  if(_evalInFlight){ _evalPending = true; return; }
+  _evalInFlight = true;
+  try {
   if(COORD.elasticParams){
     try{ await coordLicenseScale(COORD.elasticParams.licenseProfileId, COORD.elasticParams.licenseBuffer, COORD.elasticParams.hwCap); }catch(e){}
   } else COORD.licenseCap = Infinity;
@@ -760,10 +779,15 @@ async function coordEvalScale(){
       }
     }
   }
-  COORD.capReason = reason;
-  COORD.desiredWorkers = target;
-  await coordScaleTo(target);
-  coordEmitStatus();
+    COORD.capReason = reason;
+    COORD.desiredWorkers = target;
+    await coordScaleTo(target);
+    coordEmitStatus();
+  } finally {
+    _evalInFlight = false;
+    // a request that arrived mid-pass runs now, so the last slider move is never lost
+    if(_evalPending){ _evalPending = false; setTimeout(() => { coordEvalScale().catch(()=>{}); }, 0); }
+  }
 }
 
 async function coordLicenseScale(profileId, buffer, hwCap){
