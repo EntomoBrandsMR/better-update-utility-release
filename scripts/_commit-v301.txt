@@ -1,0 +1,34 @@
+v3.0.1: emergency fix release. 3.0.0's pool could not complete a single row.
+
+REAUTH_INTERVAL_MS (slot 5) was lost from pool/worker.js in the Phase 2/3 refactor.
+CFG markers substitute by NUMBER, so the hole assembled and parsed cleanly and every
+gate passed it. At runtime worker.js line 546 reads the identifier unconditionally
+(`REAUTH_INTERVAL_MS > 0 ? ...`) between login and the row loop, so every worker threw
+ReferenceError right after logging into PestPac and the coordinator respawned it
+forever. Because the rebuild collapsed the parallel run paths into one, this took down
+100% of runs - run-all, step debugger, per-row, once-flows, manual and scheduled alike.
+The validator now enforces CFG marker contiguity from 0; counting markers could never
+catch a deleted declaration.
+
+Two more from one bug class: declarations parked inside main.js's single-instance
+`else` block while module-scope code reads them.
+ - forceClosing / flowDirtyMain (R10): createWindow's close handler is a closure over
+   module scope, so every app close threw "forceClosing is not defined" and the
+   unsaved-changes prompt never worked. Force-killing in boot smoke never fires
+   'close', which is why it survived testing.
+ - FLOW_SUBS (R9): a const gets no Annex B hoisting, so the module-scope save-flow
+   handler threw before showSaveDialog and the Save flow button did nothing at all.
+Both moved to module scope with a comment pinning them there.
+
+Also: new Click steps default After-click to Wait-for-element (new steps only - the
+render fallback is unchanged so existing saved flows do not retroactively start
+waiting on an afterSelector they never set).
+
+Also: the legacy header button cluster is deleted rather than greyed out (Updates /
+Load / Save / Flows / Run automation, plus the hidden Stop and Force-stop relics from
+the single-runner era, and the orphaned refreshRunBtn/stopRun/forceStopNow JS -
+poolUIActive was still poking runBtn/stopBtn, which would throw). Load flow, Flows
+folder and Check for updates are rehomed in the sidebar.
+
+Deferred to 3.0.2: the one-time cleanup of the orphaned old install dir and the
+duplicated AppData flows/logs.
