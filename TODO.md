@@ -544,6 +544,19 @@ ALSO IN 3.0.3:
    ("lastGoodWorkers": 6). NOT a master file, NOT one global value. Each flow carries
    its own number because each flow does different work - one may settle at 6 while a
    heavier flow settles at 3; a single shared value would be wrong for both.
+   OWNERSHIP RULE (Matthew, decided): lastGoodWorkers is the ONLY field that uses the
+   special background write, and it saves NO OTHER WAY. Everything else saves ONLY via
+   the normal user-driven Save flow, and never in the background.
+   THE TRAP THIS CREATES: saveFlow() rebuilds the entire JSON from renderer memory. Run
+   a flow (pool writes lastGoodWorkers:6) -> edit a step -> Save flow -> the rebuilt
+   file has no lastGoodWorkers and the number is SILENTLY DELETED.
+   THEREFORE: the renderer NEVER carries lastGoodWorkers in its flow object (it cannot
+   clobber what it never holds), and main's save-flow handler PRESERVES the existing
+   value when rewriting - read the file being overwritten, carry the key across. Same
+   handler already rewrites 
+ame from the chosen filename, so there is precedent for
+   surgical fixups there. Save-As to a NEW filename finds no existing file and
+   correctly starts with no history.
    ON FLOW LOAD (Matthew, decided): lastGoodWorkers REPLACES the 9 in the Start box.
    9 is only the default for a brand-new flow with no history. "that flow knows whats
    best for it".
