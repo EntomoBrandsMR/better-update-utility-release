@@ -1,0 +1,40 @@
+v3.0.2: the fixes that let a run actually start.
+
+HEADER WHITESPACE - silent wrong data. A sheet header entered as 'Account Number '
+became the literal row key 'Account Number ', so the {{Account Number}} anyone would
+actually type resolved to blank - no error, wrong data written. The pipeline also
+disagreed with itself: open-spreadsheet trimmed CSV but not XLSX; worker loadAllRows
+trimmed CSV but not XLSX; loadRowsForJob trimmed neither; checkFlowColumnsAgainstSheet
+trimmed the token but compared it against untrimmed headers, so a stray-space header
+reported "column missing" no matter what was typed. Now trimmed at every read site and
+at token resolution. Trimming both sides is a strict superset, so flows built against
+an untrimmed header keep resolving. XLSX remap only runs when the header row is
+actually dirty. The renderer warns at load when trimming collapses two headers onto
+one key, because the loser would silently overwrite. Proven by _test-header-ws.js
+(13/13) against the REAL loadAllRows and REAL steps.js resolver, not a reimplementation.
+
+CRASH ON CLOSE - "TypeError: Object has been destroyed" (26 sites). Every send to the
+renderer was guarded with `if (mainWindow)`. That is a truthiness check and it never
+worked: a destroyed BrowserWindow stays truthy because mainWindow is never nulled. On
+close the guards all passed and .webContents.send() threw. Closing BUU kills the
+workers; each exiting worker fires a close handler that calls coordEmitStatus; the main
+process crashed. All 18 coordinator + 7 main.js sends now route through a _send()
+helper that checks isDestroyed() on the window AND its webContents.
+
+SCHEDULES WAS BLANK. The R16 script anchored its panel insert on pasteModal, landing
+panel-schedules OUTSIDE .content and .shell - a body-level orphan (depth -2 vs every
+other panel's 0). .shell is full height, so the activated panel rendered below the
+viewport. Moved inside .content; depth now 0.
+
+LOAD FLOW DEMANDED TO SAVE A FLOW THAT DID NOT EXIST. setRunMode() opened with
+markFlowDirty(), and boot calls setRunMode('per-row') - so BUU marked a nonexistent
+flow dirty before the user touched anything. Programmatic callers now say so; added
+flowHasContent() so nothing prompts over seeded locked login/logout scaffolding.
+
+RIGHT-CLICK PASTE. Never worked in any version: Electron ships no default context menu
+and this codebase never built one - Menu was not even imported. Cut/Copy/Paste/Select
+all, enabled from Chromium's own editFlags.
+
+NEW GATE: a real close test (boot, genuine window close, assert clean exit and no
+dialog) instead of force-killing. It passes. Force-killing never fires 'close', which
+is why two shutdown-path crashes shipped.
