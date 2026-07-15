@@ -339,7 +339,21 @@ the end pass).
 the step's real semantics arm the FUTURE dialog (dialog steps sit BEFORE their triggering
 clicks — verified in the golden flow). Migration folds FORWARD into the next action step;
 dialogMatch is dropped (per-step scoping replaces it). Engine keeps a legacy 'dialog'
-backstop case. REBUILD DONE - next milestone is Matthew's end test, then ship.
+backstop case. SHIPPED as v3.0.0 (28533c3, tag v3.0.0; 2.3.0 withdrawn pre-install,
+release+tag deleted). version-buu2.json on main -> 3.0.0, BOM-free verified.
+
+PLANNED 3.0.1 - ONE-TIME CLEANUP (temporary code, REMOVED in 3.0.2):
+On packaged launch at C:\BUU, offer (prompt, never silent) two deletions:
+(a) the orphaned old install dir - the updater runs the old uninstaller pointed at
+C:\BUU because preInit overwrote InstallLocation before uninstallOldVersion reads it
+(verified in eb template installUtil.nsh), so the old folder survives. Detect: scan
+%LOCALAPPDATA%\Programs for a dir containing 'BUU 2.0.exe' that is NOT
+dirname(execPath); require exe-name match before any delete (never a bare
+registry-path RMDir).
+(b) the duplicated %APPDATA%\buu-2\flows + logs - only offer when the C:\BUU copies
+exist and are non-empty; NEVER touch journals/spills/creds/config in userData.
+3.0.2 = delete the cleanup code again. Both app-side, both prompted - orphaned files
+are the safe failure mode, a misfired delete is the catastrophic one.
 Also: 2026-07-10 incident —
 drag-fill incremented LocationIDs, golden run deleted real setups at 1263957-66;
 Matthew recovering by hand; rows 2/5/10 had renewal + open-order damage.
