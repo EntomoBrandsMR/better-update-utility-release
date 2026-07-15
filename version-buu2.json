@@ -1,5 +1,5 @@
 {
-    "version":  "3.0.1",
-    "downloadUrl":  "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.0.1/BUU-2.0-Setup-3.0.1.exe",
-    "notes":  "BUU v3.0.1 - critical fix. If you are on 3.0.0, take this update: 3.0.0\u0027s pool could not complete a single row - every worker died right after logging into PestPac and got respawned forever (the endless login loop). Also fixed: the crash on closing BUU (which also means the unsaved-changes prompt now works for the first time), the Save flow button doing nothing, and new Click steps now default After-click to Wait-for-element. The old header buttons are removed - Load flow, Flows and Check for updates are in the sidebar now."
+    "version":  "3.0.2",
+    "downloadUrl":  "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.0.2/BUU-2.0-Setup-3.0.2.exe",
+    "notes":  "BUU v3.0.2 - run-blocking fixes. Header whitespace: a sheet header with a trailing space became a row key with the space, so the token you would type resolved to blank (silently writing wrong data) and the column checker said \u0027missing\u0027 no matter what you typed. Headers are now trimmed at every read site and at token resolution - both sides, so your existing flows keep working - with a warning if trimming collapses two headers onto one key. Crash on close (\u0027Object has been destroyed\u0027): every send to the UI used a guard that could never fail, so closing BUU while workers were exiting crashed the main process. Schedules page was blank. Load flow demanded to save a flow that did not exist. Right-click Cut/Copy/Paste/Select-all now works - it was never implemented in any version."
 }
