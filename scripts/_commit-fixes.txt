@@ -1,0 +1,34 @@
+Fix all four v3.0.0 field bugs. Three were the same root cause.
+
+THE POOL WAS BROKEN IN EVERY MODE (infinite login loop):
+worker.js lost `const REAUTH_INTERVAL_MS = /*__BUU_CFG_5__*/null;` in the Phase 2/3
+refactor. Markers substitute BY NUMBER, so main.js's positional __inj array still fed
+slot 5 to nothing and slots 6+ still landed correctly — the assembled worker parsed
+clean and the validator passed it. At runtime every worker threw "REAUTH_INTERVAL_MS
+is not defined" the moment it reached the batch loop, i.e. immediately AFTER logging
+in. The coordinator saw a dead worker and respawned it: login, die, login, die,
+forever. That is the "chrome opens, logs into PestPac, closes, new window" loop.
+The validator now enforces marker CONTIGUITY from 0 — counting markers could never
+catch a deleted declaration, which is exactly how this shipped.
+
+CRASH ON EVERY CLOSE + SAVE FLOW SILENTLY DEAD (one bug class):
+main.js's `if (!gotLock) {} else { ... }` block held declarations that module-scope
+code reads.
+ - `let forceClosing` / `let flowDirtyMain` (R10): createWindow's 'close' handler is a
+   closure over MODULE scope and could not see them, so every close threw
+   "forceClosing is not defined" and the unsaved-changes prompt never once worked.
+   Boot smoke tests missed it because a force-kill never fires 'close'.
+ - `const FLOW_SUBS` (R9): read by the module-scope save-flow handler at line 1344.
+   A const gets NO Annex B hoisting (unlike the sibling function declarations, which
+   work by accident), so save-flow threw "FLOW_SUBS is not defined" BEFORE
+   showSaveDialog ran. The invoke rejected, the renderer's await died, and the button
+   looked inert. Verified the semantics empirically rather than assuming.
+Both now live at module scope with a comment saying why they must stay there.
+
+CLICK STEP DEFAULT:
+New click steps default After-click to Wait-for-element, and the "none" option no
+longer claims to be the default. NEW steps only — the render fallback is deliberately
+unchanged, because flipping it would retroactively make every existing saved click
+step wait on an afterSelector that was never set.
+
+Boot-verified; validators green (worker now 16 cfg markers, contiguous).

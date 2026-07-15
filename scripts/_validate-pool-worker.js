@@ -35,6 +35,15 @@ shell = shell.replace(/\/\*__BUU_INLINE ([A-Z_]+)__\*\//g, (_, n) => {
 });
 if (/\/\*__BUU_INLINE [A-Z_]+__\*\//.test(shell)) { console.error('FAIL: unresolved inline marker'); process.exit(1); }
 const cfgCount = (shell.match(/\/\*__BUU_CFG_\d+__\*\/null/g) || []).length;
+// v3.0.1: markers substitute BY NUMBER, so a DELETED declaration leaves a hole that still
+// assembles and parses — exactly how the lost REAUTH_INTERVAL_MS (slot 5) shipped in 3.0.0
+// and killed every worker at runtime. Counting markers was never enough: require the
+// numbering to be contiguous from 0, which is the only thing that catches a missing const.
+const _nums = [...shell.matchAll(/\/\*__BUU_CFG_(\d+)__\*\/null/g)].map(x => +x[1]);
+const _uniq = [...new Set(_nums)].sort((a, b) => a - b);
+const _gaps = [];
+for (let i = 0; i <= (_uniq[_uniq.length - 1] || 0); i++) if (!_uniq.includes(i)) _gaps.push(i);
+if (_gaps.length) { console.error('FAIL: CFG marker gap(s) — a const declaration is missing for slot(s): ' + _gaps.join(', ')); process.exit(1); }
 
 const tmp = path.join(require('os').tmpdir(), '_buu_pool_worker_check.js');
 fs.writeFileSync(tmp, shell, 'utf8');

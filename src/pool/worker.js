@@ -29,6 +29,14 @@ const PAGE_LOAD_MODE = /*__BUU_CFG_3__*/null;
 const NAV_TIMEOUT = 90000;
 const RETRY_COUNT = /*__BUU_CFG_4__*/null;
 // v2.2.2 Session 2E: per-job knobs.
+// v3.0.1 CRITICAL FIX: this declaration was lost in the Phase 2/3 refactor. The marker
+// list jumped 4 -> 6 while main.js's POSITIONAL __inj array still supplied slot 5, so
+// every worker threw "REAUTH_INTERVAL_MS is not defined" the moment it reached the batch
+// loop — after logging in. The coordinator respawned the dead worker forever: login,
+// die, login, die. The pool was broken in every mode. Markers substitute BY NUMBER, so
+// a hole still assembles and parses cleanly — which is why the validator passed it.
+// The validator now enforces contiguity.
+const REAUTH_INTERVAL_MS = /*__BUU_CFG_5__*/null;
 const CHROMIUM_EXE = /*__BUU_CFG_6__*/null;
 const FLOW_STEPS = /*__BUU_CFG_7__*/null;
 const SETUP_STEPS = /*__BUU_CFG_8__*/null;

@@ -19,6 +19,18 @@ const SERVICE_NAME = 'BUU2';
 const VERSION_URL = 'https://raw.githubusercontent.com/EntomoBrandsMR/better-update-utility-release/main/version-buu2.json';
 
 let mainWindow;
+// R10 (v3.0.1): module scope on purpose. These were declared inside the single-instance
+// `else` block, but createWindow()'s 'close' handler is a closure over MODULE scope — it
+// could not see them, so EVERY close threw "forceClosing is not defined" and the
+// unsaved-changes prompt never once worked. Boot smoke tests missed it because a
+// force-kill never fires 'close'.
+let flowDirtyMain = false;
+let forceClosing = false;
+// R9/v3.0.1: MODULE scope on purpose. Same bug as forceClosing above — this was declared
+// inside the single-instance `else` block, and a const gets no Annex B hoisting, so the
+// module-scope save-flow handler threw "FLOW_SUBS is not defined" and Save flow silently
+// did nothing (the dialog never opened). Never move these back inside a block.
+const FLOW_SUBS = ['automation', 'once', 'general'];
 // Map of runId -> { process, runId, profileId, logPath, startedAt, runnerLogStream, runnerPath, credPath }
 // v1.3.4 Phase 3: cap is no longer a hard const of 1. It's a runtime ceiling that defaults to
 // a hardware-derived suggestion (see computeHardwareCap) and can be overridden via config.
@@ -1670,8 +1682,7 @@ if (!gotLock) {
 // R10: unsaved-changes prompt on app close. The renderer keeps us informed of dirty
 // state; close is intercepted once and prompted natively (Save / Don’t Save / Cancel).
 // Save round-trips through the renderer — the save dialog lives there.
-let flowDirtyMain = false;
-let forceClosing = false;
+// (R10 close-prompt state moved to module scope — see the declarations near mainWindow.)
 ipcMain.on('flow-dirty-state', (_, v) => { flowDirtyMain = !!v; });
 ipcMain.on('flow-close-now', () => { forceClosing = true; try { mainWindow.close(); } catch (e) {} });
 ipcMain.handle('confirm-unsaved', async () => {
@@ -1685,7 +1696,8 @@ ipcMain.handle('confirm-unsaved', async () => {
 // R9: flow folders. flows\once\ (setup/teardown once-flows), flows\automation\
 // (ONLY flows the user explicitly flags — nothing is auto-flagged), flows\general\
 // (everything else). Startup migration sorts flat legacy flows by runMode.
-const FLOW_SUBS = ['automation', 'once', 'general'];
+// (FLOW_SUBS moved to module scope — see the declaration near mainWindow. It is read by
+// the module-scope save-flow / list-flows handlers, which a block-scoped const broke.)
 function ensureFlowSubdirs(dir) {
   for (const s2 of FLOW_SUBS) { const p2 = path.join(dir, s2); if (!fs.existsSync(p2)) { try { fs.mkdirSync(p2, { recursive: true }); } catch (e) {} } }
 }
