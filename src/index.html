@@ -1102,10 +1102,6 @@ textarea { resize: vertical; min-height: 60px; }
   </div>
 </div>
 
-</div><!-- /content -->
-</div><!-- /shell -->
-
-<!-- PASTE MODAL -->
 <!-- ══ SCHEDULES (R16) ══ -->
 <div class="panel" id="panel-schedules">
   <div class="page-header">
@@ -1136,6 +1132,10 @@ textarea { resize: vertical; min-height: 60px; }
   <div id="schList" style="display:flex;flex-direction:column;gap:8px"><div class="empty">No schedules yet.</div></div>
 </div>
 
+</div><!-- /content -->
+</div><!-- /shell -->
+
+<!-- PASTE MODAL -->
 <div class="modal-bg" id="pasteModal">
   <div class="modal">
     <div class="modal-title">Paste HTML — auto-detect selector</div>
@@ -1221,7 +1221,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     try { if (API.getConfig) { const _c = await API.getConfig(); const _chk = document.getElementById('scrapeCsvChk'); if (_chk) _chk.checked = (_c.scrapeCsvEnabled !== false); } } catch(e){}
     seedExampleSteps();
     // v1.2.8: initialize flow-meta UI. Default to per-row, populate dropdowns.
-    setRunMode('per-row');
+    setRunMode('per-row', true); // v3.0.2: boot sync, not a user edit
     refreshOnceFlowDropdowns();
     if (API.checkChromium) {
       const result = await API.checkChromium();
@@ -3041,7 +3041,10 @@ function cancelProfile(){document.getElementById('profileForm').style.display='n
 // v1.2.8: flow-meta UI handlers. Keep renderer state and DOM in sync.
 // setRunMode changes the active mode; toggles which UI elements are visible
 // (composition fields, once-flow notice, spreadsheet-dependent inputs).
-function setRunMode(mode){ markFlowDirty();
+// v3.0.2: _programmatic = called by boot/load to sync the UI, NOT a user edit. Boot
+// called setRunMode('per-row') which marked a nonexistent flow dirty, so Load flow
+// immediately demanded to save "unsaved changes" that did not exist.
+function setRunMode(mode, _programmatic){ if(!_programmatic) markFlowDirty();
   runMode = (mode === 'once') ? 'once' : 'per-row';
   // Sync the radios in case this was called from code (e.g. loadFlow).
   const r1 = document.getElementById('runModePerRow');
@@ -3263,10 +3266,15 @@ async function saveFlow(){
     return list;
   }
 
+// v3.0.2: is there anything a save would actually preserve? The locked PestPac
+// login/logout steps are seeded scaffolding, not user work.
+function flowHasContent(){
+  try{ return !!(flowName || (steps||[]).some(function(s){ return !s.locked; })); }catch(e){ return true; }
+}
 async function loadFlow(){
   // R10: unsaved-changes gate on flow switch — Save / Don't Save / Cancel via a
   // native 3-button dialog (confirm() can only do two).
-  if(flowDirty){
+  if(flowDirty && flowHasContent()){
     const r = API.confirmUnsaved ? await API.confirmUnsaved() : (confirm('Discard unsaved changes?') ? 1 : 2);
     if(r === 2) return;
     if(r === 0){ const ok = await saveFlow(); if(!ok) return; }
@@ -3343,7 +3351,7 @@ async function loadFlow(){
   // For now setupSel.value may have silently fallen back to ''; re-call refresh with the
   // selection intact so the missing-marker logic runs.
   await refreshOnceFlowDropdowns();
-  setRunMode(runMode);  // triggers visibility toggles + validation re-run
+  setRunMode(runMode, true);  // triggers visibility toggles + validation re-run (v3.0.2: load sync, not a user edit)
   renderSteps();
 }
 
