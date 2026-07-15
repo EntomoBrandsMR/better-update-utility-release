@@ -1288,6 +1288,25 @@ async function checkForUpdates(manual) {
 }
 ipcMain.handle('check-for-updates', () => checkForUpdates(true));
 ipcMain.handle('install-update', async (_, { downloadUrl }) => {
+
+  // v3.0.3: an update quit is not a user close. Deal with unsaved work UP FRONT —
+  // before spending a 200MB download — then tell the close gate to stand down, or the
+  // installer launches, finds BUU still alive behind an unsaved-changes prompt, and
+  // quietly does nothing.
+  if (flowDirtyMain) {
+    const _r = await dialog.showMessageBox(mainWindow, {
+      type: 'warning', buttons: ['Save', "Don't Save", 'Cancel'], defaultId: 0, cancelId: 2,
+      title: 'Unsaved changes',
+      message: 'Save your flow before updating?',
+      detail: 'Installing the update restarts BUU. Unsaved changes to your flow would be lost.',
+    });
+    if (_r.response === 2) return { ok: false, cancelled: true };
+    if (_r.response === 0) {
+      _send('save-flow-then-close');
+      return { ok: false, savingFirst: true };
+    }
+    flowDirtyMain = false; // "Don't Save" — discard, and stop the gate re-asking at quit
+  }
   const updateDir = path.join(app.getPath('userData'), 'updates');
   if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
   const tmp = path.join(updateDir, 'buu-update.exe');
@@ -1301,6 +1320,9 @@ ipcMain.handle('install-update', async (_, { downloadUrl }) => {
         `Unblock-File -Path '${tmp}'`
       ]);
     } catch {}
+    // v3.0.3: forceClosing MUST be set before quitting, or the R10 close gate blocks
+    // the update restart. This one missing line made the in-app updater unusable.
+    forceClosing = true;
     shell.openPath(tmp);
     setTimeout(() => app.quit(), 2000);
     return { ok: true };
