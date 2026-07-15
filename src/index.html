@@ -1316,6 +1316,14 @@ async function openSpreadsheet() {
   ssPath = result.filePath; ssName = result.name;
   ssHeaders = result.headers || []; ssRows = result.previewRows || []; ssRowCount = result.totalRows || 0;
   cols = [...ssHeaders];
+  // v3.0.2: trimming can collapse two columns onto one key ("Foo" and "Foo "). The
+  // second would silently overwrite the first — wrong data, no error, which is the
+  // failure mode we care most about. Say so at load, not at 3am in a journal.
+  {
+    const _seen = new Set(), _dupes = [];
+    for(const _h of ssHeaders){ if(_seen.has(_h)) _dupes.push(_h); else _seen.add(_h); }
+    if(_dupes.length) alert('Heads up: after trimming spaces, these column headers collide:\n\n  ' + [...new Set(_dupes)].join(', ') + '\n\nOnly ONE column of each name survives into the row data. Rename them in the sheet before running.');
+  }
   const rowLabel = ssRowCount > 0 ? ssRowCount.toLocaleString() + ' rows' : 'row count unknown (CSV)';
   document.getElementById('ssStatus').innerHTML = '<strong style="color:var(--tx)">' + ssName + '</strong> &nbsp;·&nbsp; ' + rowLabel + ' &nbsp;·&nbsp; ' + ssHeaders.length + ' columns';
   document.getElementById('sbFoot').textContent = ssRowCount > 0 ? ssRowCount.toLocaleString() + ' rows' : 'Loaded';
@@ -2448,7 +2456,9 @@ function checkFlowColumnsAgainstSheet(){
     scan(s.expected); scan(s.pathColumn); scan(s.fileNameColumn); scan(s.baseFolder);
   });
   const referenced = Array.from(refs);
-  const have = new Set((ssHeaders||[]).map(h => String(h)));
+  // v3.0.2: refs are trimmed above, so the sheet side must be too — otherwise a header
+  // with a stray space reported "column missing" no matter what the user typed.
+  const have = new Set((ssHeaders||[]).map(h => String(h).trim()));
   const missing = referenced.filter(r => !have.has(r));
   return { referenced, missing, allMissing: referenced.length > 0 && missing.length === referenced.length };
 }

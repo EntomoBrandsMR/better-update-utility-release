@@ -82,15 +82,29 @@ function countRowsSync(spreadsheetPath){
   }catch(e){ return 0; }
 }
 
+// v3.0.2: HEADER WHITESPACE. A header entered as "Account Number " became the literal
+// row key "Account Number ", so the {{Account Number}} anyone would actually type
+// resolved to blank — silently, no error. Trim every key once at load.
+// Paired with a matching trim of the token ref at resolution (engine/steps.js + worker
+// resolvePreview), which makes the pair a STRICT SUPERSET: a flow built against the
+// untrimmed header ({{Account Number }}) still resolves after this change.
+// Clean sheets pay nothing — the remap only runs when a header is actually dirty.
+function trimRowKeys(rows){
+  if(!Array.isArray(rows) || !rows.length) return rows;
+  let dirty = false;
+  for(const k in rows[0]){ if(k !== String(k).trim()){ dirty = true; break; } }
+  if(!dirty) return rows;
+  return rows.map(function(r){ const o = {}; for(const k in r) o[String(k).trim()] = r[k]; return o; });
+}
 function loadRowsForJob(spreadsheetPath){
   const XLSX = require('xlsx');
   const ext = path.extname(spreadsheetPath).toLowerCase();
   if(ext === '.csv'){
     const wb = XLSX.readFile(spreadsheetPath, { raw:false });
-    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' });
+    return trimRowKeys(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' }));
   }
   const wb = XLSX.readFile(spreadsheetPath);
-  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' });
+  return trimRowKeys(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' }));
 }
 
 let keytar = null;
@@ -1304,7 +1318,9 @@ ipcMain.handle('open-spreadsheet', async () => {
     const wb = XLSX.readFile(fp, { sheetRows: 10 });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    headers = (raw[0] || []).map(String).filter(Boolean);
+    // v3.0.2: trim BEFORE these headers become chips/tokens. The CSV branch above
+    // already trimmed; XLSX never did, so the two disagreed.
+    headers = (raw[0] || []).map(h => String(h).trim()).filter(Boolean);
     previewRows = raw.slice(1).filter(r => r.some(c => c !== ''));
     const wb2 = XLSX.readFile(fp);
     totalRows = XLSX.utils.sheet_to_json(wb2.Sheets[wb2.SheetNames[0]]).length;

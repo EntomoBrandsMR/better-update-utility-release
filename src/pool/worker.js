@@ -191,6 +191,7 @@ function resolvePreview(step, row, creds){
             .replace(/{{CRED:username}}/g, creds.username||'')
             .replace(/{{CRED:password}}/g, creds.password||'')
             .replace(/{{([^}]+)}}/g, function(_, ref){
+              ref = String(ref).trim(); // v3.0.2: {{ Foo }} and {{Foo}} are the same token
               const _sys = buuSystemToken(ref, RUN_CONTEXT); if(_sys !== null) return _sys; // R6 (hoisted decl from the inlined steps source)
               if(ref === 'RUNID') return RUN_CONTEXT.runId || '';
               if(ref === 'PROFILE_USERNAME') return RUN_CONTEXT.profileUsername || '';
@@ -237,7 +238,20 @@ function loadAllRows(fp){
     return out;
   }
   const wb=XLSX.readFile(fp);
-  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  // v3.0.2: header whitespace — trim the row KEYS so {{Token}} matches a header that
+  // carries a stray space. The CSV branch above always trimmed; XLSX never did, which
+  // is why tokens went blank on sheets with "Account Number ". Read JUST the header row
+  // to decide, so a clean sheet never pays for the remap (these runs hit 25k+ rows).
+  let _dirty=false;
+  try{
+    const _rg=XLSX.utils.decode_range(ws['!ref']);
+    const _hdr=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',range:{s:{r:_rg.s.r,c:_rg.s.c},e:{r:_rg.s.r,c:_rg.e.c}}})[0]||[];
+    _dirty=_hdr.some(function(h){ return String(h)!==String(h).trim(); });
+  }catch(e){ _dirty=true; } // probe failed: remap rather than risk a silent blank
+  const _rows=XLSX.utils.sheet_to_json(ws);
+  if(!_dirty) return _rows;
+  return _rows.map(function(r){ const o={}; for(const k in r) o[String(k).trim()]=r[k]; return o; });
 }
 
 // v2.2.2: shared canonical login (was a 4th copy here; see LOGIN_TO_PESTPAC_SRC at top of main.js).

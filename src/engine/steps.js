@@ -38,7 +38,7 @@ async function runStep(page, step, row, creds){
     page.on('dialog', _r3Handler);
   }
   try {
-  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ const _sys=buuSystemToken(ref, typeof RUN_CONTEXT!=='undefined'?RUN_CONTEXT:null); if(_sys!==null)return _sys; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
+  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ ref=String(ref).trim(); /* v3.0.2: header/token whitespace — trimmed headers and trimmed refs must agree, and this keeps flows written against an untrimmed header working */ const _sys=buuSystemToken(ref, typeof RUN_CONTEXT!=='undefined'?RUN_CONTEXT:null); if(_sys!==null)return _sys; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
     case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:NAV_TIMEOUT}); break;}
