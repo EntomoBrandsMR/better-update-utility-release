@@ -145,6 +145,22 @@ function coordAllDrained(){
 // a full worker-grid innerHTML rebuild in the renderer. The render storm saturated the
 // renderer main thread and starved every input in the app ("can no longer type").
 // Coalesce to at most one broadcast per 250ms; a trailing emit catches the final state.
+// v3.0.2: the ONLY safe way to talk to the renderer. `if (ctx.mainWindow)` was never a
+// real guard — a destroyed BrowserWindow stays truthy, so every send site threw
+// "Object has been destroyed" once the window went away while workers were still
+// exiting. isDestroyed() is the real check; the try/catch covers the teardown race
+// where the window dies between the check and the send.
+function _send(channel, payload) {
+  const w = ctx.mainWindow;
+  if (!w || (typeof w.isDestroyed === 'function' && w.isDestroyed())) return false;
+  try {
+    const wc = w.webContents;
+    if (!wc || wc.isDestroyed()) return false;
+    wc.send(channel, payload);
+    return true;
+  } catch (e) { return false; }
+}
+
 let _emitTimer = null;
 let _emitPending = false;
 function coordEmitStatus() {
@@ -175,7 +191,7 @@ function _coordEmitStatusNow(){
     currentRow: w.currentRow,
     step: w.step, totalSteps: w.totalSteps, loggedOut: w.loggedOut, logoutAttempts: w.logoutAttempts||0,
   }));
-  ctx.mainWindow.webContents.send('pool-status', {
+  _send('pool-status', {
     active: COORD.active,
     desiredWorkers: COORD.desiredWorkers, pressure: COORD.pressure, capReason: COORD.capReason, manualTarget: COORD.manualTarget, licenseCap: Number.isFinite(COORD.licenseCap) ? COORD.licenseCap : null, liveWorkers: COORD.workers.size,
     jobs, workers,
@@ -370,7 +386,7 @@ function coordHandleWorkerMessage(workerId, msg){
       // which worker is paused (in step modes there's only one, but the field is there for
       // consistency with future multi-worker debug modes). step/preview/row come from worker.
       w.status = 'paused';
-      if (ctx.mainWindow) ctx.mainWindow.webContents.send('pool-pause', {
+      if (ctx.mainWindow) _send('pool-pause', {
         kind: 'step',
         workerId: workerId,
         jobId: w.jobId,
@@ -385,7 +401,7 @@ function coordHandleWorkerMessage(workerId, msg){
       // v2.2.2 Session 2C: emitted after a completed row in step-row mode. Renderer shows
       // the row's outcome and waits for the user to click Next-row or Run-All.
       w.status = 'paused';
-      if (ctx.mainWindow) ctx.mainWindow.webContents.send('pool-pause', {
+      if (ctx.mainWindow) _send('pool-pause', {
         kind: 'row',
         workerId: workerId,
         jobId: w.jobId,
@@ -401,7 +417,7 @@ function coordHandleWorkerMessage(workerId, msg){
       // to the journal so post-run forensics can see "row N triggered this exact prompt".
       // Also forward to renderer for live display in the worker card.
       coordJournalAppendDialog(w.jobId, msg.row, msg.message, msg.dialogType, msg.ts);
-      if (ctx.mainWindow) ctx.mainWindow.webContents.send('pool-dialog', {
+      if (ctx.mainWindow) _send('pool-dialog', {
         workerId: workerId,
         jobId: w.jobId,
         row: msg.row,
@@ -451,7 +467,7 @@ function coordHandleWorkerMessage(workerId, msg){
       // R11: direct error feed to the renderer (errors only — the D3 lesson says no
       // per-row event floods; OK rows are visible through the counters).
       if(String(msg.status||'').indexOf('ok') !== 0 && ctx.mainWindow){
-        try { ctx.mainWindow.webContents.send('pool-row-error', { workerId: w.workerId, jobId: w.jobId, row: msg.row, error: msg.error || '', reason: msg.errorCategory || undefined, step: msg.phase || undefined }); } catch (e) {}
+        try { _send('pool-row-error', { workerId: w.workerId, jobId: w.jobId, row: msg.row, error: msg.error || '', reason: msg.errorCategory || undefined, step: msg.phase || undefined }); } catch (e) {}
       }
       if(job && job.completedRows) job.completedRows.add(msg.row);
       w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else w.err++;
@@ -502,7 +518,7 @@ function coordCheckComplete(){
     // Mark done with a sidecar so resume-scan skips it; merged log can still read it.
     coordMarkJournalDone();
     coordCloseJournal(false);
-    if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-complete', {
+    if(ctx.mainWindow) _send('pool-complete', {
       possibleLeaks: COORD.possibleLeaks.slice(),
       jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err })),
     });
@@ -512,7 +528,7 @@ function coordCheckComplete(){
       // v2.2.0: write any read-field results to dedicated per-job workbooks first.
       try { coordWriteReadResults(); } catch(e){ console.error('[coord] read-results write failed:', e.message); }
       if(COORD.setupScope !== 'per-worker'){
-        if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-once-flow', { phase:'teardown', state:'phase-start', scope:COORD.setupScope });
+        if(ctx.mainWindow) _send('pool-once-flow', { phase:'teardown', state:'phase-start', scope:COORD.setupScope });
         try { await coordRunOnceFlows('teardown'); coordMarkPhaseProgress('teardownCompleted'); } catch(e) { console.error('[coord] teardown once-flows error:', e.message); }
       }
       coordRunLogoutSweep('auto-complete');
@@ -563,7 +579,7 @@ function coordWriteReadResults(){
       XLSX.utils.book_append_sheet(wb, ws, 'Read fields');
       XLSX.writeFile(wb, outPath);
       console.log('[coord] wrote read-field results:', outPath, '('+sorted.length+' rows)');
-      if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-read-results', { path: outPath, rows: sorted.length, columns: cols });
+      if(ctx.mainWindow) _send('pool-read-results', { path: outPath, rows: sorted.length, columns: cols });
     } catch(e){ console.error('[coord] failed writing read-results for job', job.label, e.message); }
   }
 }
@@ -611,11 +627,11 @@ async function coordRunLogoutSweep(reason){
   COORD.sweepRunning = true;
   try{
     const chromiumExe = getBundledChromiumPath();
-    if(!chromiumExe){ if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-sweep-result',{ok:false,error:'chromium not found'}); COORD.sweepRunning=false; return; }
+    if(!chromiumExe){ if(ctx.mainWindow) _send('pool-sweep-result',{ok:false,error:'chromium not found'}); COORD.sweepRunning=false; return; }
     // Pick a profile used this run (fall back to any job's profile).
     let profileId = Array.from(COORD.usedProfileIds)[0];
     if(!profileId){ const firstJob = Array.from(COORD.jobs.values())[0]; profileId = firstJob && firstJob.profileId; }
-    if(!profileId){ if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-sweep-result',{ok:false,error:'no profile available for sweep'}); COORD.sweepRunning=false; return; }
+    if(!profileId){ if(ctx.mainWindow) _send('pool-sweep-result',{ok:false,error:'no profile available for sweep'}); COORD.sweepRunning=false; return; }
 
     // Login steps: reuse the locked login portion of any job's flow (same as workers use).
     const anyJob = Array.from(COORD.jobs.values()).find(j => Array.isArray(j.flowSteps) && j.flowSteps.length) || {};
@@ -644,7 +660,7 @@ async function coordRunLogoutSweep(reason){
     const sweepLogPath = path.join(getLogsDir(), `buu2-sweep-${sweepId}.log`);
     const sweepLog = fs.createWriteStream(sweepLogPath, { flags: 'a' });
     sweepLog.write(`[${new Date().toISOString()}] logout sweep start (reason=${reason}, profile=${profileId})\n`);
-    if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-sweep-start', { reason });
+    if(ctx.mainWindow) _send('pool-sweep-start', { reason });
 
     const proc = spawn(process.execPath, [runnerPath, credPath], { stdio:['ignore','pipe','pipe'], env });
     let lastResult = null;
@@ -653,7 +669,7 @@ async function coordRunLogoutSweep(reason){
         sweepLog.write(`[OUT] ${line}\n`);
         let msg; try{ msg = JSON.parse(line); }catch{ return; }
         if(msg.type === 'sweep-pass' || msg.type === 'sweep-done') lastResult = msg;
-        if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-sweep-progress', msg);
+        if(ctx.mainWindow) _send('pool-sweep-progress', msg);
       });
     });
     proc.stderr.on('data', d => sweepLog.write(`[ERR] ${String(d)}\n`));
@@ -663,11 +679,11 @@ async function coordRunLogoutSweep(reason){
       try { fs.unlinkSync(credPath); } catch {}
       COORD.sweepRunning = false;
       const remaining = lastResult && lastResult.remaining != null ? lastResult.remaining : (code===0?0:null);
-      if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-sweep-result', { ok: code===0, remaining, loggedOut: lastResult && lastResult.loggedOut });
+      if(ctx.mainWindow) _send('pool-sweep-result', { ok: code===0, remaining, loggedOut: lastResult && lastResult.loggedOut });
     });
   }catch(e){
     COORD.sweepRunning = false;
-    if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-sweep-result',{ ok:false, error:e.message });
+    if(ctx.mainWindow) _send('pool-sweep-result',{ ok:false, error:e.message });
   }
 }
 
@@ -789,13 +805,13 @@ async function coordLicenseScale(profileId, buffer, hwCap){
     // The number of additional workers we can safely add is (free - buffer); never go below 1.
     const headroom = free - BUF;
     const newTarget = Math.max(1, COORD.workers.size + headroom); // R4: pure license cap; composition happens in coordEvalScale
-    if (ctx.mainWindow) ctx.mainWindow.webContents.send('pool-license-update', { freeLicenses: free, buffer: BUF, newTarget, liveWorkers: COORD.workers.size });
+    if (ctx.mainWindow) _send('pool-license-update', { freeLicenses: free, buffer: BUF, newTarget, liveWorkers: COORD.workers.size });
     // R4: license math yields a CAP; the ONE evaluation path (coordEvalScale) composes
     // it with pressure + the manual slider and does the actual scaling.
     COORD.licenseCap = newTarget;
   } catch (e) {
     try { if (browser) await browser.close(); } catch(_){}
-    if (ctx.mainWindow) ctx.mainWindow.webContents.send('pool-license-update', { error: e.message });
+    if (ctx.mainWindow) _send('pool-license-update', { error: e.message });
   }
 }
 
@@ -844,7 +860,7 @@ function coordRunOnceFlow(job, phase){
         const logPath = path.join(getLogsDir(), `buu2-once-${onceId}.log`);
         const logStream = fs.createWriteStream(logPath, { flags: 'a' });
         logStream.write(`[${new Date().toISOString()}] ${phase} once-flow start (job=${job.label})\n`);
-        if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-once-flow', { phase, job: job.label, state: 'start' });
+        if(ctx.mainWindow) _send('pool-once-flow', { phase, job: job.label, state: 'start' });
         const proc = spawn(process.execPath, [runnerPath, credPath], { stdio:['ignore','pipe','pipe'], env });
         proc.stdout.on('data', d => logStream.write(`[OUT] ${String(d)}`));
         proc.stderr.on('data', d => logStream.write(`[ERR] ${String(d)}`));
@@ -852,7 +868,7 @@ function coordRunOnceFlow(job, phase){
           logStream.write(`[${new Date().toISOString()}] ${phase} once-flow exit code=${code}\n`); logStream.end();
           try { fs.unlinkSync(runnerPath); } catch {}
           try { fs.unlinkSync(credPath); } catch {}
-          if(ctx.mainWindow) ctx.mainWindow.webContents.send('pool-once-flow', { phase, job: job.label, state: 'done', ok: code===0 });
+          if(ctx.mainWindow) _send('pool-once-flow', { phase, job: job.label, state: 'done', ok: code===0 });
           resolve({ ok: code===0 });
         });
       };

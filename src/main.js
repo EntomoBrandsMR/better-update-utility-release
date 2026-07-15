@@ -24,6 +24,20 @@ let mainWindow;
 // could not see them, so EVERY close threw "forceClosing is not defined" and the
 // unsaved-changes prompt never once worked. Boot smoke tests missed it because a
 // force-kill never fires 'close'.
+// v3.0.2: see coordinator.js — `if (mainWindow)` is not a guard, because a destroyed
+// BrowserWindow stays truthy. Anything that fires during/after shutdown (worker exits,
+// in-flight update fetches) crashed the main process with "Object has been destroyed".
+function _send(channel, payload) {
+  const w = mainWindow;
+  if (!w || (typeof w.isDestroyed === 'function' && w.isDestroyed())) return false;
+  try {
+    const wc = w.webContents;
+    if (!wc || wc.isDestroyed()) return false;
+    wc.send(channel, payload);
+    return true;
+  } catch (e) { return false; }
+}
+
 let flowDirtyMain = false;
 let forceClosing = false;
 // R9/v3.0.1: MODULE scope on purpose. Same bug as forceClosing above — this was declared
@@ -672,7 +686,7 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
   // v2.1.1 (#8): for 'per-job' / 'global' scope, run setup ONCE (coordinator-driven) before any
   // workers spawn. Awaited so workers never start processing rows before setup has completed.
   if(COORD.setupScope !== 'per-worker'){
-    if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase:'setup', state:'phase-start', scope:COORD.setupScope });
+    if(mainWindow) _send('pool-once-flow', { phase:'setup', state:'phase-start', scope:COORD.setupScope });
     try { await coordRunOnceFlows('setup'); coordMarkPhaseProgress('setupCompleted'); } catch(e) { console.error('[coord] setup once-flows error:', e.message); }
   }
 
@@ -936,7 +950,7 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseP
   // scope is unaffected (each new worker runs its own setup/teardown by design).
   const _resumePhase = (meta.phaseProgress || {});
   if(COORD.setupScope !== 'per-worker' && !_resumePhase.setupCompleted){
-    if(mainWindow) mainWindow.webContents.send('pool-once-flow', { phase:'setup', state:'phase-start', scope:COORD.setupScope });
+    if(mainWindow) _send('pool-once-flow', { phase:'setup', state:'phase-start', scope:COORD.setupScope });
     try { await coordRunOnceFlows('setup'); coordMarkPhaseProgress('setupCompleted'); } catch(e) { console.error('[coord] resume setup once-flows error:', e.message); }
   } else if(COORD.setupScope !== 'per-worker' && _resumePhase.setupCompleted){
     console.log('[coord] resume: skipping setup (already completed in original session)');
@@ -1243,7 +1257,7 @@ function downloadFile(url, dest, redirects) {
       const tot = parseInt(r.headers['content-length'] || '0');
       let recv = 0;
       const f = fs.createWriteStream(dest);
-      r.on('data', c => { recv += c.length; if (tot > 0 && mainWindow) mainWindow.webContents.send('update-progress', Math.round(recv/tot*100)); });
+      r.on('data', c => { recv += c.length; if (tot > 0 && mainWindow) _send('update-progress', Math.round(recv/tot*100)); });
       r.pipe(f);
       f.on('finish', () => f.close(err => {
         if (err) return reject(err);
@@ -1265,12 +1279,12 @@ function semverGt(a, b) {
   return false;
 }
 async function checkForUpdates(manual) {
-  if (VERSION_URL.includes('YOUR_HOST')) { if (manual) mainWindow.webContents.send('update-status', { type: 'not-configured' }); return; }
+  if (VERSION_URL.includes('YOUR_HOST')) { if (manual) _send('update-status', { type: 'not-configured' }); return; }
   try {
     const info = await fetchJSON(VERSION_URL);
-    if (semverGt(info.version, CURRENT_VERSION)) mainWindow.webContents.send('update-available', info);
-    else if (manual) mainWindow.webContents.send('update-status', { type: 'up-to-date', version: CURRENT_VERSION });
-  } catch(e) { if (manual) mainWindow.webContents.send('update-status', { type: 'error', message: e.message }); }
+    if (semverGt(info.version, CURRENT_VERSION)) _send('update-available', info);
+    else if (manual) _send('update-status', { type: 'up-to-date', version: CURRENT_VERSION });
+  } catch(e) { if (manual) _send('update-status', { type: 'error', message: e.message }); }
 }
 ipcMain.handle('check-for-updates', () => checkForUpdates(true));
 ipcMain.handle('install-update', async (_, { downloadUrl }) => {
@@ -1665,7 +1679,7 @@ function createWindow() {
       type: 'warning', buttons: ['Save', "Don't Save", 'Cancel'], defaultId: 0, cancelId: 2,
       title: 'Unsaved changes', message: 'This flow has unsaved changes.', detail: 'Save before closing BUU?',
     }).then(r => {
-      if (r.response === 0) { try { mainWindow.webContents.send('save-flow-then-close'); } catch (e2) {} }
+      if (r.response === 0) { try { _send('save-flow-then-close'); } catch (e2) {} }
       else if (r.response === 1) { forceClosing = true; mainWindow.close(); }
       // Cancel: stay open.
     }).catch(() => {});
