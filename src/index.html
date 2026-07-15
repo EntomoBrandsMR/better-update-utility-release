@@ -645,31 +645,9 @@ textarea { resize: vertical; min-height: 60px; }
   </div>
   <span class="tb-crm">PestPac</span>
   <span class="tb-ver" id="tbVer">v1.0.0</span>
-  <span class="tb-sp"></span>
-  <button class="tbtn" onclick="checkUpdates()">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 8A5 5 0 1 1 8 3M13 3v3h-3"/></svg>
-    Updates
-  </button>
-  <button class="tbtn" onclick="loadFlow()">Load flow</button>
-  <button class="tbtn" onclick="saveFlow()">Save flow</button>
-  <button class="tbtn" onclick="openFlowsFolder()" title="Open flows folder">📁 Flows</button>
-  <button class="tbtn grn" id="runBtn" onclick="runBtnClick()" disabled>
-    <svg id="runBtnIcon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="3,2 14,8 3,14"/></svg>
-    <span id="runBtnLbl">Run automation</span>
-  </button>
-  <!-- v2.1.0 (#4): the worker-pool controls (#poolControls) moved from here into the sidebar
-       "Worker pool" section. Layout only — same element IDs and handlers, no logic change. -->
-  <button class="tbtn red" id="stopBtn" onclick="stopRun()" style="display:none">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
-    Stop
-  </button>
-  <!-- v1.3.4 Item I (3/4): Force-stop escape hatch. Hidden normally; revealed by requestStop()
-       while a clean stop is in progress, so a truly hung row never forces the user to close
-       the whole app (the failure mode that killed tonight's run). Force-kills the worker now. -->
-  <button class="tbtn red" id="forceStopBtn" onclick="forceStopNow()" style="display:none" title="Kill the worker immediately, abandoning the current row">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
-    Force stop now
-  </button>
+  <!-- The legacy header controls (Updates / Load / Save / Flows / Run automation /
+       Stop / Force-stop) are GONE, not hidden. Everything lives in the sidebar now:
+       Flow section (save/load/folder), Worker pool (run/stop), bottom (updates). -->
   <!-- v1.3.0 Item 11: Pause button removed. It was wired to API.pauseRun / API.resumeRun
        which were never exposed, and the runner has no 'pause' command. The button did nothing.
        Stop already provides graceful safe-boundary halt. A real Pause may return in a later release. -->
@@ -704,6 +682,10 @@ textarea { resize: vertical; min-height: 60px; }
   <div style="padding:2px 14px 6px;display:flex;flex-direction:column;gap:6px">
     <div id="sbFlowName" style="font-size:12px;font-weight:700;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="Active flow">Building</div>
     <button class="tbtn" onclick="saveFlow()" style="width:100%">Save flow</button>
+    <div style="display:flex;gap:6px">
+      <button class="tbtn" onclick="loadFlow()" style="flex:1">Load flow</button>
+      <button class="tbtn" onclick="openFlowsFolder()" style="flex:1" title="Open flows folder">📁 Flows</button>
+    </div>
   </div>
   <div class="sb-sep"></div>
   <div class="sb-sec">Live</div>
@@ -761,6 +743,7 @@ textarea { resize: vertical; min-height: 60px; }
     <div id="scaleStatus" style="font-size:10px;color:var(--t3);line-height:1.5"></div>
     <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" style="width:100%" title="Start the worker pool">Run pool</button>
     <button class="tbtn" id="poolSweepBtn" onclick="poolLogoutSweepClick()" style="width:100%;margin-top:2px" title="Log out any BUU sessions still logged in on PestPac (License Manager). Use if you see stuck sessions.">Log out stuck sessions</button>
+    <button class="tbtn" onclick="checkUpdates()" style="width:100%;margin-top:2px" title="Check for a new BUU version now">Check for updates</button>
   </div>
 
   <div class="sb-sep"></div>
@@ -1339,7 +1322,7 @@ async function openSpreadsheet() {
   document.getElementById('colSection').style.display = 'block';
   document.getElementById('previewCard').style.display = 'block';
   document.getElementById('previewMeta').textContent = 'showing first ' + ssRows.length + ' rows';
-  renderColChips(); renderPreview(); renderSteps(); refreshRunBtn();
+  renderColChips(); renderPreview(); renderSteps();
   // R10: delegated dirty catch-all — any input/change inside the builder (step fields,
   // flow-type controls, run config) marks the flow dirty. Explicit hooks cover the
   // button-driven mutations (add/delete/reorder) that fire no input events.
@@ -1516,7 +1499,6 @@ function renderSteps() {
   document.getElementById('stepCountLbl').textContent = LOGIN_STEPS.length + ' locked + ' + n + ' custom step' + (n!==1?'s':'');
   document.getElementById('nb-builder').textContent = n;
   document.getElementById('nb-builder').style.display = n ? '' : 'none';
-  refreshRunBtn();
   initDragDrop();
   // v1.2.5 item 2.6: re-validate after any structural change (add/del/reorder/load).
   // Debounced so a flow load with N steps doesn't run validation N times.
@@ -2135,17 +2117,11 @@ async function startRun(){ return poolRunClick(); }
 // 10s fuse + prompt logout sweep — all Phase 3 behavior).
 async function requestStop(){ return stopWorkerPool(); }
 
-async function stopRun(){
-  // v2.0.0: if the elastic pool is running, Stop drains the pool. Otherwise single-run stop.
-  if(coordActive) return stopWorkerPool();
-  return requestStop();
-}
 async function paneStop(){return requestStop();}
 // v1.3.4 Item I (3/4): Force-stop escape hatch. Immediately kills the worker process
 // (force-kill via stopAutomation), abandoning the current row, then resets the UI. Used
 // when a clean stop is hanging on a dead page. Resume/retry recovers the abandoned row.
 // R11: force-stop = pool stop; Phase 3's 10s fuse already makes it near-immediate.
-async function forceStopNow(){ return stopWorkerPool(); }
 
 // R11b: runStopped deleted — poolUIActive owns the UI reset; nothing called it since R11a.
 
@@ -2595,8 +2571,8 @@ async function poolAddJob(){
 function poolUIActive(active){
   coordActive = active;
   isRunning = active;
-  document.getElementById('runBtn').style.display = active?'none':'';
-  document.getElementById('stopBtn').style.display = active?'':'none';
+  // (legacy header runBtn/stopBtn removed — the sidebar pool buttons are the only controls)
+  
   document.getElementById('nb-run').style.display = active?'':'none';
   if(active){ runStartTime=Date.now(); startElapsedTicker(); }
 }
@@ -3043,7 +3019,7 @@ async function loadProfiles(){
   renderProfiles();
 }
 function renderProfiles(){document.getElementById('nb-profiles').textContent=profiles.length;const list=document.getElementById('profileList');if(!profiles.length){list.innerHTML='<div class="empty">No profiles yet. Click "Add profile" to get started.</div>';document.getElementById('activeProfileLbl').textContent='None — add a profile first';return;}list.innerHTML=profiles.map(p=>'<div class="profile-card ' + (activeProfileId===p.id?'active-p':'') + '"><div class="profile-hd"><div class="profile-icon">' + (p.name||'?').slice(0,2).toUpperCase() + '</div><div><div style="font-size:13px;font-weight:600;color:var(--tx)">' + (p.name||'Unnamed') + '</div><div style="font-size:11px;color:var(--t2)">' + (p.loginUrl||'https://login.pestpac.com/') + '</div></div><div style="margin-left:auto;display:flex;gap:6px">' + (activeProfileId===p.id?'<span style="font-size:11px;font-weight:600;color:var(--green);padding:4px 8px">✓ Active</span>':'<button class="btn grn sm" onclick="setActiveProfile(\'' + p.id + '\')">Use this</button>') + '<button class="btn sm" onclick="editProfile(\'' + p.id + '\')">Edit</button></div></div><div style="font-size:11px;color:var(--t2)">Company key: <span style="font-family:monospace">••••••</span> &nbsp;·&nbsp; Username: <span style="font-family:monospace">' + (p.username||'(not set)') + '</span></div></div>').join('');const active=profiles.find(p=>p.id===activeProfileId);document.getElementById('activeProfileLbl').textContent=active?active.name:'None selected';document.getElementById('newProfileBtn').disabled=profiles.length>=10;syncFrankwareStepVisibility();}
-function setActiveProfile(id){activeProfileId=id;if(API.setConfig)API.setConfig({lastProfileId:id});renderProfiles();refreshRunBtn();}
+function setActiveProfile(id){activeProfileId=id;if(API.setConfig)API.setConfig({lastProfileId:id});renderProfiles();}
 // v2.2.7: the Frankware scrape step only makes sense with a Frankware login, so its add-menu
 // button shows only when the active profile is Frankware. Called from renderProfiles (the one
 // choke point hit on both initial load and profile switches).
@@ -3377,33 +3353,7 @@ async function doUpdate(){if(!updInfo||!API.installUpdate)return;document.getEle
 // v1.3.0 Item 4: toolbar Run button serves double duty. When idle with a previous log
 // and the Run gate-conditions aren't met (no flow/profile/spreadsheet loaded), the button
 // becomes "Open last log" instead of sitting disabled and gray. When the Run conditions
-// ARE met, it's the normal Run button. runBtnClick() routes to the right action.
-function runBtnClick(){
-  const canRun = (!isRunning && steps.length > 0 && activeProfileId && (ssPath || runMode === 'once')); // R15: once-flows need no sheet
-  if(!isRunning && currentLogPath && !canRun){
-    return API.openFile && API.openFile(currentLogPath);
-  }
-  return startRun();
-}
-function refreshRunBtn(){
-  const btn = document.getElementById('runBtn');
-  const lbl = document.getElementById('runBtnLbl');
-  const icon = document.getElementById('runBtnIcon');
-  const canRun = (!isRunning && steps.length > 0 && activeProfileId && (ssPath || runMode === 'once')); // R15: once-flows need no sheet
-  // "Open last log" mode: idle, a log exists, Run conditions not met.
-  if (!isRunning && currentLogPath && !canRun) {
-    btn.disabled = false;
-    if (lbl) lbl.textContent = 'Open last log';
-    if (icon) icon.innerHTML = '<path d="M3 3h7l3 3v7H3z" stroke-linejoin="round"/><path d="M10 3v3h3"/>';
-    btn.classList.remove('grn');
-    return;
-  }
-  // Normal Run mode.
-  btn.disabled = !canRun;
-  if (lbl) lbl.textContent = 'Run automation';
-  if (icon) icon.innerHTML = '<polygon points="3,2 14,8 3,14"/>';
-  btn.classList.add('grn');
-}
+// ARE met, it's the normal Run button (sidebar Run pool).
 
 function seedExampleSteps(){steps=[{id:nid++,type:'navigate',url:'{{URL}}',waitAfter:'load',open:false}];renderSteps();}
 </script>
