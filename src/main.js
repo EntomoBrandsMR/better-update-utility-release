@@ -576,7 +576,7 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
 
 // Submit a job into the (not-yet-started) pool. Returns the jobId. Jobs are staged, then
 // 'pool-start' spawns workers to drain them. flowSteps is the full allSteps array.
-ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, resumeFromRow, retryCount, retryRowIndexes, reauthIntervalMin }) => {
+ipcMain.handle('pool-submit-job', async (_, { label, flowName, flowSteps, spreadsheetPath, profileId, setupFlowId, teardownFlowId, errHandle, resumeFromRow, retryCount, retryRowIndexes, reauthIntervalMin }) => {
   if (COORD.active) return { ok: false, error: 'Pool is already running. Stop it before staging new jobs.' };
   // R15: spreadsheet-free once-flow — one synthetic pass; the pool runtime is reused
   // unchanged with totalRows 1 (its single journal row is the summary log).
@@ -605,6 +605,9 @@ ipcMain.handle('pool-submit-job', async (_, { label, flowSteps, spreadsheetPath,
     : null;
   COORD.jobs.set(jobId, {
     jobId, label: label || path.basename(spreadsheetPath),
+    // v3.0.3: the flow's display name (= filename stem) so run-end can write
+    // lastGoodWorkers into the flow's own .json. Empty when the flow was never saved.
+    flowName: flowName || '',
     flowSteps, spreadsheetPath, profileId,
     setupFlowId: setupFlowId || null, teardownFlowId: teardownFlowId || null,
     errHandle: errHandle || 'retry',
@@ -1445,6 +1448,17 @@ ipcMain.handle('save-flow', async (_, { json, name, sub }) => {
   try {
     const parsed = JSON.parse(json);
     parsed.name = path.basename(r.filePath, '.json');
+    // v3.0.3: lastGoodWorkers is written by the pool in the BACKGROUND directly into the
+    // flow file; the renderer NEVER carries it in its flow object (by design — it cannot
+    // clobber what it never holds). But saveFlow rebuilds the whole JSON from renderer
+    // memory, so an overwrite here would silently DELETE the key. Carry the on-disk value
+    // across. Save-As to a new filename finds no existing file and correctly starts fresh.
+    try {
+      if (fs.existsSync(r.filePath)) {
+        const prev = JSON.parse(fs.readFileSync(r.filePath, 'utf8'));
+        if (prev && prev.lastGoodWorkers != null) parsed.lastGoodWorkers = prev.lastGoodWorkers;
+      }
+    } catch (e2) { /* unreadable prior file — nothing to preserve */ }
     json = JSON.stringify(parsed, null, 2);
   } catch (e) {
     // If JSON is unparseable we have bigger problems, but don't lose the save —
@@ -1914,6 +1928,7 @@ const __coordCtx = {
   MAX_WORKERS_HARD_CEILING,
   loadRowsForJob,
   getLogsDir,
+  getFlowsDir, // v3.0.3: coordSaveLastGoodW writes lastGoodWorkers into the flow's own .json
   encStore,
   readAllProfiles,
   readConfig,

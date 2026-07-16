@@ -19,7 +19,7 @@ function coordPidfileAdd(pid){ if(!pid) return; const p = coordPidfileRead(); if
 function coordPidfileRemove(pid){ if(!pid) return; coordPidfileWrite(coordPidfileRead().filter(x => x !== pid)); }
 
 module.exports = function wireCoordinator(ctx) {
-const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, encStore, readAllProfiles, readConfig, getBundledChromiumPath, licenseReaderLogout, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper, buildOnceFlowRunner } = ctx;
+const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, getFlowsDir, encStore, readAllProfiles, readConfig, getBundledChromiumPath, licenseReaderLogout, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper, buildOnceFlowRunner } = ctx;
 
 // ════════════════════════════════════════════════════════════════════════════
 // v2.0.0 — ELASTIC POOL COORDINATOR (main-process owned)
@@ -521,6 +521,38 @@ function coordHandleWorkerMessage(workerId, msg){
   coordEmitStatus();
 }
 
+// v3.0.3: lastGoodWorkers — the best MEASURED worker count auto-saves into the flow's
+// OWN .json at run end (Matthew: "that flow knows whats best for it"). HARD RULES
+// (TODO.md 3.0.3): read-modify-write of the on-disk file setting ONLY this one key —
+// never rebuild poolSettings; never touch renderer state or mark the flow dirty; flow
+// not on disk => skip silently. The renderer seeds the Start box from it on load, and
+// main's save-flow handler carries it across a normal Save (renderer never holds it).
+// Only written when the pool ran exactly ONE distinct flow — a multi-flow pool's
+// optimum is a blend and would be wrong for each flow individually.
+function coordSaveLastGoodW(){
+  try{
+    const best = COORD._tpBest;
+    if(!best || !Number.isFinite(best.w) || best.w < 1) return; // no clean measurement (auto off / run too short)
+    const names = new Set();
+    for(const j of COORD.jobs.values()){ if(j.flowName) names.add(j.flowName); }
+    if(names.size !== 1) return;
+    if(typeof getFlowsDir !== 'function') return;
+    const safe = String(Array.from(names)[0]).replace(/[\\/:*?"<>|]/g, '_');
+    if(!safe) return;
+    // Same search order as read-flow-by-name: flat root first (dev saves flat), then subdirs.
+    for(const sub of ['', 'general', 'automation', 'once']){
+      const fp = path.join(getFlowsDir(), sub, safe + '.json');
+      if(!fs.existsSync(fp)) continue;
+      const obj = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      if(obj.lastGoodWorkers === best.w) return; // unchanged — don't churn the file
+      obj.lastGoodWorkers = best.w;
+      fs.writeFileSync(fp, JSON.stringify(obj, null, 2));
+      console.log('[coord] lastGoodWorkers=' + best.w + ' -> ' + fp);
+      return;
+    }
+  }catch(e){ console.warn('[coord] lastGoodWorkers save skipped:', e.message); }
+}
+
 // Mark jobs finished when drained and emit completion when the whole pool is done.
 function coordCheckComplete(){
   for(const job of COORD.jobs.values()){
@@ -533,6 +565,7 @@ function coordCheckComplete(){
     // Mark done with a sidecar so resume-scan skips it; merged log can still read it.
     coordMarkJournalDone();
     coordCloseJournal(false);
+    coordSaveLastGoodW(); // v3.0.3: background one-key write into the flow's own .json
     if(ctx.mainWindow) _send('pool-complete', {
       possibleLeaks: COORD.possibleLeaks.slice(),
       jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err })),
@@ -986,5 +1019,5 @@ async function coordRunOnceFlows(phase){
 
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────
 
-return { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows, coordEvalScale };
+return { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows, coordEvalScale, coordSaveLastGoodW };
 };

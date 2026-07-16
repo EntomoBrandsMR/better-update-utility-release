@@ -2580,6 +2580,7 @@ async function poolStageCurrent(){
   // R5b: snapshot of the DATA steps as submitted — the live-reload diff baseline.
   lastSubmittedDataJson = JSON.stringify(steps.filter(function(s){ return !s.locked && s.type !== 'pestpac-logout'; }));
   const res = await API.poolSubmitJob({
+    flowName: flowName || '', // v3.0.3: run-end writes lastGoodWorkers into this flow's .json
     label: (flowName||'flow') + (_sheetFree ? ' \u00b7 once' : ' \u00b7 '+ssName),
     flowSteps: allSteps(),
     spreadsheetPath: _sheetFree ? null : ssPath,
