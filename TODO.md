@@ -565,3 +565,80 @@ ame from the chosen filename, so there is precedent for
    luck. Honest climb rate is ~1 step per eval tick => 1->9 would waste ~20 minutes
    of every run. Seeding from last-good removes that cost entirely.
 
+
+=============================================================================
+NEXT SESSION — START HERE (handoff, 2026-07-15 late)
+=============================================================================
+BRANCH: v3.0.2 (a branch AND a tag share this name — always push with the
+explicit ref: `git push origin refs/heads/v3.0.2`, or git cannot disambiguate).
+HEAD 046fe08. Tree clean. Everything below is COMMITTED AND PUSHED.
+Shipped so far: 3.0.0, 3.0.1, 3.0.2. Next release is 3.0.3 (NOT yet bumped).
+
+STATE: 3.0.3 is feature-complete and unshipped.
+  DONE (all tested offline, all pushed):
+   - Containment: a Max of 4 can no longer become 29. Mutex + in-loop re-assert.
+   - Throughput climb on OVERALL rows/min. Old pressure system deleted entirely.
+   - Start SEEDS / Max CLAMPS / heuristics decide. manualTarget is gone.
+   - Hardware + PestPac sliders 1-5, 4 = 100%. Eval-every back to a box.
+     Buffer stays a BOX (Matthew: "what is present and good the buffer box" —
+     this SUPERSEDES the old R4 line about all-sliders). Reset defaults built.
+   - License counting UNCONDITIONAL (was silently disabled by unticking Auto-scale).
+   - Journal carries a worker id (line.w).
+   - Updater install path fixed (forceClosing before the update quit).
+   - The right-shift layout bug: ONE surplus </div>. div balance is now 0 and the
+     validator FAILS the build on anything else.
+   - EOL normalised + .gitattributes.
+
+  NOT BUILT (Matthew's call whether these block the ship):
+   - lastGoodWorkers background write to the flow (spec is written above: ONE key,
+     read-modify-write, never mark dirty, never touch renderer state, and main's
+     save-flow handler must PRESERVE it on rewrite or a normal save deletes it).
+   - License profile picker (today it borrows activeProfileId).
+   - Worker grid: live workers only.
+   - Offline LICENSE test (needs a stubbed playwright-core + fake License Manager;
+     Matthew has approved an ONLINE license test provided it runs in a process
+     separate from a live BUU — but NEVER while his pool is running: a login
+     consumes a seat).
+
+  UNVERIFIED — DO THIS FIRST:
+   The new sidebar is PARSED but has never been RENDERED. The whole renderer<->main
+   wiring (4 files) has never been driven end-to-end. _test-containment.js drives
+   the coordinator DIRECTLY and bypasses the renderer entirely.
+
+STEP ORDER FOR THE SHIP:
+ 1. Boot dev, LOOK at the sidebar: Max box, Start box (default 9), Hardware and
+    PestPac sliders (both 4), eval box, Reset defaults. Move Max; confirm main
+    receives it (pool-set-scaling).
+ 2. Close test: boot, $proc.CloseMainWindow(), assert the process exits and no
+    error dialog appears. This gate is new and it PASSES today — keep it passing.
+ 3. Full suite: _test-containment (7/7) + _test-mutation + _test-header-ws (13/13)
+    + _test-r16-scheduler (11/11) + _check-html-js (div balance 0) +
+    _validate-pool-worker (16 cfg markers, contiguous).
+ 4. Ship: bump CURRENT_VERSION in src/main.js AND package.json -> 3.0.3, validate,
+    commit, tag, push branch + tag, close BUU, npm run build, gh release create
+    with the dash-named installer copy, then version-buu2.json on main via the
+    GitHub API, BOM-FREE (verify first byte is 123).
+
+HARD-WON LESSONS — DO NOT RELEARN THESE:
+ - EVERY bug that hit Matthew this week lived in a code path the gates could not
+   EXECUTE. node --check proves syntax. The html parser proves the script parses.
+   Boot smoke force-kills, so 'close' never fires. None of them RUN anything.
+   If a fix cannot be proven by executing it, say so out loud.
+ - A green test on broken code is worse than no test. _test-mutation.js exists to
+   prove the containment suite actually detects the bug. Keep that habit.
+ - When the running system contradicts the source, MEASURE THE RUNNING SYSTEM.
+   _layout-probe.js (CDP over Node's built-in WebSocket) found in 30 seconds what
+   five rounds of reading CSS could not.
+ - "div balance: -1" was reported as "baseline" in every validation for a whole
+   session. It WAS the bug. Never normalise an anomaly you cannot explain.
+ - Calibrating against an unverified control propagates the disease: panel-schedules
+   was "fixed" to match panel-run's depth, but panel-run was already broken.
+ - src is CRLF. node fs.writeFileSync with \n content injects LF and silently breaks
+   literal multi-line anchors. Use \r?\n regex anchors ALWAYS (.gitattributes now
+   pins this, but the habit is what matters).
+ - Never inline `node -e` with quotes through PowerShell. Write a script to scripts/.
+   This cost time repeatedly in this session alone.
+ - Matthew was RIGHT and I was WRONG on: 29 workers being real (twice denied);
+   auto-scale being useless (it was — "manual wins" was MY spec line, not his);
+   and holding idle workers being a terrible idea (they hold PestPac seats).
+   When he says the system did something, believe him and go measure it.
