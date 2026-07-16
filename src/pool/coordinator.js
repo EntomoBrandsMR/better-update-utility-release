@@ -186,7 +186,8 @@ function _coordEmitStatusNow(){
     done: j.done, ok: j.ok, err: j.err,
     // v2.2.3 Session 3B (A5): distinctDone is the number of UNIQUE rows that have completed
     // (counted via the journal-backed completedRows set). j.done counts every row-result
-    // emit including reclaim re-processes, so distinctDone is the trustworthy headline.    distinctDone: (j.completedRows ? j.completedRows.size : j.done),
+    // emit including reclaim re-processes, so distinctDone is the trustworthy headline.
+    distinctDone: (j.completedRows ? j.completedRows.size : j.done),
     remaining: Math.max(0, j.totalRows - (j.nextRow - 1)), finished: j.finished,
     // v2.2.3 Session 3F (B2): expose the source spreadsheet path so the renderer can offer
     // an Archive button (move to upcoming/Finished/) on completed jobs.
@@ -323,7 +324,8 @@ async function coordSpawnWorker(){
     if(w && w.jobId){
       const cjob = COORD.jobs.get(w.jobId);
       if(cjob && Array.isArray(w.batch) && w.batch.length){
-        if(!cjob.requeue) cjob.requeue = [];        // only count rows that weren't already requeued (e.g. by a worker-side 'reclaim'
+        if(!cjob.requeue) cjob.requeue = [];
+        // only count rows that weren't already requeued (e.g. by a worker-side 'reclaim'
         // message that did arrive). The set-of-already-requeued check avoids double-counting
         // when the worker emitted reclaim AND then the process closed.
         const alreadyRequeued = new Set(cjob.requeue);

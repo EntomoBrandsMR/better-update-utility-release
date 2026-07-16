@@ -622,7 +622,8 @@ ipcMain.handle('pool-submit-job', async (_, { label, flowName, flowSteps, spread
     // exceed totalRows; distinctDone == completedRows.size is the trustworthy number).
     // Resume re-seeds this from the journal in coordResumeFromJournal.
     completedRows: new Set(),
-    // Reclaim tally for the breakdown line — incremented in the 'reclaim' case + the crash    // sum for the headline. Both reset on a fresh submit (resume doesn't persist these in
+    // Reclaim tally for the breakdown line — incremented in the 'reclaim' case + the crash
+    // sum for the headline. Both reset on a fresh submit (resume doesn't persist these in
     // the journal meta today; tally restarts at zero on resume — documented in v2.2.3 doc).
   });
   coordEmitStatus();

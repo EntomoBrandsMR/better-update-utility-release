@@ -1227,7 +1227,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         else if (s.type === 'error') alert('Update check failed: ' + s.message);
         else if (s.type === 'not-configured') alert('Auto-update not configured yet.\nSee README.md for GitHub setup instructions.');
       });
-    }    await loadProfiles();
+    }
+    await loadProfiles();
     // v2.2.7: restore the persistent "Write Frankware scrape to CSV" run-setting (default on).
     try { if (API.getConfig) { const _c = await API.getConfig(); const _chk = document.getElementById('scrapeCsvChk'); if (_chk) _chk.checked = (_c.scrapeCsvEnabled !== false); } } catch(e){}
     seedExampleSteps();
