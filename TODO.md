@@ -725,3 +725,8 @@ BUG EXTENSION (2026-07-16 2:40 PM, live on 3.0.3) — the stale-staged-job defec
   on completion, or clear-completed at pool-start/schedule-fire).
   (The flow error itself both times was user-flow step order: type into
   textarea[name=Note] BEFORE the butAdd click that reveals it - not a BUU bug.)
+BUG (2026-07-16, Matthew, still present on 3.0.3) — scrolling while moving/
+  dragging steps does not work: the step list does not auto-scroll when you
+  drag a step toward the top/bottom edge, so long flows cannot be reordered by
+  drag beyond the visible screen. Verbatim: "scrolling while moveing steps
+  still does not work". Logged as reported - no investigation done yet.
