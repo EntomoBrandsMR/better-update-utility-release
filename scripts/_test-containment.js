@@ -81,9 +81,16 @@ function seedJob(rows) {
   COORD.active = true;
   COORD.stopping = false;
   COORD.usedProfileIds = COORD.usedProfileIds || new Set();
-  COORD.elasticParams = null;      // license off for this test
-  COORD.autoScale = false;         // isolate CONTAINMENT from the scaling heuristics
-  COORD._durBaseline = []; COORD._durRolling = []; COORD._pressureHigh = 0;
+  COORD.elasticParams = null;      // license scrape off for this test (needs a browser)
+  COORD.autoScale = false;         // isolate CONTAINMENT from the climb
+  // v3.0.3 model: Start seeds, Max clamps. hwCapAdvisory high so hardware never binds here.
+  COORD.startWorkers = 1;
+  COORD.maxWorkers = 150;
+  COORD.hwSlider = 4;
+  COORD.ppSlider = 4;
+  COORD.hwCapAdvisory = 150;
+  COORD._rowTimes = []; COORD._tp = null; COORD._tpBest = null;
+  COORD._tpW = null; COORD._tpStableSince = null; COORD._climbLastW = null; COORD._climbDir = undefined;
   COORD.licenseCap = Infinity;
   COORD.setupScope = 'per-worker';
   COORD.startMode = 'run-all';
@@ -101,7 +108,7 @@ const sim = setInterval(() => {
 
   // ── T1: the exact live scenario — target 4, five concurrent callers ──
   seedJob(100000);
-  COORD.manualTarget = 4;
+  COORD.startWorkers = 4; COORD.maxWorkers = 4;
   peak = 0;
   await Promise.all([
     coordEvalScale(), coordEvalScale(), coordEvalScale(), coordEvalScale(), coordEvalScale(),
@@ -111,7 +118,7 @@ const sim = setInterval(() => {
 
   // ── T2: staggered re-entry mid-ramp (the slider-move case) ──
   seedJob(100000);
-  COORD.manualTarget = 4;
+  COORD.startWorkers = 4; COORD.maxWorkers = 4;
   peak = 0;
   const race = [coordEvalScale()];
   for (let i = 0; i < 6; i++) { await new Promise(r => setTimeout(r, 15)); race.push(coordEvalScale()); }
@@ -119,16 +126,16 @@ const sim = setInterval(() => {
   await new Promise(r => setTimeout(r, 400));
   ok(peak <= 4, 'T2 staggered re-entry mid-ramp never exceeds target 4', 'peak=' + peak + ' live=' + COORD.workers.size);
 
-  // ── T3: raising the target is still honoured exactly ──
-  COORD.manualTarget = 7;
-  peak = 0;
+  // ── T3: Max is a LID, not a target. Raising it with the climb OFF must change nothing —
+  // the pool holds the user's number (Start). Matthew: "max is my overide".
+  COORD.maxWorkers = 7;
   await coordEvalScale();
-  await new Promise(r => setTimeout(r, 500));
-  ok(COORD.workers.size <= 7, 'T3 raised target 7 not exceeded', 'live=' + COORD.workers.size);
-  ok(COORD.workers.size > 4, 'T3 raised target actually scaled UP', 'live=' + COORD.workers.size);
+  await new Promise(r => setTimeout(r, 400));
+  ok(COORD.workers.size === 4, 'T3 raising Max with climb off does NOT raise workers (lid, not target)', 'live=' + COORD.workers.size);
+  ok(COORD.workers.size <= 7, 'T3 Max never exceeded', 'live=' + COORD.workers.size);
 
   // ── T4: lowering the target drains (Matthew: Max is a LIVE lid) ──
-  COORD.manualTarget = 2;
+  COORD.maxWorkers = 2;
   await coordEvalScale();
   await new Promise(r => setTimeout(r, 200));
   const draining = [...COORD.workers.values()].filter(w => w.status === 'draining').length;
@@ -137,7 +144,7 @@ const sim = setInterval(() => {
 
   // ── T5: target 1 spawns exactly 1 (his "set it to 1 and it did nothing" case) ──
   seedJob(100000);
-  COORD.manualTarget = 1;
+  COORD.startWorkers = 1; COORD.maxWorkers = 1;
   peak = 0;
   await Promise.all([coordEvalScale(), coordEvalScale(), coordEvalScale()]);
   await new Promise(r => setTimeout(r, 300));
@@ -145,7 +152,7 @@ const sim = setInterval(() => {
 
   // ── T6: never spawn more workers than there is work ──
   seedJob(2);
-  COORD.manualTarget = 10;
+  COORD.startWorkers = 10; COORD.maxWorkers = 10;
   peak = 0;
   await coordEvalScale();
   await new Promise(r => setTimeout(r, 300));

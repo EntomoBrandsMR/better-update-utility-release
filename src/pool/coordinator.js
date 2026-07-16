@@ -46,12 +46,20 @@ const COORD = {
   _stopSweepFired: false,
   // R4 adaptive scaling state
   autoScale: true,       // pressure auto only ever reduces below the manual slider
-  manualTarget: 1,       // the Workers slider — manual wins over auto
+  // v3.0.3: manualTarget DELETED. It was the target AND the ceiling, which made auto
+  // incapable of ever adding a worker. Start seeds, Max clamps, heuristics decide.
+  startWorkers: 1,       // seed only — NOT a floor; heuristics may go below it
+  maxWorkers: 150,       // the user's LIVE lid; lower it mid-run and workers drain
+  hwSlider: 4,           // 1-5, 4 = 100% of the comfortable hardware cap
+  ppSlider: 4,           // 1-5, 4 = 100% of the measured PestPac optimum
+  throughput: null,      // rows/min, the ONLY signal the scaler reads
+  _rowTimes: [],         // completion timestamps (bounded)
+  _tp: null,             // W -> { t: rows/sec, n: samples }
+  _tpBest: null,         // { w, t } best measured — this is what lands in the flow
   scaleMultiplier: 3,    // cores × this = comfortable hardware cap (advisory; amber past it)
   licenseCap: Infinity,  // set by coordLicenseScale each eval when elastic is on
-  _durBaseline: [],      // first 50 OK-row durations (median = baseline)
-  _durRolling: [],       // last 30 OK-row durations (ring)
-  _pressureHigh: 0,      // consecutive high-pressure evaluations
+  // v3.0.3: _durBaseline/_durRolling/_pressureHigh DELETED. Scaling measures rows/min
+  // (COORD._rowTimes / COORD._tp), never row latency. See TODO.md 3.0.3 for the data.
   pressure: null,
   capReason: 'manual',  // v2.1.1: guards against double-spawning the logout sweeper
   setupScope: 'per-worker', // v2.1.1 (#8): 'per-worker' | 'per-job' | 'global'
@@ -470,14 +478,20 @@ function coordHandleWorkerMessage(workerId, msg){
       if(String(msg.status||'').indexOf('ok') !== 0 && ctx.mainWindow){
         try { _send('pool-row-error', { workerId: w.workerId, jobId: w.jobId, row: msg.row, error: msg.error || '', reason: msg.errorCategory || undefined, step: msg.phase || undefined }); } catch (e) {}
       }
+      // v3.0.3: throughput signal. One timestamp per completed row — this is the ONLY
+      // thing the scaler measures. Trimmed to the last 10 minutes so memory is bounded
+      // on 25k-row runs.
+      if(String(msg.status||'').indexOf('ok') === 0){
+        if(!COORD._rowTimes) COORD._rowTimes = [];
+        COORD._rowTimes.push(Date.now());
+        if(COORD._rowTimes.length > 5000) COORD._rowTimes = COORD._rowTimes.slice(-3000);
+      }
       if(job && job.completedRows) job.completedRows.add(msg.row);
       w.done++; if(msg.status==='ok'||msg.status==='ok (retry)') w.ok++; else w.err++;
       if(job){ job.done++; if(msg.status==='ok'||msg.status==='ok (retry)') job.ok++; else job.err++; }
       // R4: collect OK-row durations for PestPac-pressure sensing.
       if(String(msg.status||'').indexOf('ok')===0 && Number.isFinite(msg.durationMs)){
-        if(COORD._durBaseline.length < 50) COORD._durBaseline.push(msg.durationMs);
-        COORD._durRolling.push(msg.durationMs);
-        if(COORD._durRolling.length > 30) COORD._durRolling.shift();
+        // v3.0.3: duration baseline deleted - the scaler measures rows/min, never latency.
       }
       // v2.2.0: collect read-field values into a per-job buffer for the dedicated results workbook.
       if(job && msg.reads && typeof msg.reads === 'object'){
@@ -750,6 +764,47 @@ function _median(a){ if(!a || !a.length) return null; const s2=[...a].sort((x,y)
 // arriving mid-pass sets _evalPending so the LAST intent still gets applied once.
 let _evalInFlight = false;
 let _evalPending = false;
+// v3.0.3: THE CLIMB. Returns the worker count to aim for, based purely on measured
+// rows/min. Never reads row latency — see the header note for why latency lies.
+// Cadence is the caller's (the eval timer), so the "Eval every (min)" box is the single
+// visible knob for how twitchy this is (Matthew: "set the time to whatever the auto
+// time check is").
+const TP_WINDOW_MS = 60000;   // sample window; 30 rows at 13 workers is only ~19s (too twitchy)
+const TP_NOISE = 0.10;        // MEASURED: throughput at a fixed 13 workers wobbled 1.32-1.63 rows/sec
+function coordThroughputNow(){
+  const now = Date.now();
+  const times = COORD._rowTimes || [];
+  let n = 0;
+  for (let i = times.length - 1; i >= 0; i--) { if (now - times[i] > TP_WINDOW_MS) break; n++; }
+  return n / (TP_WINDOW_MS / 1000); // rows per second
+}
+function coordThroughputTarget(){
+  const W = COORD.workers.size || 1;
+  const now = Date.now();
+  if (COORD._tpW !== W) { COORD._tpW = W; COORD._tpStableSince = now; } // W changed: restart the clock
+  // A sample taken while the worker count was changing is a blend of two configurations
+  // and means nothing. Wait for a clean window before believing anything.
+  if (now - (COORD._tpStableSince || now) < TP_WINDOW_MS) { COORD.capReason = COORD.capReason || 'settling'; return W; }
+  const T = coordThroughputNow();
+  if (!COORD._tp) COORD._tp = {};
+  const prevRec = COORD._tp[W];
+  COORD._tp[W] = prevRec ? { t: (prevRec.t * prevRec.n + T) / (prevRec.n + 1), n: prevRec.n + 1 } : { t: T, n: 1 };
+  // remember the best measured count — this is what gets written to the flow
+  if (!COORD._tpBest || COORD._tp[W].t > COORD._tpBest.t) COORD._tpBest = { w: W, t: COORD._tp[W].t };
+  const lastW = COORD._climbLastW;
+  let dir = (COORD._climbDir === undefined) ? 1 : COORD._climbDir;
+  if (lastW != null && lastW !== W && COORD._tp[lastW]) {
+    const before = COORD._tp[lastW].t, after = COORD._tp[W].t;
+    if (after > before * (1 + TP_NOISE))      { /* real gain: keep going */ }
+    else if (after < before * (1 - TP_NOISE)) { dir = -dir; }   // real loss: turn around
+    else                                      { dir = 0; }      // inside the noise: settle
+  }
+  COORD._climbLastW = W;
+  COORD._climbDir = dir;
+  COORD.throughput = Math.round(T * 600) / 10; // rows/min, for the readout
+  return Math.max(1, W + dir);
+}
+
 async function coordEvalScale(){
   if(!COORD.active || COORD.stopping) return;
   if(_evalInFlight){ _evalPending = true; return; }
@@ -758,33 +813,36 @@ async function coordEvalScale(){
   if(COORD.elasticParams){
     try{ await coordLicenseScale(COORD.elasticParams.licenseProfileId, COORD.elasticParams.licenseBuffer, COORD.elasticParams.hwCap); }catch(e){}
   } else COORD.licenseCap = Infinity;
-  let target = Math.max(1, Math.min(parseInt(COORD.manualTarget) || 1, MAX_WORKERS_HARD_CEILING));
-  let reason = 'manual';
-  if(Number.isFinite(COORD.licenseCap) && COORD.licenseCap < target){ target = COORD.licenseCap; reason = 'license'; }
-  // v3.0.3: the license cap above is UNCONDITIONAL — it has already been applied.
-  // COORD.autoScale gates ONLY the throughput/pressure climb below, i.e. whether the
-  // pool is allowed to hunt for its own worker count. Off = hold the number the user
-  // set; it never means "stop counting licenses".
-  if(COORD.autoScale){
-    const base = COORD._durBaseline.length >= 50 ? _median(COORD._durBaseline) : null;
-    const roll = COORD._durRolling.length >= 30 ? _median(COORD._durRolling) : null;
-    if(base && roll){
-      COORD.pressure = Math.round((roll / base) * 100) / 100;
-      if(COORD.pressure > 1.4) COORD._pressureHigh++; else COORD._pressureHigh = 0;
-      if(COORD._pressureHigh >= 2){
-        const dropped = Math.max(1, Math.floor(COORD.workers.size * 0.8));
-        if(dropped < target){ target = dropped; reason = 'pressure'; }
-        COORD._pressureHigh = 0;
-      } else if(COORD.pressure >= 1.15){
-        const hold = Math.max(1, COORD.workers.size);
-        if(hold < target){ target = hold; reason = 'pressure-hold'; }
-      } else if(COORD.workers.size < target){
-        const creep = COORD.workers.size + 1;
-        if(creep < target){ target = creep; reason = reason === 'manual' ? 'recovering' : reason; }
-      }
-    }
+  // v3.0.3: HEURISTICS DECIDE, MAX CLAMPS. The old line was
+  //   target = min(manualTarget, CEILING)  ... then only ever reduced
+  // which made auto incapable of EVER adding a worker — all the scaling code could only
+  // subtract from a number the user already set. That is why auto "never worked".
+  let reason = 'held';
+  let target;
+  if (COORD.autoScale) { target = coordThroughputTarget(); reason = 'throughput'; }
+  else {
+    // Auto-scale off = HOLD THE USER'S NUMBER, which is Start - not `workers.size`.
+    // `workers.size` would mean 'hold whatever we happen to have right now', so a
+    // temporary license squeeze to 2 would become permanent even after seats freed up.
+    target = Math.max(1, parseInt(COORD.startWorkers) || 1);
   }
-    COORD.capReason = reason;
+
+  // Hardware heuristic: slider 1-5, 4 = 100% of the comfortable cap, 5 = 125% overdrive.
+  const _hwSlider = Math.max(1, Math.min(5, parseInt(COORD.hwSlider) || 4));
+  const _hwBase = COORD.hwCapAdvisory || MAX_WORKERS_HARD_CEILING;
+  const _hwEff = Math.max(1, Math.round(_hwBase * (_hwSlider / 4)));
+  if (_hwEff < target) { target = _hwEff; reason = 'hardware'; }
+
+  // License cap: UNCONDITIONAL. Already computed above; never gated on a checkbox.
+  if (Number.isFinite(COORD.licenseCap) && COORD.licenseCap < target) { target = COORD.licenseCap; reason = 'license'; }
+
+  // Max: the user's LIVE lid. Lower it below the live count mid-run and workers drain.
+  // It is a clamp, never the target — that distinction is the whole point of this rewrite.
+  const _max = Math.max(1, Math.min(parseInt(COORD.maxWorkers) || MAX_WORKERS_HARD_CEILING, MAX_WORKERS_HARD_CEILING));
+  if (_max < target) { target = _max; reason = 'max'; }
+
+  target = Math.max(1, target);
+  COORD.capReason = reason;
     COORD.desiredWorkers = target;
     await coordScaleTo(target);
     coordEmitStatus();

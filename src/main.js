@@ -644,7 +644,7 @@ ipcMain.handle('pool-clear-jobs', async () => {
 
 // Start the pool: spawn up to `workerCount` workers to drain the staged jobs. Optionally
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
-ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier }) => {
+ipcMain.handle('pool-start', async (_, { workerCount, startWorkers, maxWorkers, hwSlider, ppSlider, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
@@ -697,14 +697,21 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
   const _modeWorkerCount = (COORD.startMode === 'step' || COORD.startMode === 'step-row') ? 1 : (parseInt(workerCount) || 1);
   // R4: scaling state. The manual slider is authoritative (manual wins over auto) and
   // may deliberately exceed the comfortable hardware cap — so hwCap is out of this clamp.
-  COORD.manualTarget = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING));
-  COORD.scaleMultiplier = Math.max(1, parseInt(scaleMultiplier) || 3);
-  COORD.autoScale = true;
+  // v3.0.3: Start SEEDS, Max CLAMPS, heuristics decide in between.
+  COORD.startWorkers = Math.max(1, Math.min(parseInt(startWorkers ?? workerCount) || 1, MAX_WORKERS_HARD_CEILING));
+  COORD.maxWorkers   = Math.max(1, Math.min(parseInt(maxWorkers) || MAX_WORKERS_HARD_CEILING, MAX_WORKERS_HARD_CEILING));
+  COORD.hwSlider     = Math.max(1, Math.min(5, parseInt(hwSlider) || 4));   // 4 = 100%
+  COORD.ppSlider     = Math.max(1, Math.min(5, parseInt(ppSlider) || 4));   // 4 = 100%
+  COORD.scaleMultiplier = 3; // the comfortable-cap BASE; hwSlider scales it, so this is fixed
+  // v3.0.3: was hardcoded `= true`, so the Auto-scale checkbox never disabled anything and
+  // the pressure block ran on every pool regardless of the box.
+  COORD.autoScale = (elastic !== false);
   COORD.licenseCap = Infinity;
-  COORD._durBaseline = []; COORD._durRolling = []; COORD._pressureHigh = 0;
-  COORD.pressure = null; COORD.capReason = 'manual';
+  COORD._rowTimes = []; COORD._tp = null; COORD._tpBest = null;
+  COORD._tpW = null; COORD._tpStableSince = null; COORD._climbLastW = null; COORD._climbDir = undefined;
+  COORD.throughput = null; COORD.capReason = 'settling';
   COORD.hwCapAdvisory = computeHardwareCap(COORD.scaleMultiplier);
-  let target = Math.max(1, Math.min(_modeWorkerCount, MAX_WORKERS_HARD_CEILING));
+  let target = Math.max(1, Math.min(_modeWorkerCount, COORD.maxWorkers, MAX_WORKERS_HARD_CEILING));
   COORD.desiredWorkers = target;
 
   // Spawn initial workers (bounded by total rows available — no point spawning idle workers).
@@ -806,8 +813,8 @@ ipcMain.handle('pool-run-control', async (_, _rcPayload) => {
       COORD.licenseTimer = setInterval(() => coordEvalScale(), _iv);
     }
     const tgt = (COORD.startModeTarget && COORD.startModeTarget.workers) || 1;
-    COORD.manualTarget = Math.max(1, Math.min(tgt, MAX_WORKERS_HARD_CEILING));
-    COORD.desiredWorkers = COORD.manualTarget;
+    COORD.startWorkers = Math.max(1, Math.min(tgt, MAX_WORKERS_HARD_CEILING));
+    COORD.desiredWorkers = Math.min(COORD.startWorkers, COORD.maxWorkers || MAX_WORKERS_HARD_CEILING);
     await coordScaleTo(COORD.desiredWorkers);
     coordEmitStatus();
     return { ok: true, desiredWorkers: COORD.desiredWorkers };
@@ -836,23 +843,31 @@ ipcMain.handle('pool-logout-sweep', async () => {
 // take effect immediately via an evaluation when the pool is active (non-step).
 ipcMain.handle('pool-set-scaling', async (_, d) => {
   d = d || {};
-  if (d.workers != null) COORD.manualTarget = Math.max(1, Math.min(MAX_WORKERS_HARD_CEILING, parseInt(d.workers) || 1));
-  if (d.autoScale != null) COORD.autoScale = !!d.autoScale;
-  if (d.multiplier != null) { COORD.scaleMultiplier = Math.max(1, parseInt(d.multiplier) || 3); COORD.hwCapAdvisory = computeHardwareCap(COORD.scaleMultiplier); }
+  // v3.0.3: every knob is live. Max especially â€” Matthew's override is lowering it BELOW
+  // the live count mid-run, which must drain workers, not wait for the next launch.
+  if (d.maxWorkers != null)   COORD.maxWorkers   = Math.max(1, Math.min(MAX_WORKERS_HARD_CEILING, parseInt(d.maxWorkers) || 1));
+  if (d.startWorkers != null) COORD.startWorkers = Math.max(1, Math.min(MAX_WORKERS_HARD_CEILING, parseInt(d.startWorkers) || 1));
+  if (d.hwSlider != null)     COORD.hwSlider     = Math.max(1, Math.min(5, parseInt(d.hwSlider) || 4));
+  if (d.ppSlider != null)     COORD.ppSlider     = Math.max(1, Math.min(5, parseInt(d.ppSlider) || 4));
+  if (d.autoScale != null)    COORD.autoScale    = !!d.autoScale;
+  // hwCapAdvisory must be RECOMPUTED here: it was only ever refreshed on a slider move, so
+  // the renderer's amber cache went stale during a run and lied (slider 4 showed amber
+  // while the real cap was 21).
+  COORD.hwCapAdvisory = computeHardwareCap(COORD.scaleMultiplier || 3);
   if (d.intervalMin != null && COORD.licenseTimer) {
     clearInterval(COORD.licenseTimer);
     COORD.licenseTimer = setInterval(() => coordEvalScale(), Math.max(1, parseInt(d.intervalMin) || 2) * 60 * 1000);
   }
   if (COORD.active && COORD.startMode !== 'step' && COORD.startMode !== 'step-row') { try { await coordEvalScale(); } catch (e) {} }
-  return { ok: true, hwCap: COORD.hwCapAdvisory || computeHardwareCap(COORD.scaleMultiplier) };
+  return { ok: true, hwCap: COORD.hwCapAdvisory || computeHardwareCap(3), hwEffective: Math.max(1, Math.round((COORD.hwCapAdvisory || computeHardwareCap(3)) * ((COORD.hwSlider || 4) / 4))) };
 });
 
 ipcMain.handle('pool-set-workers', async (_, { workerCount }) => {
   if (!COORD.active) return { ok: false, error: 'Pool not running.' };
   const hwCap = computeHardwareCap(COORD.scaleMultiplier);
   const target = Math.max(0, Math.min(parseInt(workerCount) || 0, MAX_WORKERS_HARD_CEILING)); // R4: slider may exceed the (advisory) hardware cap
-  COORD.manualTarget = Math.max(1, target || 1);
-  COORD.desiredWorkers = target;
+  COORD.startWorkers = Math.max(1, target || 1); // v3.0.3: legacy path â€” seeds Start, Max still clamps
+  COORD.desiredWorkers = Math.min(target, COORD.maxWorkers || MAX_WORKERS_HARD_CEILING);
   await coordScaleTo(target);
   return { ok: true, desiredWorkers: target, liveWorkers: COORD.workers.size };
 });
@@ -898,7 +913,7 @@ ipcMain.handle('pool-find-orphans', async () => {
 // v2.0.0 resume: rebuild the pool from an orphan journal and restart it. Reconstructs each
 // job from the meta sidecar, loads the completed-row sets from the journal, then APPENDS to
 // the SAME journal (so the resumed run keeps one continuous record).
-ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin }) => {
+ipcMain.handle('pool-resume', async (_, { poolId, workerCount, startWorkers, maxWorkers, hwSlider, ppSlider, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
   const metaPath = coordJournalMetaPath(poolId);
   const jp = coordJournalPath(poolId);
@@ -962,8 +977,15 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseP
   const hwCap = computeHardwareCap(COORD.scaleMultiplier);
   let totalRemaining = 0; for (const j of COORD.jobs.values()) totalRemaining += Math.max(0, j.totalRows - j.completedRows.size);
   let target = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING, Math.max(1, totalRemaining)));
-  COORD.manualTarget = Math.max(1, Math.min(parseInt(workerCount) || 1, MAX_WORKERS_HARD_CEILING));
-  COORD._durBaseline = []; COORD._durRolling = []; COORD._pressureHigh = 0; COORD.pressure = null; COORD.licenseCap = Infinity;
+  COORD.startWorkers = Math.max(1, Math.min(parseInt(startWorkers ?? workerCount) || 1, MAX_WORKERS_HARD_CEILING));
+  COORD.maxWorkers   = Math.max(1, Math.min(parseInt(maxWorkers) || MAX_WORKERS_HARD_CEILING, MAX_WORKERS_HARD_CEILING));
+  COORD.hwSlider     = Math.max(1, Math.min(5, parseInt(hwSlider) || 4));
+  COORD.ppSlider     = Math.max(1, Math.min(5, parseInt(ppSlider) || 4));
+  COORD.autoScale    = (elastic !== false);
+  COORD.scaleMultiplier = 3;
+  COORD._rowTimes = []; COORD._tp = null; COORD._tpBest = null;
+  COORD._tpW = null; COORD._tpStableSince = null; COORD._climbLastW = null; COORD._climbDir = undefined;
+  COORD.throughput = null; COORD.licenseCap = Infinity;
   COORD.desiredWorkers = target;
   for (let i = 0; i < target; i++) { await coordSpawnWorker(); }
 
