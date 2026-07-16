@@ -326,7 +326,7 @@ async function coordSpawnWorker(){
           // R1: every row is guaranteed a terminal journal line — a crash can no longer
           // leave silence. When the row re-runs, its later line wins (requeued is not a
           // completion for the reader).
-          coordJournalAppend(w.jobId, r, 'error', { reason: 'requeued', error: 'worker died mid-row; row returned to the queue' });
+          coordJournalAppend(w.jobId, r, 'error', { reason: 'requeued', error: 'worker died mid-row; row returned to the queue', workerId: w.workerId });
         }
         if(cjob.requeue.length) cjob.finished = false;
       }
@@ -463,6 +463,7 @@ function coordHandleWorkerMessage(workerId, msg){
       coordJournalAppend(w.jobId, msg.row, msg.status, {
         reason: msg.errorCategory || (/Stopped by user/.test(msg.error||'') ? 'manual' : undefined),
         error: msg.error, durationMs: msg.durationMs,
+        workerId: w.workerId, // v3.0.3: attribute every row to the worker that ran it
       });
       // R11: direct error feed to the renderer (errors only — the D3 lesson says no
       // per-row event floods; OK rows are visible through the counters).

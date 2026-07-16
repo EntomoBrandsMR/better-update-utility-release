@@ -82,6 +82,11 @@ function coordJournalAppend(jobId, row, status, extra){
   if(!COORD._rowState) COORD._rowState = new Map();
   const prev = COORD._rowState.get(key);
   const line = { j: jobId, r: row, s: s };
+  // v3.0.3: WHICH WORKER did this row. Both callers always had the worker in scope; the
+  // field was simply never written, so the journal could not attribute a row to a worker
+  // and live runs had to be reconstructed from log-file mtimes. Never infer it — if a
+  // caller cannot supply it, the line is honestly worker-less rather than guessed.
+  if(extra.workerId) line.w = extra.workerId;
   if(rs) line.rs = rs;
   if(extra.error) line.e = String(extra.error).slice(0, 500);
   if(extra.durationMs != null) line.ms = extra.durationMs;
