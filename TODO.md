@@ -701,3 +701,16 @@ BUG — worker fatal => infinite respawn cycle, no error surfaced (2026-07-16,
       re-pathing archived sheets.
   NOTE: run 1 completing + sweep + everything else worked; the logout sweep for
   the bug run also ran clean (sweep1784213182251: 1 session logged out).
+BUG (D3 CONFIRMED STILL PRESENT ON 3.0.3) — typing lockup. Matthew, 2026-07-16:
+  "the i cant type error is still present". This is Phase-1 D3 (typing lockup
+  cluster: run-settings number inputs flaky, step-editor fields stop accepting
+  input; suspected focus-stealing render loop). Diagnosed-only, never fixed —
+  now confirmed surviving into 3.0.3. PROMOTE from diagnose-list to 3.0.4 work.
+  LEAD SUSPECT to check first: renderCoordStatus fires on every pool-status
+  (throttled 250ms in coordEmitStatus) and several renderers rebuild via
+  innerHTML — an innerHTML rebuild of a container that holds the focused input
+  destroys the focused element mid-keystroke. Audit which containers rebuild on
+  a timer while an input inside them can hold focus (staged-jobs list, worker
+  grid aggregate strip, step editor during status updates).
+  REPRO NOTES (fill in with Matthew): which fields, when (during a run? after a
+  run finishes? always?), and whether clicking elsewhere then back restores it.
