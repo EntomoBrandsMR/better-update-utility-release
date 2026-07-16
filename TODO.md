@@ -714,3 +714,14 @@ BUG (D3 CONFIRMED STILL PRESENT ON 3.0.3) — typing lockup. Matthew, 2026-07-16
   grid aggregate strip, step editor during status updates).
   REPRO NOTES (fill in with Matthew): which fields, when (during a run? after a
   run finishes? always?), and whether clicking elsewhere then back restores it.
+BUG EXTENSION (2026-07-16 2:40 PM, live on 3.0.3) — the stale-staged-job defect
+  also hits SCHEDULED fires. pool1784227218226 ran TWO jobs: the freshly-fired
+  Schedule Test job AND the finished job from the previous 2:27 PM fire
+  (job1784226438089-380), still staged. Each scheduled fire stages a new job
+  without clearing completed ones, so every fire re-runs every prior copy —
+  N fires => N accumulated jobs, N-1 of them stale (and after an archive/move,
+  stale sheet paths feed the fatal crash-loop bug above). FIX with the same
+  3.0.4 work: completed jobs must not survive into the next launch (auto-unstage
+  on completion, or clear-completed at pool-start/schedule-fire).
+  (The flow error itself both times was user-flow step order: type into
+  textarea[name=Note] BEFORE the butAdd click that reveals it - not a BUU bug.)
