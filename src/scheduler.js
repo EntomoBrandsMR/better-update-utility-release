@@ -151,7 +151,11 @@ function initScheduler(deps) {
         errHandle: 'retry', resumeFromRow: 1, retryCount: 2, retryRowIndexes: null, reauthIntervalMin: 0,
       },
       start: {
-        workerCount: 1, elastic: false, licenseProfileId: null, licenseBuffer: 0,
+        // v3.0.3: licenseProfileId was null here, so SCHEDULED runs skipped license
+        // counting entirely — the one path left that contradicted "license counting is
+        // unconditional" (it is a safety rail, never gated). Scheduled runs now count
+        // seats against the same profile they log in with, honoring the default buffer.
+        workerCount: 1, elastic: false, licenseProfileId: s.profileId || null, licenseBuffer: 10,
         licenseIntervalMin: 2, setupScope: 'per-worker', startMode: 'run-all',
         diagnosticCapture: false, captureBucketCap: 10, scaleMultiplier: 3,
       },
