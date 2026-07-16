@@ -1,0 +1,12 @@
+# Deterministic line endings. Without this, core.autocrlf alone let node fs.writeFileSync
+# patches inject LF into CRLF files, leaving src MIXED - which silently broke literal
+# multi-line anchors in surgery scripts twice in one session.
+* text=auto
+*.js text eol=crlf
+*.html text eol=crlf
+*.json text eol=crlf
+*.md text eol=crlf
+*.nsh text eol=crlf
+*.exe binary
+*.xlsx binary
+*.png binary
