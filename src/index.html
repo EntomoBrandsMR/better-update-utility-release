@@ -704,22 +704,33 @@ textarea { resize: vertical; min-height: 60px; }
        handlers as before — only the layout changed (inline strip -> stacked sidebar panel). -->
   <div class="sb-sec">Worker pool</div>
   <div id="poolControls" style="padding:4px 14px 8px;display:flex;flex-direction:column;gap:7px">
-    <div style="display:flex;flex-direction:column;gap:2px">
-      <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;color:var(--t3)">Workers</span><span id="poolWorkersVal" style="font-size:11px;font-weight:700;color:var(--t1)">4</span></div>
-      <input id="poolWorkerCount" type="range" min="1" max="150" value="4" step="1" style="width:100%" oninput="poolScalingLive()" title="Manual worker target. Manual wins over auto - auto-scale only ever reduces below this. Amber = beyond the comfortable hardware cap (deliberate overdrive).">
+    <!-- v3.0.3: Max is a LID, Start is a SEED, the heuristics decide in between. The old
+         single "Workers" slider was the target AND the ceiling, so auto could only ever
+         subtract from it and never add - which is why none of the scaling code did anything. -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <span style="font-size:11px;color:var(--t3)" title="Hard ceiling. Nothing may exceed this - not the climb, not hardware, not licenses. Live: lower it below the running worker count and workers drain down to it.">Max workers</span>
+      <input id="poolMaxWorkers" type="number" min="1" max="150" value="150" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" oninput="poolScalingLive()" title="Your override. Nothing ever goes above this.">
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <span style="font-size:11px;color:var(--t3)" title="How many workers to launch with. A seed, NOT a floor - the heuristics may settle below it. A flow that has learned its best count replaces this on load.">Start</span>
+      <input id="poolStartWorkers" type="number" min="1" max="150" value="9" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" oninput="poolScalingLive()" title="Initial worker count. Not a floor.">
     </div>
     <div style="display:flex;flex-direction:column;gap:2px">
-      <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;color:var(--t3)" title="Comfortable hardware cap = CPU cores x this multiplier, bounded by free RAM. Advisory only.">HW multiplier</span><span id="poolScaleMultVal" style="font-size:11px;font-weight:700;color:var(--t1)">3</span></div>
-      <input id="poolScaleMult" type="range" min="1" max="8" value="3" step="1" style="width:100%" oninput="poolScalingLive()">
+      <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;color:var(--t3)" title="How much of the comfortable hardware cap to use. 4 = 100% (cores x 3, bounded by free RAM). 5 = 125%, deliberate overdrive. Advisory - the pool still obeys Max and licenses.">Hardware</span><span id="poolHwSliderVal" style="font-size:11px;font-weight:700;color:var(--t1)">4</span></div>
+      <input id="poolHwSlider" type="range" min="1" max="5" value="4" step="1" style="width:100%" oninput="poolScalingLive()">
+    </div>
+    <div style="display:flex;flex-direction:column;gap:2px">
+      <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;color:var(--t3)" title="How much of the measured PestPac optimum to use. The pool measures OVERALL rows/min and finds where throughput peaks; 4 = run at that peak (100%), 5 = 125% overdrive, lower = deliberately gentler on PestPac.">PestPac</span><span id="poolPpSliderVal" style="font-size:11px;font-weight:700;color:var(--t1)">4</span></div>
+      <input id="poolPpSlider" type="range" min="1" max="5" value="4" step="1" style="width:100%" oninput="poolScalingLive()">
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
       <span style="font-size:11px;color:var(--t3)" title="Licenses to always keep free. Used by Auto and by Auto-scale.">Buffer</span>
       <input id="poolLicBuffer" type="number" min="0" max="100" value="10" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" title="Keep this many PestPac licenses free (never consumed by workers)">
     </div>
     <label style="font-size:11px;color:var(--t3);display:flex;align-items:center;gap:5px" title="While running, periodically re-check free licenses and scale workers up or down automatically"><input id="poolElastic" type="checkbox" style="margin:0" onchange="poolToggleAutoScale()">Auto-scale</label>
-    <div style="display:flex;flex-direction:column;gap:2px">
-      <div style="display:flex;align-items:center;justify-content:space-between"><span id="poolIntervalLbl" style="font-size:11px;color:var(--t3)" title="How often the pool re-evaluates scaling: license check (when Auto-scale is on) + PestPac pressure. Minutes.">Eval every (min)</span><span id="poolLicIntervalVal" style="font-size:11px;font-weight:700;color:var(--t1)">2</span></div>
-      <input id="poolLicInterval" type="range" min="1" max="10" value="2" step="1" style="width:100%" oninput="poolScalingLive()">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <span id="poolIntervalLbl" style="font-size:11px;color:var(--t3)" title="How often the pool re-evaluates: license count (always) and the throughput climb (when Auto-scale is on). This is also the climb's step cadence - the single knob for how twitchy scaling is.">Eval every (min)</span>
+      <input id="poolLicInterval" type="number" min="1" max="60" value="2" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" oninput="poolScalingLive()" title="Minutes between evaluations. Also the climb's step rate.">
       <span id="poolIntervalUnit" style="display:none">min</span>
     </div>
     <div style="display:flex;gap:6px;margin-top:2px">
@@ -741,6 +752,7 @@ textarea { resize: vertical; min-height: 60px; }
       <input id="poolDiagCap" type="number" min="1" max="1000" value="10" title="Captures per (status, error category) bucket" style="width:48px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:11px">
     </div>
     <div id="scaleStatus" style="font-size:10px;color:var(--t3);line-height:1.5"></div>
+    <button class="tbtn" onclick="poolResetDefaults()" style="width:100%;font-size:11px" title="Restore Max 150, Start 9, Hardware 4, PestPac 4, Buffer 10, Eval 2 min">Reset defaults</button>
     <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" style="width:100%" title="Start the worker pool">Run pool</button>
     <button class="tbtn" id="poolSweepBtn" onclick="poolLogoutSweepClick()" style="width:100%;margin-top:2px" title="Log out any BUU sessions still logged in on PestPac (License Manager). Use if you see stuck sessions.">Log out stuck sessions</button>
     <button class="tbtn" onclick="checkUpdates()" style="width:100%;margin-top:2px" title="Check for a new BUU version now">Check for updates</button>
@@ -1258,11 +1270,11 @@ async function offerPoolResume(p){
     + done.toLocaleString()+' of '+total.toLocaleString()+' rows completed · '+p.totalRemaining.toLocaleString()+' remaining\n\n'+jobLines
     + inflight + '\n\nResume it now? (Cancel lets you discard or ignore it.)';
   if(confirm(msg)){
-    const n = Math.max(1, Math.min(150, parseInt((document.getElementById('poolWorkerCount')||{}).value)||4));
+    const n = Math.max(1, Math.min(150, _pv('poolStartWorkers', 9)));
     const elastic = !!(document.getElementById('poolElastic')||{}).checked;
     const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
     const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
-    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
+    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, startWorkers:n, maxWorkers:_pv('poolMaxWorkers',150), hwSlider:_pv('poolHwSlider',4), ppSlider:_pv('poolPpSlider',4), elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
     if(res && res.ok===false){ alert('Could not resume pool: '+(res.error||'unknown')); return; }
     poolUIActive(true);
     go('run');
@@ -2338,25 +2350,40 @@ let coordActive = false;
 // R4: live scaling updates. Debounced push of slider values to the coordinator; applies
 // mid-run. The response carries the comfortable hardware cap for the amber styling.
 let _scaleT=null, _hwCapCache=null;
+function _pv(id, dflt){ const el = document.getElementById(id); const n = parseInt((el||{}).value); return isNaN(n) ? dflt : n; }
+// v3.0.3: in the R4 doc, never built. Restores the agreed defaults.
+function poolResetDefaults(){
+  const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.value=v; };
+  set('poolMaxWorkers',150); set('poolStartWorkers',9); set('poolHwSlider',4);
+  set('poolPpSlider',4); set('poolLicBuffer',10); set('poolLicInterval',2);
+  const el=document.getElementById('poolDiagCap'); if(el) el.value=10;
+  poolScalingLive();
+}
 function poolScalingLive(){
-  const w=document.getElementById('poolWorkerCount'), wl=document.getElementById('poolWorkersVal');
-  const m=document.getElementById('poolScaleMult'), ml=document.getElementById('poolScaleMultVal');
-  const iv=document.getElementById('poolLicInterval'), il=document.getElementById('poolLicIntervalVal');
-  if(wl&&w) wl.textContent=w.value;
-  if(ml&&m) ml.textContent=m.value;
-  if(il&&iv) il.textContent=iv.value;
+  // v3.0.3: Max/Start are boxes, Hardware/PestPac are 1-5 sliders (4 = 100%).
+  const hw=document.getElementById('poolHwSlider'), hwl=document.getElementById('poolHwSliderVal');
+  const pp=document.getElementById('poolPpSlider'), ppl=document.getElementById('poolPpSliderVal');
+  if(hwl&&hw) hwl.textContent=hw.value;
+  if(ppl&&pp) ppl.textContent=pp.value;
   poolScalingAmber();
   clearTimeout(_scaleT);
   _scaleT=setTimeout(async function(){
     if(!API.poolSetScaling) return;
     try{
-      const r=await API.poolSetScaling({ workers: parseInt((w||{}).value)||1, multiplier: parseInt((m||{}).value)||3, intervalMin: parseInt((iv||{}).value)||2 });
+      const r=await API.poolSetScaling({
+        maxWorkers:   _pv('poolMaxWorkers', 150),
+        startWorkers: _pv('poolStartWorkers', 9),
+        hwSlider:     _pv('poolHwSlider', 4),
+        ppSlider:     _pv('poolPpSlider', 4),
+        intervalMin:  _pv('poolLicInterval', 2),
+        autoScale:    !!(document.getElementById('poolElastic')||{}).checked,
+      });
       if(r&&r.hwCap){ _hwCapCache=r.hwCap; poolScalingAmber(); }
     }catch(e){}
   }, 300);
 }
 function poolScalingAmber(){
-  const w=document.getElementById('poolWorkerCount'), wl=document.getElementById('poolWorkersVal');
+  const w=document.getElementById('poolMaxWorkers'), wl=document.getElementById('poolMaxWorkers');
   if(!w||!wl||!_hwCapCache) return;
   const over=parseInt(w.value)>_hwCapCache;
   wl.style.color=over?'var(--amber)':'var(--t1)';
@@ -2369,7 +2396,7 @@ function poolToggleAutoScale(){
 }
 
 async function poolFillAuto(){
-  const inp=document.getElementById('poolWorkerCount');
+  const inp=document.getElementById('poolStartWorkers');
   const btn=document.getElementById('poolAutoBtn');
   try{
     if(!API.getWorkerCaps){ alert('Worker-cap API unavailable.'); return; }
@@ -2401,7 +2428,7 @@ async function poolFillAuto(){
 // jobs first via "Add job to pool" before clicking Run pool. Workers pull batches from main;
 // no row pre-division. Optional elastic license scaling.
 async function poolRunClick(){
-  const n = Math.max(1, Math.min(150, parseInt(document.getElementById('poolWorkerCount').value)||1));
+    const n = Math.max(1, Math.min(150, _pv('poolStartWorkers', 9)));
   // If no jobs are staged yet, stage the current flow/sheet as a single job.
   const status = API.poolGetStatus ? await API.poolGetStatus() : {jobs:0};
   if(!status.jobs){
@@ -2421,7 +2448,7 @@ async function poolRunClick(){
 // it just doubles up so pool runs can also be stepped through.
 const _smSel = document.getElementById('startModeSel');
 const startMode = (_smSel && _smSel.value) || 'run-all';
-const res = await API.poolStart({ workerCount:n, elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier: parseInt((document.getElementById('poolScaleMult')||{}).value)||3 });
+const res = await API.poolStart({ workerCount:n, startWorkers:n, maxWorkers:_pv('poolMaxWorkers',150), hwSlider:_pv('poolHwSlider',4), ppSlider:_pv('poolPpSlider',4), elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });  // v3.0.3: scaleMultiplier dropped - the HW slider replaces it; main fixes the comfortable-cap base at 3 and hwSlider/4 scales it.
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
 
   // R5: in step modes the pane appears AT LAUNCH — worker login was the first invisible
@@ -3211,8 +3238,10 @@ async function saveFlow(){
     // R14: pool settings ride with the flow — applied as defaults on load; the sidebar
     // sliders remain a per-run override that persists only on the next save.
     poolSettings: {
-      workers: parseInt((document.getElementById('poolWorkerCount')||{}).value) || 1,
-      scaleMult: parseInt((document.getElementById('poolScaleMult')||{}).value) || 3,
+      maxWorkers: _pv('poolMaxWorkers', 150),
+      startWorkers: _pv('poolStartWorkers', 9),
+      hwSlider: _pv('poolHwSlider', 4),
+      ppSlider: _pv('poolPpSlider', 4),
       evalMin: parseInt((document.getElementById('poolLicInterval')||{}).value) || 2,
       elastic: !!(document.getElementById('poolElastic')||{}).checked,
       diag: !!(document.getElementById('poolDiagCapture')||{}).checked,
@@ -3323,8 +3352,14 @@ async function loadFlow(){
   {
     const ps = data.poolSettings || {};
     const _set = function(id, v){ const el = document.getElementById(id); if(el != null && v != null) el.value = v; };
-    _set('poolWorkerCount', ps.workers != null ? ps.workers : 1);
-    _set('poolScaleMult', ps.scaleMult != null ? ps.scaleMult : 3);
+    _set('poolMaxWorkers', ps.maxWorkers != null ? ps.maxWorkers : 150);
+    _set('poolHwSlider', ps.hwSlider != null ? ps.hwSlider : 4);
+    _set('poolPpSlider', ps.ppSlider != null ? ps.ppSlider : 4);
+    // v3.0.3: a flow that has LEARNED its best worker count replaces the Start default.
+    // Matthew: "that flow knows whats best for it". lastGoodWorkers is written in the
+    // background by the pool and is NEVER carried in the renderer's flow object.
+    _set('poolStartWorkers', data.lastGoodWorkers != null ? data.lastGoodWorkers
+          : (ps.startWorkers != null ? ps.startWorkers : 9));
     _set('poolLicInterval', ps.evalMin != null ? ps.evalMin : 2);
     _set('poolDiagCap', ps.diagCap != null ? ps.diagCap : 10);
     { const el = document.getElementById('poolElastic'); if(el) el.checked = !!ps.elastic; }
