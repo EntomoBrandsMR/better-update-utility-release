@@ -26,3 +26,22 @@ blocks.forEach(function (code, idx) {
 });
 if (failed) process.exit(1);
 console.log('OK: ' + blocks.length + ' inline script block(s) parse cleanly');
+
+// v3.0.3: DIV BALANCE MUST BE 0. This is not cosmetic. A single surplus </div> closed
+// .content 177 lines early, so the browser reparented panel-run/profiles/schedules onto
+// .shell (display:flex) and each rendered as a third flex COLUMN - the emptied .content
+// kept flex:1 and ate the left half. That was the "Run progress is shoved right" bug.
+// A -1 balance was reported as "baseline" in every validation for an entire session while
+// it was, in fact, the bug printing itself on screen. Never normalise this number again.
+(function checkDivBalance(){
+  const fs2 = require('fs');
+  const src = fs2.readFileSync(require('path').join(__dirname, '..', 'src', 'index.html'), 'utf8');
+  const open = (src.match(/<div\b/g) || []).length;
+  const close = (src.match(/<\/div>/g) || []).length;
+  const bal = open - close;
+  if (bal !== 0) {
+    console.error('FAIL: div balance ' + bal + ' (open ' + open + ' / close ' + close + '). Must be 0 - malformed HTML reparents panels onto .shell.');
+    process.exit(1);
+  }
+  console.log('OK: div balance 0 (' + open + ' open / ' + close + ' close)');
+})();
