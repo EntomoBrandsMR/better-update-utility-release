@@ -631,3 +631,32 @@ HARD-WON LESSONS (07-16 additions — keep the 07-15 list in git history):
    check git diff --numstat right after editing — a 1,900-line diff for a 3-line
    edit means EOL churn, fix it BEFORE committing.
 
+
+=============================================================================
+3.0.4 BACKLOG (logged 2026-07-16, from Matthew, right after updating to 3.0.3)
+=============================================================================
+BUG 1 — "install folder is not on desktop, not sure where it is".
+  MEASURED FACTS (2026-07-16 10:03): install root is C:\BUU — the R8 fixed
+  root from build/installer.nsh (stable path so taskbar pins survive updates;
+  app + flows\ + logs\ + failures\ all live there). The desktop shortcut
+  "BUU 2.0" exists and points at C:\BUU\BUU 2.0.exe (works). What Matthew is
+  missing is a visible way to FIND the folder itself.
+  CANDIDATE FIX: have the installer also create a desktop shortcut TO THE
+  C:\BUU FOLDER (or add an in-app "Open BUU folder" next to the existing
+  open-flows-folder). DO NOT move the install root to the Desktop: his Desktop
+  is OneDrive-redirected (OneDrive - Palmetto Exterminators\Desktop), which
+  would sync a 200MB app plus live run data into OneDrive.
+  CLEANUP RIDER: a stale orphaned 2.2.9 install sits at
+  %LOCALAPPDATA%\Programs\BUU 2.0 (dated 7/4, pre-R8 location era) with its
+  own uninstaller. Remove it (or have the next installer sweep it) so nobody
+  ever launches the wrong, ancient copy.
+  GOOD NEWS RIDER: this update was the FIRST successful in-app update — the
+  3.0.3 forceClosing fix is proven in production (buu-update.exe 10:01, C:\BUU
+  files replaced, registry DisplayVersion 3.0.3, app relaunched).
+
+ITEM 2 — Max workers DEFAULT changes 150 -> 20 (Matthew, verbatim: "max
+  workers default to 20"). The 150 HARD ceiling (MAX_WORKERS_HARD_CEILING)
+  stays — only the UI default changes. Sites that all say 150 today:
+  index.html Max box value attr, poolResetDefaults(), every _pv('poolMaxWorkers',150)
+  fallback, saveFlow poolSettings default, loadFlow default. Change them together
+  or a Reset/load will silently reintroduce 150.
