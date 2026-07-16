@@ -635,25 +635,35 @@ HARD-WON LESSONS (07-16 additions — keep the 07-15 list in git history):
 =============================================================================
 3.0.4 BACKLOG (logged 2026-07-16, from Matthew, right after updating to 3.0.3)
 =============================================================================
-BUG 1 — "install folder is not on desktop, not sure where it is".
-  MEASURED FACTS (2026-07-16 10:03): install root is C:\BUU — the R8 fixed
-  root from build/installer.nsh (stable path so taskbar pins survive updates;
-  app + flows\ + logs\ + failures\ all live there). The desktop shortcut
-  "BUU 2.0" exists and points at C:\BUU\BUU 2.0.exe (works). What Matthew is
-  missing is a visible way to FIND the folder itself.
-  CANDIDATE FIX: have the installer also create a desktop shortcut TO THE
-  C:\BUU FOLDER (or add an in-app "Open BUU folder" next to the existing
-  open-flows-folder). DO NOT move the install root to the Desktop: his Desktop
-  is OneDrive-redirected (OneDrive - Palmetto Exterminators\Desktop), which
-  would sync a 200MB app plus live run data into OneDrive.
-  CLEANUP RIDER: a stale orphaned 2.2.9 install sits at
-  %LOCALAPPDATA%\Programs\BUU 2.0 (dated 7/4, pre-R8 location era) with its
-  own uninstaller. Remove it (or have the next installer sweep it) so nobody
-  ever launches the wrong, ancient copy.
-  GOOD NEWS RIDER: this update was the FIRST successful in-app update — the
-  3.0.3 forceClosing fix is proven in production (buu-update.exe 10:01, C:\BUU
-  files replaced, registry DisplayVersion 3.0.3, app relaunched).
+STANDING NOTE (not a bug — Matthew asked to be corrected on this): the install
+  root C:\BUU is DECIDED, R8 behavior (build/installer.nsh: fixed root so
+  taskbar pins survive updates; app + flows\ + logs\ + failures\ in one place).
+  Matthew reported it as a bug on 2026-07-16, then confirmed: "i forgot we made
+  that decision and it is exactly where it should be... correct me if i bring
+  this up again because chances are i will." => If he asks where BUU installed
+  or why it is not on the Desktop: answer C:\BUU, cite R8, do not log a bug.
+  (Do NOT move install to Desktop regardless — his Desktop is OneDrive-synced.)
+  Still open from that investigation: stale orphaned 2.2.9 install at
+  %LOCALAPPDATA%\Programs\BUU 2.0 (7/4, pre-R8 era) should be cleaned up; and
+  the 3.0.3 in-app update was the FIRST that ever worked (forceClosing fix
+  proven in production, 10:01 AM).
 
+BUG — schedules flow picker allows ONCE flows; must only allow AUTOMATION flows.
+  (Matthew, verbatim: "schedules flow is allowing once flows and should only
+  allow flows marked for automation".)
+  CODE FACTS: index.html schRefreshOptions() fills #schFlow from
+  API.listOnceFlows() — every once-flow — matching the ORIGINAL R16 design
+  ("scheduled runs for spreadsheet-free (once) flows ONLY", scheduler.js header
+  + the picker label/hint say the same). This is a REQUIREMENT CHANGE, not a
+  regression: picker (and the R16 design notes + label text) must switch to
+  flows with the automation flag (R9: flowAutomation / automation subfolder).
+  RESOLVE WITH MATTHEW BEFORE BUILDING: saveFlow makes once and automation
+  MUTUALLY EXCLUSIVE subfolders (sub = runMode==='once' ? 'once' :
+  (flowAutomation ? 'automation' : 'general')), and the scheduler fires jobs
+  with spreadsheetPath:null (built for spreadsheet-free flows). If automation
+  flows can be per-row/sheet-driven, scheduling them needs a sheet source —
+  bigger than a picker filter. If schedulable flows should be BOTH once-style
+  AND automation-marked, the save-time either/or has to change too.
 ITEM 2 — Max workers DEFAULT changes 150 -> 20 (Matthew, verbatim: "max
   workers default to 20"). The 150 HARD ceiling (MAX_WORKERS_HARD_CEILING)
   stays — only the UI default changes. Sites that all say 150 today:
