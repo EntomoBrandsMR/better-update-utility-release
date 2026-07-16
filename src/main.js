@@ -717,7 +717,10 @@ ipcMain.handle('pool-start', async (_, { workerCount, elastic, licenseProfileId,
   // Phase 3 (D4): NOT started while stepping — the timer used to scale up workers (each
   // burning a login/license) while the user was still verifying row 1. It starts at
   // Release (pool-run-control 'run-all') from the params stashed on COORD here.
-  COORD.elasticParams = (elastic && licenseProfileId)
+  // v3.0.3: license counting runs whenever we have a profile to read it with. It is NOT
+  // gated on the Auto-scale checkbox — unticking a box must never silently stop us
+  // counting PestPac seats or honouring the buffer.
+  COORD.elasticParams = (licenseProfileId)
     ? { licenseProfileId, licenseBuffer, hwCap, intervalMs: Math.max(1, parseInt(licenseIntervalMin) || 5) * 60 * 1000 }
     : null;
   // R4: ONE evaluation timer — coordEvalScale composes license cap (when elastic),
@@ -967,7 +970,10 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, elastic, licenseP
   // R14: the resume eval timer is ALWAYS-ON (pressure sensing works without elastic),
   // matching pool-start; elastic only gates the license part via elasticParams — which
   // resume now sets, so a resumed elastic pool license-caps again.
-  COORD.elasticParams = (elastic && licenseProfileId)
+  // v3.0.3: license counting runs whenever we have a profile to read it with. It is NOT
+  // gated on the Auto-scale checkbox — unticking a box must never silently stop us
+  // counting PestPac seats or honouring the buffer.
+  COORD.elasticParams = (licenseProfileId)
     ? { licenseProfileId, licenseBuffer, hwCap, intervalMs: Math.max(1, parseInt(licenseIntervalMin) || 2) * 60 * 1000 }
     : null;
   COORD.licenseTimer = setInterval(() => coordEvalScale(), Math.max(1, parseInt(licenseIntervalMin) || 2) * 60 * 1000);

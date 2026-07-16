@@ -761,6 +761,10 @@ async function coordEvalScale(){
   let target = Math.max(1, Math.min(parseInt(COORD.manualTarget) || 1, MAX_WORKERS_HARD_CEILING));
   let reason = 'manual';
   if(Number.isFinite(COORD.licenseCap) && COORD.licenseCap < target){ target = COORD.licenseCap; reason = 'license'; }
+  // v3.0.3: the license cap above is UNCONDITIONAL — it has already been applied.
+  // COORD.autoScale gates ONLY the throughput/pressure climb below, i.e. whether the
+  // pool is allowed to hunt for its own worker count. Off = hold the number the user
+  // set; it never means "stop counting licenses".
   if(COORD.autoScale){
     const base = COORD._durBaseline.length >= 50 ? _median(COORD._durBaseline) : null;
     const roll = COORD._durRolling.length >= 30 ? _median(COORD._durRolling) : null;

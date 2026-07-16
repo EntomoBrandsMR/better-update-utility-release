@@ -1262,7 +1262,7 @@ async function offerPoolResume(p){
     const elastic = !!(document.getElementById('poolElastic')||{}).checked;
     const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
     const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
-    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
+    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
     if(res && res.ok===false){ alert('Could not resume pool: '+(res.error||'unknown')); return; }
     poolUIActive(true);
     go('run');
@@ -2421,7 +2421,7 @@ async function poolRunClick(){
 // it just doubles up so pool runs can also be stepped through.
 const _smSel = document.getElementById('startModeSel');
 const startMode = (_smSel && _smSel.value) || 'run-all';
-const res = await API.poolStart({ workerCount:n, elastic, licenseProfileId: elastic?activeProfileId:null, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier: parseInt((document.getElementById('poolScaleMult')||{}).value)||3 });
+const res = await API.poolStart({ workerCount:n, elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier: parseInt((document.getElementById('poolScaleMult')||{}).value)||3 });
   if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
 
   // R5: in step modes the pane appears AT LAUNCH — worker login was the first invisible
