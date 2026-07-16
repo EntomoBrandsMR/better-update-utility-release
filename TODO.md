@@ -670,3 +670,34 @@ ITEM 2 — Max workers DEFAULT changes 150 -> 20 (Matthew, verbatim: "max
   index.html Max box value attr, poolResetDefaults(), every _pv('poolMaxWorkers',150)
   fallback, saveFlow poolSettings default, loadFlow default. Change them together
   or a Reset/load will silently reintroduce 150.
+BUG — worker fatal => infinite respawn cycle, no error surfaced (2026-07-16,
+  Matthew hit it live on 3.0.3, 10:45 AM). His report: started a new run without
+  closing BUU after the previous run finished; "launched a worker and never
+  logged in, it then cycled workers for a while before i stopped it".
+  DIAGNOSED FROM THE LOGS (pool1784213142057) — it is NOT a login bug:
+   1. Run 1 (pool1784211316101, 10:15) finished; the sheet "Renewal Upload to
+      CTP for BUU 7.15.26_RERUN.xlsx" was then ARCHIVED to upcoming\Finished\
+      (Finished mtime 10:44:46).
+   2. The finished JOB STAYED STAGED (same jobId job1784211314869-448 in both
+      pool metas) with the OLD spreadsheetPath. Re-launch at 10:45:42 did not
+      re-validate the file.
+   3. Every worker died in <1s BEFORE login: {"type":"fatal","error":"ENOENT
+      ...upcoming\Renewal Upload...xlsx"} exit code 1 (buu2-worker-*.log, 255
+      bytes each, one per second, 7+ in a row).
+   4. ROOT CAUSE OF THE CYCLING: the coordinator has NO case for the worker's
+      "fatal" message — it is silently ignored. Worker exits, the stall-guard
+      (coordinator.js ~362: active && !stopping && workers.size===0 &&
+      coordPickJobForWorker() => respawn) sees work remaining and spawns the
+      next one. Crash-loop until the user stops the pool. Journal has ZERO rows
+      (.jsonl never created). No error ever reaches the UI.
+  FIX SHAPE (3.0.4):
+   a. Handle "fatal" in coordHandleWorkerMessage: surface the error to the run
+      log/error strip, and mark the worker "died-fatal".
+   b. Crash-loop breaker: N instant fatal exits (same job, no rows completed)
+      => stop the pool with the fatal error shown, do not respawn.
+   c. Staleness guard at launch: pool-start re-validates every staged job's
+      spreadsheetPath exists (fail the launch with a clear message naming the
+      file), since Archive can move it between runs. Consider auto-unstaging or
+      re-pathing archived sheets.
+  NOTE: run 1 completing + sweep + everything else worked; the logout sweep for
+  the bug run also ran clean (sweep1784213182251: 1 session logged out).
