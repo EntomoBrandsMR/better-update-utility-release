@@ -779,3 +779,33 @@ DECIDED (Matthew, verbatim: "yes i want it to respect everything!!") —
   errHandle (today hardcoded retry), retryCount (hardcoded 2), reauthInterval
   (hardcoded 0), and anything else pool-submit-job accepts that the flow
   carries. fire() reads flow.config and passes it through.
+REDESIGN DECIDED (Matthew, 2026-07-17, verbatim: "there should be no diffrence
+  between a scheduled run and a regular run, it should use all of the same
+  code... the only diffrence is that there should be code to load the flow and
+  hit run at a certain time"). SUPERSEDES the earlier fix shape of patching
+  fire()'s payload (wrap locked steps + pass config) — do NOT build that;
+  it would keep the parallel path alive.
+  CONFIRMED ARCHITECTURE PROBLEM: scheduler.js fire() hand-builds its own
+  job+start payload (that is where EVERY scheduled-run bug came from: empty
+  LOGIN_STEPS, hardcoded errHandle/retryCount/reauth, no flow config), and the
+  renderer schedule-fire handler pipes that payload into pool IPC directly
+  instead of driving the same functions the Run button drives.
+  TARGET SHAPE: at fire time the renderer (1) loads the flow by name through
+  the SAME load path a human uses (flow steps + poolSettings + config all
+  applied), (2) stages via the same staging code (which adds allSteps() locked
+  login/logout — fixes the never-logs-in bug BY CONSTRUCTION), (3) hits the
+  same Run entry point. fire() shrinks to "which flow, fire now" + the
+  completion watch. Every future Run-path fix then covers schedules for free.
+  PLUS RESTART-AT-END (Matthew: "because we STILL have to close the BUU
+  inbetween every run it needs to probably close and reopen the program at the
+  end of the run"): after a SCHEDULED run completes, BUU should close and
+  relaunch itself (app.relaunch() + exit after the sweep finishes) so every
+  scheduled run starts from a fresh process — automates the close-between-runs
+  hygiene he currently does by hand and kills stale-staged-job accumulation.
+  GUARDS: only relaunch after a scheduler-initiated run; only after clean
+  completion + logout sweep; never mid-manual-work (unsaved-changes gate
+  applies); make sure the missed-schedule popup on boot does not re-fire the
+  run that just completed (lastFiredAt already advances first — verify).
+  NOTE the underlying disease is stale in-process state between runs; the
+  restart is honest mitigation, and the fatal-loop/stale-job 3.0.4 fixes
+  attack the same disease from the other side.
