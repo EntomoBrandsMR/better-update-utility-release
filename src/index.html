@@ -2894,6 +2894,10 @@ async function schRefreshOptions(){
         if(!nm) continue;
         fsel.innerHTML += '<option value="'+esc(nm)+'">'+esc(nm)+'</option>';
       }
+      // 3.0.5: never a silently blank dropdown — say WHY it is empty and how to fix it.
+      if(!fsel.options.length){
+        fsel.innerHTML = '<option value="" disabled selected>No automation flows yet — check the Automation box on a once-flow and save it</option>';
+      }
       if(cur) fsel.value = cur;
     }catch(e){}
   }

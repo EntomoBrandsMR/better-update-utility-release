@@ -1267,16 +1267,20 @@ function fetchJSON(url, redirects) {
   redirects = redirects || 0;
   return new Promise((res, rej) => {
     if (redirects > 5) return rej(new Error('Too many redirects'));
-    (url.startsWith('https') ? https : http).get(url, r => {
+    // 3.0.5: 15s timeout — this had NO timeout at all, so a hung socket meant the
+    // update check silently never answered (reads as "check fails" with no error).
+    // Errors now name the URL so the failure is diagnosable from the dialog alone.
+    const req = (url.startsWith('https') ? https : http).get(url, r => {
       if ([301,302,307,308].includes(r.statusCode) && r.headers.location) {
         r.resume();
         return res(fetchJSON(r.headers.location, redirects + 1));
       }
       if (r.statusCode !== 200) { r.resume(); return rej(new Error('HTTP ' + r.statusCode + ' fetching ' + url)); }
       let d = ''; r.on('data', c => d += c);
-      r.on('end', () => { try { res(JSON.parse(d)); } catch(e) { rej(e); } });
-      r.on('error', rej);
-    }).on('error', rej);
+      r.on('end', () => { try { res(JSON.parse(d)); } catch(e) { rej(new Error('Bad JSON from ' + url + ': ' + e.message)); } });
+      r.on('error', e => rej(new Error('Connection error reading ' + url + ': ' + e.message)));
+    }).on('error', e => rej(new Error('Could not reach ' + url + ': ' + e.message)));
+    req.setTimeout(15000, () => { req.destroy(new Error('Timed out after 15s fetching ' + url)); });
   });
 }
 function downloadFile(url, dest, redirects) {
@@ -1346,6 +1350,20 @@ ipcMain.handle('install-update', async (_, { downloadUrl }) => {
     }
     flowDirtyMain = false; // "Don't Save" — discard, and stop the gate re-asking at quit
   }
+  // 3.0.5 SAFETY NET (belt to the installer's braces): before ANY in-app update,
+  // copy flows + schedules (small JSONs) into userData, which no installer touches.
+  // The NSIS park should make this redundant — after 07-17 (flows/schedules wiped by
+  // a manual install) redundancy on user data is the point, not waste.
+  try {
+    const bak = path.join(app.getPath('userData'), 'update-backup');
+    try { fs.rmSync(bak, { recursive: true, force: true }); } catch (e) {}
+    fs.mkdirSync(bak, { recursive: true });
+    for (const d of ['flows', 'schedules']) {
+      const src = path.join(buuRoot(), d);
+      if (fs.existsSync(src)) fs.cpSync(src, path.join(bak, d), { recursive: true });
+    }
+    console.log('[update] flows+schedules backed up to ' + bak);
+  } catch (e) { console.warn('[update] pre-update backup failed (continuing): ' + e.message); }
   const updateDir = path.join(app.getPath('userData'), 'updates');
   if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
   const tmp = path.join(updateDir, 'buu-update.exe');
