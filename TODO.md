@@ -895,3 +895,30 @@ BUG (2026-07-17, Matthew) — in-app UPDATE CHECK "still fails with the same
   old D1 note: second-instance handler never re-checks updates.
   NEXT STEP: capture the exact error string, then reproduce in dev (the check
   path is drivable over CDP: API.checkForUpdates() with update-status listener).
+CRITICAL BUG (2026-07-17, data loss, ship the fix FIRST in 3.0.5) — a MANUALLY
+  RUN installer DELETES user data. Measured timeline on the main rig:
+  Matthew ran BUU-2.0-Setup-3.0.4.exe by hand at 9:10 AM (because the in-app
+  update check was failing). electron-builder ran the OLD uninstaller, which
+  removes $INSTDIR (C:\BUU) RECURSIVELY. The .nsh park-and-restore for flows/
+  logs/failures only arms ${isUpdated} — true only for IN-APP updates — so a
+  manual run parks NOTHING. Result: Schedule Test-flow.json (created 07-16),
+  ALL 07-16/07-17 worker logs, and the C:\BUU\schedules definitions were
+  deleted. flows/ was recreated at 9:15 from a STALE 7/10-era preserve copy
+  (mtimes 5/1..7/10) — meaning an old $TEMP\buu-preserve existed and restored
+  over the fresh install. SUSPECTED second bug enabling that stale park:
+  customInstall gates restore on IfFileExists "$TEMP\buu-preserve\flows\*.*"
+  which does NOT match a folder containing only SUBFOLDERS (once\, general\)
+  — a failed restore strands the park in TEMP until some later install slurps
+  it. VERIFY this on the next controlled update.
+  RECOVERED: Schedule Test-flow rebuilt from the 8:11 pool journal meta into
+  flows\once\ (automation:true so the picker lists it; Save-step After changed
+  url->element per the duplicate-notes diagnosis). Add Billing Note verified
+  IDENTICAL to what ran 07-16 (no edits lost there). The schedule definition
+  itself must be recreated by hand. Worker logs 07-16/17 unrecoverable (the
+  journals + xlsx logs in %APPDATA%\buu-2 survive - they live OUTSIDE C:\BUU).
+  FIX DIRECTION (Matthew to pick): (a) uninstaller NEVER deletes flows/logs/
+  failures/schedules (delete app files only) — safest; (b) park UNCONDITIONALLY
+  including schedules\ and fix the IfFileExists-vs-subfolders check; (c) move
+  user data out of $INSTDIR entirely (contradicts R8 one-place decision).
+  RELATED: the in-app update-check failure that pushed him to a manual install
+  is the previous backlog entry — fixing it removes the trigger, not the gun.
