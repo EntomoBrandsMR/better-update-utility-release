@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '3.0.5';
+const CURRENT_VERSION = '3.0.6';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -1321,13 +1321,32 @@ function semverGt(a, b) {
   for (let i = 0; i < 3; i++) { if((pa[i]||0)>(pb[i]||0)) return true; if((pa[i]||0)<(pb[i]||0)) return false; }
   return false;
 }
+// 3.0.6: RETRY TRANSIENT RESETS. Matthew's screenshot (07-17): first open =>
+// "Update check failed: read ECONNRESET", second open => works. The corporate
+// firewall/SSL-inspection box resets the FIRST connection to a cold host; the next
+// attempt succeeds. One reset was treated as final — which also killed the SILENT
+// startup check, so the update bar only appeared on the second open. Retry up to 3
+// attempts (2s apart) on transient network errors before reporting anything.
+function _isTransientNetErr(e) {
+  return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|EPIPE|socket hang up|Timed out/i.test((e && e.message) || '');
+}
 async function checkForUpdates(manual) {
   if (VERSION_URL.includes('YOUR_HOST')) { if (manual) _send('update-status', { type: 'not-configured' }); return; }
-  try {
-    const info = await fetchJSON(VERSION_URL);
-    if (semverGt(info.version, CURRENT_VERSION)) _send('update-available', info);
-    else if (manual) _send('update-status', { type: 'up-to-date', version: CURRENT_VERSION });
-  } catch(e) { if (manual) _send('update-status', { type: 'error', message: e.message }); }
+  let lastErr = null;
+  for (let a = 1; a <= 3; a++) {
+    try {
+      const info = await fetchJSON(VERSION_URL);
+      if (semverGt(info.version, CURRENT_VERSION)) _send('update-available', info);
+      else if (manual) _send('update-status', { type: 'up-to-date', version: CURRENT_VERSION });
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (!_isTransientNetErr(e) || a === 3) break;
+      console.warn('[update] check attempt ' + a + ' failed transiently (' + e.message + ') — retrying in 2s');
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+  if (manual) _send('update-status', { type: 'error', message: lastErr.message });
 }
 ipcMain.handle('check-for-updates', () => checkForUpdates(true));
 ipcMain.handle('install-update', async (_, { downloadUrl }) => {
@@ -1368,7 +1387,14 @@ ipcMain.handle('install-update', async (_, { downloadUrl }) => {
   if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
   const tmp = path.join(updateDir, 'buu-update.exe');
   try {
-    await downloadFile(downloadUrl, tmp);
+    // 3.0.6: same first-connection-reset retry as the check (ECONNRESET on cold path).
+    try { await downloadFile(downloadUrl, tmp); }
+    catch (e) {
+      if (!_isTransientNetErr(e)) throw e;
+      console.warn('[update] download failed transiently (' + e.message + ') — retrying once in 2s');
+      await new Promise(r => setTimeout(r, 2000));
+      await downloadFile(downloadUrl, tmp);
+    }
     // Strip Zone.Identifier so SmartScreen doesn't block it
     try {
       const { execFileSync } = require('child_process');
