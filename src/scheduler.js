@@ -139,26 +139,17 @@ function initScheduler(deps) {
     if (!fr) { s.lastResult = { ts: Date.now(), status: 'error', error: 'flow "' + s.flowName + '" not found' }; saveOne(s); send('schedules-changed', {}); return; }
     let flow; try { flow = JSON.parse(fr.json); } catch (e) { s.lastResult = { ts: Date.now(), status: 'error', error: 'flow unreadable' }; saveOne(s); return; }
     watch = { id: s.id, firedAt: Date.now(), sawActive: false };
+    // 3.0.4 SINGLE CODE PATH: the scheduler no longer builds a launch payload. It names
+    // the flow and the renderer runs it through the EXACT same functions as a human run
+    // (applyLoadedFlow + poolLaunchCurrent): locked login/logout steps, the flow's saved
+    // poolSettings and config (errHandle/retryCount/reauth/...) all come from the one
+    // shared path. The old hand-built job/start payload here is what caused the 07-16/
+    // 07-17 scheduled-run bugs (no login steps, hardcoded retry, ignored config).
     send('schedule-fire', {
       scheduleId: s.id,
-      job: {
-        label: s.flowName + ' \u00b7 scheduled' + (manual ? ' (run now)' : ''),
-        flowSteps: flow.steps || [],
-        spreadsheetPath: null,
-        profileId: s.profileId,
-        setupFlowId: flow.setupFlowId || null,
-        teardownFlowId: flow.teardownFlowId || null,
-        errHandle: 'retry', resumeFromRow: 1, retryCount: 2, retryRowIndexes: null, reauthIntervalMin: 0,
-      },
-      start: {
-        // v3.0.3: licenseProfileId was null here, so SCHEDULED runs skipped license
-        // counting entirely — the one path left that contradicted "license counting is
-        // unconditional" (it is a safety rail, never gated). Scheduled runs now count
-        // seats against the same profile they log in with, honoring the default buffer.
-        workerCount: 1, elastic: false, licenseProfileId: s.profileId || null, licenseBuffer: 10,
-        licenseIntervalMin: 2, setupScope: 'per-worker', startMode: 'run-all',
-        diagnosticCapture: false, captureBucketCap: 10, scaleMultiplier: 3,
-      },
+      flowName: s.flowName,
+      profileId: s.profileId,
+      manual: !!manual,
     });
     send('schedules-changed', {});
   }

@@ -1506,7 +1506,9 @@ ipcMain.handle('list-once-flows', async () => {
   let entries = [];
   // R9: the setup/teardown picker reads flows\once\ plus any flat stragglers at the
   // root (pre-R9 saves, or files dropped in by hand).
-  for (const d of [path.join(dir, 'once'), dir]) {
+  // 3.0.4: also scan automation\ — an automation flow is a once flow with the flag, and
+  // legacy saves may have filed one there; the runMode==='once' filter below still rules.
+  for (const d of [path.join(dir, 'once'), path.join(dir, 'automation'), dir]) {
     let names = [];
     try { names = fs.readdirSync(d).filter(f => f.toLowerCase().endsWith('.json')); } catch (e) { continue; }
     for (const f of names) entries.push({ filename: f, dir: d });
@@ -1529,7 +1531,12 @@ ipcMain.handle('list-once-flows', async () => {
           name: filename.replace(/\.json$/i, ''),
           filename,
           filePath: fp,
-          runMode: 'once'
+          runMode: 'once',
+          // 3.0.4: surface the automation flag so the schedules picker can filter.
+          // Matthew: "once is ment for build up and tear down, automation is a once
+          // flow with the automation checkbox checked" — the FLAG is the truth, not
+          // the subfolder a file happens to live in.
+          automation: !!data.automation
         });
       }
     } catch (e) {

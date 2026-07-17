@@ -1122,7 +1122,7 @@ textarea { resize: vertical; min-height: 60px; }
   <div class="card" style="margin-bottom:14px">
     <div style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:8px" id="schFormTitle">New schedule</div>
     <div class="row">
-      <div class="fg"><label>Flow (once-flows only)</label><select id="schFlow"></select><div class="hint">Only spreadsheet-free flows are schedulable — per-row flows are not.</div></div>
+      <div class="fg"><label>Flow (automation flows only)</label><select id="schFlow"></select><div class="hint">Only once-flows with the Automation box checked are schedulable. Plain once-flows are build-up/tear-down blocks; per-row flows are not schedulable.</div></div>
       <div class="fg"><label>Login profile</label><select id="schProfile"></select></div>
     </div>
     <div class="row">
@@ -2428,13 +2428,33 @@ async function poolFillAuto(){
 // jobs first via "Add job to pool" before clicking Run pool. Workers pull batches from main;
 // no row pre-division. Optional elastic license scaling.
 async function poolRunClick(){
-    const n = Math.max(1, Math.min(150, _pv('poolStartWorkers', 9)));
   // If no jobs are staged yet, stage the current flow/sheet as a single job.
   const status = API.poolGetStatus ? await API.poolGetStatus() : {jobs:0};
   if(!status.jobs){
     const staged = await poolStageCurrent();
     if(!staged) return;
   }
+  // Human confirmation only — the actual launch is poolLaunchCurrent(), the ONE path.
+  const n = Math.max(1, Math.min(150, _pv('poolStartWorkers', 9)));
+  const elastic = !!(document.getElementById('poolElastic')||{}).checked;
+  const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
+  const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
+  const setupScope = (document.getElementById('poolSetupScope')||{}).value || 'per-worker';
+  if(!confirm('Start worker pool?\n\n• '+n+' workers (headless)\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull rows until all jobs drain. Continue?')) return;
+  const r = await poolLaunchCurrent();
+  if(r && r.ok===false) alert('Could not start pool: '+(r.error||'unknown'));
+}
+
+// 3.0.4 single-code-path: THE launch routine. The Run button (above, after its confirm)
+// and the scheduler's fire handler both end HERE — same staging, same params, same start.
+// Stages the current flow if nothing is staged (idempotent: staged jobs are reused).
+async function poolLaunchCurrent(){
+  const status = API.poolGetStatus ? await API.poolGetStatus() : {jobs:0};
+  if(!status.jobs){
+    const staged = await poolStageCurrent();
+    if(!staged) return { ok:false, error:'staging failed (see live log)' };
+  }
+  const n = Math.max(1, Math.min(150, _pv('poolStartWorkers', 9)));
   const elastic = !!(document.getElementById('poolElastic')||{}).checked;
   const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
   const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
@@ -2442,21 +2462,19 @@ async function poolRunClick(){
   // v2.2.3 Session 3C (A1): diagnostic capture config. ON by default; user can flip off.
   const diagnosticCapture = !!(document.getElementById('poolDiagCapture')||{checked:true}).checked;
   const captureBucketCap = parseInt((document.getElementById('poolDiagCap')||{}).value) || 10;
-  if(!confirm('Start worker pool?\n\n• '+n+' workers (headless)\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull rows until all jobs drain. Continue?')) return;
   // v2.2.2 Session 2C: pool start mode pulled from the same start-mode dropdown the
-// single-runner uses. Session 2G will move the dropdown into the pool launch UI; for now
-// it just doubles up so pool runs can also be stepped through.
-const _smSel = document.getElementById('startModeSel');
-const startMode = (_smSel && _smSel.value) || 'run-all';
-const res = await API.poolStart({ workerCount:n, startWorkers:n, maxWorkers:_pv('poolMaxWorkers',150), hwSlider:_pv('poolHwSlider',4), ppSlider:_pv('poolPpSlider',4), elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });  // v3.0.3: scaleMultiplier dropped - the HW slider replaces it; main fixes the comfortable-cap base at 3 and hwSlider/4 scales it.
-  if(res && res.ok===false){ alert('Could not start pool: '+(res.error||'unknown')); return; }
+  // single-runner uses.
+  const _smSel = document.getElementById('startModeSel');
+  const startMode = (_smSel && _smSel.value) || 'run-all';
+  const res = await API.poolStart({ workerCount:n, startWorkers:n, maxWorkers:_pv('poolMaxWorkers',150), hwSlider:_pv('poolHwSlider',4), ppSlider:_pv('poolPpSlider',4), elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });  // v3.0.3: scaleMultiplier dropped - the HW slider replaces it; main fixes the comfortable-cap base at 3 and hwSlider/4 scales it.
+  if(res && res.ok===false) return { ok:false, error:(res.error||'unknown') };
 
   // R5: in step modes the pane appears AT LAUNCH — worker login was the first invisible
   // stall on 2.2.9. Buttons stay disabled until the first pause arrives.
-  const _sm5=(document.getElementById('startModeSel')||{}).value;
-  if(_sm5==='step'||_sm5==='step-row'){ stepPaneSticky=true; paneSetExecuting('Starting — worker logging in'); }
+  if(startMode==='step'||startMode==='step-row'){ stepPaneSticky=true; paneSetExecuting('Starting — worker logging in'); }
   poolUIActive(true);
   go('run');
+  return { ok:true };
 }
 
 // v2.1.1: extract every {{column}} token the flow references and check them against the loaded
@@ -2841,7 +2859,9 @@ function schTypeChanged(){
   document.getElementById('schDaysRow').style.display = t === 'weekly' ? '' : 'none';
 }
 async function schRefreshOptions(){
-  // flows: once-flows only (the picker source already filters to flows\\once + strays)
+  // 3.0.4: AUTOMATION flows only (Matthew: "once is ment for build up and tear down,
+  // automation is a once flow with the automation checkbox checked"). The flag in the
+  // flow JSON is the truth — listOnceFlows surfaces it as f.automation.
   const fsel = document.getElementById('schFlow');
   if(fsel && API.listOnceFlows){
     try{
@@ -2849,6 +2869,7 @@ async function schRefreshOptions(){
       const cur = fsel.value;
       fsel.innerHTML = '';
       for(const f of ((r&&r.flows)||[])){
+        if(!f.automation) continue; // build-up/tear-down once-flows are not schedulable
         const nm = String(f.name || f.filename || '').replace(/\.json$/i,'');
         if(!nm) continue;
         fsel.innerHTML += '<option value="'+esc(nm)+'">'+esc(nm)+'</option>';
@@ -2937,17 +2958,30 @@ async function schRenderList(){
   }).join('');
 }
 
-// R16: launch pipe — main computed the full payload; the renderer is a dumb gateway
-// into the existing pool IPC (no renderer state involved, nothing clobbered).
+// 3.0.4 single-code-path: the scheduler names a flow; the renderer runs it through the
+// SAME functions the human path uses — applyLoadedFlow() (locked login/logout steps and
+// the flow's saved poolSettings + config all applied, same as Load flow) then
+// poolLaunchCurrent() (same staging, same params, same start as the Run button).
+// The old R16 pipe took a payload PRE-BUILT by the scheduler — a parallel launcher that
+// never logged in and ignored the flow's config. Do not resurrect it.
 if(API.onScheduleFire) API.onScheduleFire(async function(d){
   try{
-    const sub = await API.poolSubmitJob(d.job);
-    if(!sub || sub.ok === false){ API.scheduleResult({ id: d.scheduleId, ok: false, error: (sub&&sub.error)||'submit failed' }); return; }
-    const st = await API.poolStart(d.start);
-    if(!st || st.ok === false){ API.scheduleResult({ id: d.scheduleId, ok: false, error: (st&&st.error)||'start failed' }); return; }
-    addLiveLog('\u23f0 Scheduled run started: '+(d.job.label||''),'info');
-    poolUIActive(true);
-    go('run');
+    // Guard: never clobber unsaved human work. Skip the fire and record why.
+    if(typeof flowDirty !== 'undefined' && flowDirty && flowHasContent()){
+      API.scheduleResult({ id: d.scheduleId, ok: false, error: 'skipped: unsaved flow edits open in the builder' });
+      return;
+    }
+    if(d.profileId && d.profileId !== activeProfileId) setActiveProfile(d.profileId);
+    if(!activeProfileId){
+      API.scheduleResult({ id: d.scheduleId, ok: false, error: 'no login profile available' });
+      return;
+    }
+    const fr = API.readFlowByName ? await API.readFlowByName({ name: d.flowName }) : null;
+    if(!fr || !fr.json){ API.scheduleResult({ id: d.scheduleId, ok: false, error: 'flow "'+d.flowName+'" not found' }); return; }
+    await applyLoadedFlow(JSON.parse(fr.json));
+    const r = await poolLaunchCurrent();
+    if(!r || r.ok === false){ API.scheduleResult({ id: d.scheduleId, ok: false, error: (r&&r.error)||'launch failed' }); return; }
+    addLiveLog('\u23f0 Scheduled run started: '+d.flowName,'info');
   }catch(e){ API.scheduleResult({ id: d.scheduleId, ok: false, error: e.message }); }
 });
 if(API.onSchedulesMissed) API.onSchedulesMissed(async function(list){
@@ -3338,7 +3372,14 @@ async function loadFlow(){
     });
     if(!json) return;
   }
-  const data = JSON.parse(json);
+  await applyLoadedFlow(JSON.parse(json));
+}
+
+// 3.0.4 single-code-path: applying a loaded flow to renderer state is ONE function,
+// used by the human Load-flow path AND the scheduler's fire path. If you are about to
+// write a second copy of this logic anywhere, stop — a parallel copy is exactly how
+// the scheduled-run bugs of 07-16/07-17 happened (no login steps, ignored config).
+async function applyLoadedFlow(data){
   // v1.2.8: read new flow-level fields with safe defaults so pre-1.1 flows still load.
   // Missing runMode -> 'per-row' (matches v1.0 behavior). Missing setup/teardown -> null.
   // Missing name -> derived from flowNotes (same source the save uses for filename).
