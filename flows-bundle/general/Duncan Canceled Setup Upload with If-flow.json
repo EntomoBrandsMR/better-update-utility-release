@@ -1,0 +1,251 @@
+{
+  "version": "1.1",
+  "name": "Duncan Canceled Setup Upload with If-flow",
+  "runMode": "per-row",
+  "setupFlowId": null,
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "{{URL}}",
+      "waitAfter": "load",
+      "open": false
+    },
+    {
+      "id": 2,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Comment\"]",
+      "value": "{{Internal comment}}"
+    },
+    {
+      "id": 3,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"UserDef1\"]",
+      "value": "{{Old Acct #}}"
+    },
+    {
+      "id": 4,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"UserDef6\"]",
+      "value": "{{Bill-to 1}}"
+    },
+    {
+      "id": 6,
+      "type": "dialog",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 5,
+      "type": "click",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butSave\"]",
+      "waitFor": "button[name=\"butHistoryShow\"]"
+    },
+    {
+      "id": 9,
+      "type": "navigate",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "url": "{{Create Setup}}"
+    },
+    {
+      "id": 10,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"ServiceCode1\"]",
+      "value": "{{Service Code}}"
+    },
+    {
+      "id": 11,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"UnitPrice1\"]",
+      "value": "{{Price}}"
+    },
+    {
+      "id": 12,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Schedule\"]",
+      "value": "{{Schedule}}"
+    },
+    {
+      "id": 13,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Duration\"]",
+      "value": "{{Duration}}"
+    },
+    {
+      "id": 26,
+      "type": "dialog",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 15,
+      "type": "checkbox",
+      "open": false,
+      "checkAction": "uncheck",
+      "waitType": "fixed",
+      "selector": "input[name=\"Active\"]"
+    },
+    {
+      "id": 16,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"StartDate\"]",
+      "value": "{{Start Date}}"
+    },
+    {
+      "id": 17,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"PONumber\"]",
+      "value": "{{PO #}}"
+    },
+    {
+      "id": 18,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"LastGeneratedDate\"]",
+      "value": "{{Last Gen}}"
+    },
+    {
+      "id": 19,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"CancelDate\"]",
+      "value": "{{Cancel Date}}"
+    },
+    {
+      "id": 20,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"CancelReason\"]",
+      "value": "{{Cancel Reason}}"
+    },
+    {
+      "id": 21,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "value": "{{Tech 1}}",
+      "selector": "input[name=\"Tech1\"]"
+    },
+    {
+      "id": 22,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Tech4\"]",
+      "value": "{{Sales 1}}"
+    },
+    {
+      "id": 23,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "textarea[name=\"Comment\"]",
+      "value": "{{Service instructions}}"
+    },
+    {
+      "id": 24,
+      "type": "dialog",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 25,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butAdd\"]",
+      "waitFor": ""
+    },
+    {
+      "id": 28,
+      "type": "dialog",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 29,
+      "type": "ifclick",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "presenceSec": 1,
+      "selector": "button[name=\"butCancel\"]"
+    },
+    {
+      "id": 31,
+      "type": "ifclick",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "presenceSec": 1,
+      "selector": "button[name=\"butCancel\"]"
+    },
+    {
+      "id": 30,
+      "type": "wait",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "element",
+      "waitSel": "button[name=\"butHistoryShow\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "skip",
+    "selectorTimeout": "180",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "0",
+    "breakerThreshold": "2000000",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}

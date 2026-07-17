@@ -1,0 +1,229 @@
+{
+  "version": "1.1",
+  "name": "Open Empty Batch-flow",
+  "runMode": "once",
+  "setupFlowId": null,
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "https://app.pestpac.com/location/detail.asp?LocationID=1263957",
+      "waitAfter": "load",
+      "open": true
+    },
+    {
+      "id": 2,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butOrder\"]",
+      "waitFor": "button[name=\"butSave\"]"
+    },
+    {
+      "id": 3,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"ServiceCode1\"]",
+      "value": "BALFWD"
+    },
+    {
+      "id": 6,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"WorkDate\"]",
+      "value": "06/30/2026"
+    },
+    {
+      "id": 7,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Duration\"]",
+      "value": "00:01"
+    },
+    {
+      "id": 9,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Tech1\"]",
+      "value": "BILLING"
+    },
+    {
+      "id": 10,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Tech4\"]",
+      "value": "BILLING"
+    },
+    {
+      "id": 17,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 12,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butSave\"]",
+      "waitFor": ""
+    },
+    {
+      "id": 13,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butCancel\"]",
+      "waitFor": "button[name=\"butPost\"]"
+    },
+    {
+      "id": 18,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 14,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butPost\"]",
+      "waitFor": ""
+    },
+    {
+      "id": 29,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"PostNew\"]"
+    },
+    {
+      "id": 15,
+      "type": "checkbox",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Post1\"]"
+    },
+    {
+      "id": 23,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 30,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butPost\"]"
+    },
+    {
+      "id": 19,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "xpath=//tr[td[normalize-space(text())='BUU']]//span[@id='Edit']",
+      "waitFor": "button[name=\"butSearch\"]"
+    },
+    {
+      "id": 20,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butSearch\"]",
+      "waitFor": "button[name=\"butSelAll\"]"
+    },
+    {
+      "id": 21,
+      "type": "checkbox",
+      "open": true,
+      "checkAction": "uncheck",
+      "waitType": "fixed",
+      "selector": "input[name=\"Post1\"]"
+    },
+    {
+      "id": 31,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 22,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butPost\"]",
+      "waitFor": ""
+    },
+    {
+      "id": 24,
+      "type": "navigate",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "url": "https://app.pestpac.com/location/detail.asp?LocationID=1263957"
+    },
+    {
+      "id": 25,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "xpath=//tr[.//span[text()='BALFWD']]",
+      "waitFor": "button[name=\"butDelete\"]"
+    },
+    {
+      "id": 26,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 27,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butDelete\"]",
+      "waitFor": "button[name=\"butHistoryShow\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "retry",
+    "selectorTimeout": "30",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "2",
+    "breakerThreshold": "20",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}

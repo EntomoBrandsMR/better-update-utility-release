@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "steps": [
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "{{URL}}",
+      "waitAfter": "load",
+      "open": true
+    },
+    {
+      "id": 10,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"UserDef1\"]",
+      "value": "{{Old Acct #}}"
+    },
+    {
+      "id": 11,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butSave\"]",
+      "waitFor": "button[name=\"butHistoryShow\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "1",
+    "rowDelayMax": "3",
+    "errHandle": "stop",
+    "flowNotes": "",
+    "headless": false
+  }
+}

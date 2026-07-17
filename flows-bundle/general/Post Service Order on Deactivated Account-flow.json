@@ -1,0 +1,135 @@
+{
+  "version": "1.1",
+  "name": "Post Service Order on Deactivated Account-flow",
+  "runMode": "per-row",
+  "setupFlowId": "Open Empty Batch-flow",
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "{{URL}}",
+      "waitAfter": "load",
+      "open": false
+    },
+    {
+      "id": 3,
+      "type": "click",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butExit\"]",
+      "waitFor": "button[name=\"butHistoryShow\"]"
+    },
+    {
+      "id": 5,
+      "type": "dialog",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 4,
+      "type": "click",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butActivate\"]"
+    },
+    {
+      "id": 6,
+      "type": "navigate",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "url": "{{URL}}"
+    },
+    {
+      "id": 15,
+      "type": "dialog",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 7,
+      "type": "click",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butPost\"]",
+      "waitFor": "button[name=\"PostNew\"]"
+    },
+    {
+      "id": 8,
+      "type": "click",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "xpath=//tr[td[normalize-space(text())='BUU']]//span[@id='Add']"
+    },
+    {
+      "id": 9,
+      "type": "checkbox",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Post1\"]"
+    },
+    {
+      "id": 10,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"WorkDate1\"]",
+      "value": "06/30/2026"
+    },
+    {
+      "id": 11,
+      "type": "select",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "select[name=\"OrderType1\"]",
+      "value": "NS - DO NOT USE - HQ Cleanup"
+    },
+    {
+      "id": 12,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "textarea[name=\"FieldComment1\"]",
+      "value": "Posted by BUU on 06/30/2026 as part of the Service Order cleanup project"
+    },
+    {
+      "id": 14,
+      "type": "dialog",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 13,
+      "type": "click",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butPost\"]",
+      "waitFor": "button[name=\"NewBatch\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "skip",
+    "selectorTimeout": "30",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "2",
+    "breakerThreshold": "10000",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}

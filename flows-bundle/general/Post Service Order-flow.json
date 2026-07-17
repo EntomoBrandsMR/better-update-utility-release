@@ -1,0 +1,110 @@
+{
+  "version": "1.1",
+  "name": "Post Service Order-flow",
+  "runMode": "per-row",
+  "setupFlowId": "Open Empty Batch-flow",
+  "teardownFlowId": "Release Batch-flow",
+  "steps": [
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "{{URL}}",
+      "waitAfter": "load",
+      "open": true
+    },
+    {
+      "id": 12,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 2,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butPost\"]",
+      "waitFor": "button[name=\"PostNew\"]"
+    },
+    {
+      "id": 3,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "xpath=//tr[td[normalize-space(text())='BUU']]//span[@id='Add']"
+    },
+    {
+      "id": 13,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 4,
+      "type": "checkbox",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Post1\"]"
+    },
+    {
+      "id": 11,
+      "type": "select",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "select[name=\"OrderType1\"]",
+      "value": "{{Void Reason}}"
+    },
+    {
+      "id": 7,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"WorkDate1\"]",
+      "value": "{{Post Date}}"
+    },
+    {
+      "id": 15,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "textarea[name=\"FieldComment1\"]",
+      "value": "{{Note}}"
+    },
+    {
+      "id": 14,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 10,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butPost\"]",
+      "waitFor": "button[name=\"NewBatch\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "skip",
+    "selectorTimeout": "30",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "0",
+    "breakerThreshold": "200000",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "version": "1.1",
+  "name": "buu-flow",
+  "runMode": "once",
+  "setupFlowId": null,
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "https://app.pestpac.com/serviceOrder/post/",
+      "waitAfter": "load",
+      "open": true
+    },
+    {
+      "id": 3,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 2,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "xpath=//tr[td[normalize-space(text())='BUU']]//span[@id='Release']",
+      "waitFor": "a[href*=\"report.asp\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "retry",
+    "selectorTimeout": "30",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "2",
+    "breakerThreshold": "20",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}

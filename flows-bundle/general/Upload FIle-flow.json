@@ -1,0 +1,75 @@
+{
+  "version": "1.1",
+  "name": "Upload FIle-flow",
+  "runMode": "per-row",
+  "setupFlowId": null,
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "{{URL}}",
+      "waitAfter": "load",
+      "open": false
+    },
+    {
+      "id": 4,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Name\"]",
+      "value": "{{pestpac_doc_name}}"
+    },
+    {
+      "id": 5,
+      "type": "type",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Tags\"]",
+      "value": "BUU Auto Upload 6/26",
+      "clearFirst": "no"
+    },
+    {
+      "id": 2,
+      "type": "fileupload",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "pathSource": "fixed",
+      "onMissing": "error",
+      "baseFolder": "C:\\Users\\Matt Ruckman\\OneDrive - Palmetto Exterminators\\Desktop\\Entomo\\ATI_Backfill_PDFs\\PDFs",
+      "fileNameColumn": "{{file_name}}",
+      "selector": "input[name=\"UploadedFile\"]"
+    },
+    {
+      "id": 7,
+      "type": "dialog",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 3,
+      "type": "click",
+      "open": false,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butSave\"]",
+      "waitFor": "button[name=\"butSendEmail\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "skip",
+    "selectorTimeout": "30",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "0",
+    "breakerThreshold": "200000",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}

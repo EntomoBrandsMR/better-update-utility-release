@@ -1,0 +1,92 @@
+{
+  "version": "1.1",
+  "name": "Void Lead-flow",
+  "runMode": "per-row",
+  "setupFlowId": null,
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 10,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "{{URL}}",
+      "waitAfter": "load",
+      "open": true
+    },
+    {
+      "id": 2,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butReOpen\"]",
+      "waitFor": "button[name=\"butShowClose\"]"
+    },
+    {
+      "id": 9,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 4,
+      "type": "navigate",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "url": "{{URL}}"
+    },
+    {
+      "id": 5,
+      "type": "select",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "select[name=\"WonStatus\"]",
+      "value": "Void"
+    },
+    {
+      "id": 8,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "value": "CLEANUP",
+      "selector": "input[name=\"CloseReason\"]"
+    },
+    {
+      "id": 7,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 6,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butSave\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "retry",
+    "selectorTimeout": "300",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "2",
+    "breakerThreshold": "20",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}

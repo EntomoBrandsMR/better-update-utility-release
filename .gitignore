@@ -45,7 +45,7 @@ _commitmsg-*.txt
 
 !build/snapshot-flows.js
 
-# Generated at build time by build/snapshot-flows.js (a copy of C:\BUU\flows)
-flows-bundle/
+# flows-bundle: TRACKED (Matthew 2026-07-17) — refreshed by build/snapshot-flows.js
+# at each build and committed with the ship; git history doubles as flow-library backup.
 
 .ntfy-topic
