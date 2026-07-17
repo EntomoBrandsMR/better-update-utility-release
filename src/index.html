@@ -709,7 +709,7 @@ textarea { resize: vertical; min-height: 60px; }
          subtract from it and never add - which is why none of the scaling code did anything. -->
     <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
       <span style="font-size:11px;color:var(--t3)" title="Hard ceiling. Nothing may exceed this - not the climb, not hardware, not licenses. Live: lower it below the running worker count and workers drain down to it.">Max workers</span>
-      <input id="poolMaxWorkers" type="number" min="1" max="150" value="150" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" oninput="poolScalingLive()" title="Your override. Nothing ever goes above this.">
+      <input id="poolMaxWorkers" type="number" min="1" max="150" value="20" style="width:56px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:12px" oninput="poolScalingLive()" title="Your override. Nothing ever goes above this.">
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
       <span style="font-size:11px;color:var(--t3)" title="How many workers to launch with. A seed, NOT a floor - the heuristics may settle below it. A flow that has learned its best count replaces this on load.">Start</span>
@@ -1274,7 +1274,7 @@ async function offerPoolResume(p){
     const elastic = !!(document.getElementById('poolElastic')||{}).checked;
     const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
     const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
-    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, startWorkers:n, maxWorkers:_pv('poolMaxWorkers',150), hwSlider:_pv('poolHwSlider',4), ppSlider:_pv('poolPpSlider',4), elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
+    const res = await API.poolResume({ poolId:p.poolId, workerCount:n, startWorkers:n, maxWorkers:_pv('poolMaxWorkers',20), hwSlider:_pv('poolHwSlider',4), ppSlider:_pv('poolPpSlider',4), elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval });
     if(res && res.ok===false){ alert('Could not resume pool: '+(res.error||'unknown')); return; }
     poolUIActive(true);
     go('run');
@@ -2354,7 +2354,7 @@ function _pv(id, dflt){ const el = document.getElementById(id); const n = parseI
 // v3.0.3: in the R4 doc, never built. Restores the agreed defaults.
 function poolResetDefaults(){
   const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.value=v; };
-  set('poolMaxWorkers',150); set('poolStartWorkers',9); set('poolHwSlider',4);
+  set('poolMaxWorkers',20); set('poolStartWorkers',9); set('poolHwSlider',4);
   set('poolPpSlider',4); set('poolLicBuffer',10); set('poolLicInterval',2);
   const el=document.getElementById('poolDiagCap'); if(el) el.value=10;
   poolScalingLive();
@@ -2371,7 +2371,7 @@ function poolScalingLive(){
     if(!API.poolSetScaling) return;
     try{
       const r=await API.poolSetScaling({
-        maxWorkers:   _pv('poolMaxWorkers', 150),
+        maxWorkers:   _pv('poolMaxWorkers', 20),
         startWorkers: _pv('poolStartWorkers', 9),
         hwSlider:     _pv('poolHwSlider', 4),
         ppSlider:     _pv('poolPpSlider', 4),
@@ -2466,7 +2466,7 @@ async function poolLaunchCurrent(){
   // single-runner uses.
   const _smSel = document.getElementById('startModeSel');
   const startMode = (_smSel && _smSel.value) || 'run-all';
-  const res = await API.poolStart({ workerCount:n, startWorkers:n, maxWorkers:_pv('poolMaxWorkers',150), hwSlider:_pv('poolHwSlider',4), ppSlider:_pv('poolPpSlider',4), elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });  // v3.0.3: scaleMultiplier dropped - the HW slider replaces it; main fixes the comfortable-cap base at 3 and hwSlider/4 scales it.
+  const res = await API.poolStart({ workerCount:n, startWorkers:n, maxWorkers:_pv('poolMaxWorkers',20), hwSlider:_pv('poolHwSlider',4), ppSlider:_pv('poolPpSlider',4), elastic, licenseProfileId: activeProfileId /* v3.0.3: ALWAYS. License counting is a safety rail, not an Auto-scale feature */, licenseBuffer:licBuffer, licenseIntervalMin:licInterval, setupScope, startMode, diagnosticCapture, captureBucketCap });  // v3.0.3: scaleMultiplier dropped - the HW slider replaces it; main fixes the comfortable-cap base at 3 and hwSlider/4 scales it.
   if(res && res.ok===false) return { ok:false, error:(res.error||'unknown') };
 
   // R5: in step modes the pane appears AT LAUNCH — worker login was the first invisible
@@ -3273,7 +3273,7 @@ async function saveFlow(){
     // R14: pool settings ride with the flow — applied as defaults on load; the sidebar
     // sliders remain a per-run override that persists only on the next save.
     poolSettings: {
-      maxWorkers: _pv('poolMaxWorkers', 150),
+      maxWorkers: _pv('poolMaxWorkers', 20),
       startWorkers: _pv('poolStartWorkers', 9),
       hwSlider: _pv('poolHwSlider', 4),
       ppSlider: _pv('poolPpSlider', 4),
@@ -3394,7 +3394,7 @@ async function applyLoadedFlow(data){
   {
     const ps = data.poolSettings || {};
     const _set = function(id, v){ const el = document.getElementById(id); if(el != null && v != null) el.value = v; };
-    _set('poolMaxWorkers', ps.maxWorkers != null ? ps.maxWorkers : 150);
+    _set('poolMaxWorkers', ps.maxWorkers != null ? ps.maxWorkers : 20);
     _set('poolHwSlider', ps.hwSlider != null ? ps.hwSlider : 4);
     _set('poolPpSlider', ps.ppSlider != null ? ps.ppSlider : 4);
     // v3.0.3: a flow that has LEARNED its best worker count replaces the Start default.
