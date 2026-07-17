@@ -44,6 +44,11 @@ const COORD = {
   possibleLeaks: [],   // Phase 3: workerIds that exited without VERIFIED logout (license may be held)
   stopping: false,     // Phase 3 (D2): pool-stop in progress — gates stall-guard respawn + prompt sweep
   _stopSweepFired: false,
+  // 3.0.4 (2b) crash-loop breaker state: consecutive workers that died in <15s with
+  // zero rows done. 3 in a row = a crash loop, not bad luck — stop the pool, surface
+  // the error. Reset on every pool-start and on any healthy exit/row completion.
+  _instantExits: 0,
+  _lastFatal: null,    // { ts, workerId, error } from the last worker 'fatal' message
   // R4 adaptive scaling state
   autoScale: true,       // pressure auto only ever reduces below the manual slider
   // v3.0.3: manualTarget DELETED. It was the target AND the ceiling, which made auto
@@ -313,6 +318,14 @@ async function coordSpawnWorker(){
     runnerLogStream.end();
     const w = COORD.workers.get(workerId);
     if(w){ w.status = (code===0?'done':'error'); }
+    // 3.0.4 (2b): instant-exit accounting for the crash-loop breaker. A worker that
+    // died in under 15s having completed ZERO rows is a crash, not a retirement —
+    // three in a row means the next respawn will die the same way.
+    if(w){
+      const lifeMs = Date.now() - (w.startedAt || Date.now());
+      if((w.done||0) === 0 && lifeMs < 15000) COORD._instantExits = (COORD._instantExits||0) + 1;
+      else COORD._instantExits = 0;
+    }
     // v2.2.1 LOSSLESS RECLAIM (coordinator side, catch-all): reclaim BEFORE removing the worker.
     // This backstops the worker-side 'reclaim' message for cases where it never arrived — a crash,
     // a force-kill, or stdout closing before the message flushed. w.batch holds the full last batch
@@ -359,6 +372,20 @@ async function coordSpawnWorker(){
     // with rows unprocessed. Spawn exactly one worker to drain the remainder. coordPickJobForWorker
     // is requeue-aware, so this also covers requeue-only-remaining. Not aggressive: only fires at
     // zero live workers, and only while there is genuinely work left.
+    // 3.0.4 (2b): CRASH-LOOP BREAKER — runs BEFORE the stall-guard so a third instant
+    // death stops the pool instead of feeding it another worker. This is the fix for
+    // 07-16: workers fataled on ENOENT in <1s each and the stall-guard respawned them
+    // forever with zero rows done and nothing surfaced. Stop mirrors pool-stop
+    // semantics (jobs drained, sweep fired); the error reaches the error strip.
+    if(COORD.active && !COORD.stopping && (COORD._instantExits||0) >= 3){
+      const why = (COORD._lastFatal && COORD._lastFatal.error) || 'worker died instantly, repeatedly (no fatal detail)';
+      try { console.error('[coord] crash-loop breaker tripped: ' + why); } catch(_){}
+      COORD.stopping = true;
+      COORD.capReason = 'fatal';
+      for (const job of COORD.jobs.values()) { job.nextRow = job.totalRows + 1; job.finished = true; }
+      try { _send('pool-row-error', { workerId: workerId, jobId: null, row: '-', reason: 'fatal', error: 'POOL STOPPED: 3 workers in a row died instantly with zero rows done. Last fatal: ' + why }); } catch (e) {}
+      if(!COORD._stopSweepFired){ COORD._stopSweepFired = true; setTimeout(() => coordRunLogoutSweep('fatal-loop'), 1500); }
+    }
     if(COORD.active && !COORD.stopping && COORD.workers.size === 0 && coordPickJobForWorker()){
       coordSpawnWorker().catch(e => { try{ console.error('[coord] stall-guard respawn failed:', e.message); }catch(_){} });
     }
@@ -513,6 +540,17 @@ function coordHandleWorkerMessage(workerId, msg){
       }
       break;
     }
+    case 'fatal':
+      // 3.0.4 (2b): a worker died before/outside row processing (spreadsheet ENOENT,
+      // login failure, ...). This message was SILENTLY IGNORED for versions — the
+      // worker exited, the stall-guard respawned the next, and the crash-loop ran
+      // forever with nothing shown to the user (07-16). Record + surface it; the
+      // close-handler breaker stops the pool after 3 consecutive instant deaths.
+      w.status = 'error';
+      w.lastError = msg.error || 'worker fatal (no detail)';
+      COORD._lastFatal = { ts: Date.now(), workerId, error: w.lastError };
+      try { _send('pool-row-error', { workerId, jobId: w.jobId, row: '-', error: 'WORKER FATAL: ' + w.lastError, reason: 'fatal' }); } catch (e) {}
+      break;
     case 'retired':
       // v2.1.0: worker finished its shutdown sequence (teardown+logout). Mark shut-down;
       // the process 'close' handler removes it from the map (-> 'gone' in the UI).
@@ -553,6 +591,27 @@ function coordSaveLastGoodW(){
       return;
     }
   }catch(e){ console.warn('[coord] lastGoodWorkers save skipped:', e.message); }
+}
+
+// 3.0.4 (2a+2c): launch-time hygiene — called by pool-start BEFORE anything else.
+// (2a) Purge jobs that FINISHED in a prior run: they used to survive staging, get
+//      their counters reset by pool-start, and silently RE-RUN (07-16: a finished
+//      job re-ran against a sheet that had been archived and crash-looped; 07-17:
+//      each scheduled fire re-ran every prior copy). Completed = gone at launch.
+// (2b reset) Clear the crash-loop breaker counters for the new run.
+// (2c) Re-validate every remaining job's spreadsheet still exists on disk (Archive
+//      moves files between runs): fail the LAUNCH loudly with the filename instead
+//      of letting every worker die on ENOENT.
+function coordPrepareLaunch(){
+  for (const [id, j] of Array.from(COORD.jobs)) { if (j.finished) COORD.jobs.delete(id); }
+  COORD._instantExits = 0; COORD._lastFatal = null;
+  if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged. (Jobs completed by the previous run are cleared automatically at launch — stage the flow again.)' };
+  for (const j of COORD.jobs.values()) {
+    if (j.spreadsheetPath && !fs.existsSync(j.spreadsheetPath)) {
+      return { ok: false, error: 'Spreadsheet for job "' + j.label + '" no longer exists:\n' + j.spreadsheetPath + '\n(Archived or moved since it was staged?) Remove the job or restore the file.' };
+    }
+  }
+  return { ok: true };
 }
 
 // Mark jobs finished when drained and emit completion when the whole pool is done.
@@ -1021,5 +1080,5 @@ async function coordRunOnceFlows(phase){
 
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────
 
-return { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows, coordEvalScale, coordSaveLastGoodW };
+return { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows, coordEvalScale, coordSaveLastGoodW, coordPrepareLaunch };
 };

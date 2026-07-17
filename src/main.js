@@ -650,7 +650,9 @@ ipcMain.handle('pool-clear-jobs', async () => {
 // enable the elastic license loop (recheck every intervalMin minutes, scale to free-buffer).
 ipcMain.handle('pool-start', async (_, { workerCount, startWorkers, maxWorkers, hwSlider, ppSlider, elastic, licenseProfileId, licenseBuffer, licenseIntervalMin, setupScope, startMode, diagnosticCapture, captureBucketCap, scaleMultiplier }) => {
   if (COORD.active) return { ok: false, error: 'Pool already running.' };
-  if (COORD.jobs.size === 0) return { ok: false, error: 'No jobs staged.' };
+  // 3.0.4 (2a+2c): purge finished jobs from the previous run and re-validate that every
+  // remaining job's spreadsheet still exists — BEFORE any state resets touch the jobs.
+  { const _prep = coordPrepareLaunch(); if (!_prep.ok) return _prep; }
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
   // each worker runs the once-flows for its own session. 'per-job' / 'global' run them ONCE,
   // executed by the coordinator via a dedicated headless session, with workers skipping them.
@@ -906,7 +908,12 @@ ipcMain.handle('pool-stop-worker', async (_, { workerId }) => {
 
 ipcMain.handle('pool-get-status', async () => {
   coordEmitStatus();
-  return { active: COORD.active, liveWorkers: COORD.workers.size, desiredWorkers: COORD.desiredWorkers, jobs: COORD.jobs.size };
+  // 3.0.4 (2a): pendingJobs counts only jobs a launch would actually RUN (finished jobs
+  // are purged at pool-start). The renderer's stage-if-none check must use this — using
+  // the raw jobs count made a leftover finished job suppress staging of the new flow
+  // (07-16: the crash-loop pool launched with ONLY a stale job whose sheet was gone).
+  const pendingJobs = Array.from(COORD.jobs.values()).filter(j => !j.finished).length;
+  return { active: COORD.active, liveWorkers: COORD.workers.size, desiredWorkers: COORD.desiredWorkers, jobs: COORD.jobs.size, pendingJobs };
 });
 
 // v2.0.0 resume: list orphan pool runs (journal exists with remaining work).
@@ -1949,4 +1956,4 @@ const __coordCtx = {
   get mainWindow() { return mainWindow; },
   get keytar() { return keytar; },
 };
-const { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordEvalScale, coordRunOnceFlow, coordRunOnceFlows } = require('./pool/coordinator')(__coordCtx);
+const { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordEvalScale, coordRunOnceFlow, coordRunOnceFlows, coordPrepareLaunch } = require('./pool/coordinator')(__coordCtx);

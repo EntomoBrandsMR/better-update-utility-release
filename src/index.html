@@ -2430,7 +2430,9 @@ async function poolFillAuto(){
 async function poolRunClick(){
   // If no jobs are staged yet, stage the current flow/sheet as a single job.
   const status = API.poolGetStatus ? await API.poolGetStatus() : {jobs:0};
-  if(!status.jobs){
+  // 3.0.4 (2a): stage-if-none must count PENDING jobs — a leftover FINISHED job used to
+  // suppress staging of the new flow (pool-start purges finished jobs at launch).
+  if(!(status.pendingJobs != null ? status.pendingJobs : status.jobs)){
     const staged = await poolStageCurrent();
     if(!staged) return;
   }
@@ -2450,7 +2452,9 @@ async function poolRunClick(){
 // Stages the current flow if nothing is staged (idempotent: staged jobs are reused).
 async function poolLaunchCurrent(){
   const status = API.poolGetStatus ? await API.poolGetStatus() : {jobs:0};
-  if(!status.jobs){
+  // 3.0.4 (2a): stage-if-none must count PENDING jobs — a leftover FINISHED job used to
+  // suppress staging of the new flow (pool-start purges finished jobs at launch).
+  if(!(status.pendingJobs != null ? status.pendingJobs : status.jobs)){
     const staged = await poolStageCurrent();
     if(!staged) return { ok:false, error:'staging failed (see live log)' };
   }
