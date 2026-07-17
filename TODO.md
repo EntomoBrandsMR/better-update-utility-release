@@ -947,3 +947,22 @@ created and emptied in the same install; if a *-prev folder ever appears
 there, a restore failed - investigate, data is IN it, not lost.
 
 3.0.6 SHIPPED 2026-07-17 minutes after 3.0.5 (Matthew never installed 3.0.5; he jumps 3.0.4 -> 3.0.6). ROOT CAUSE of the recurring update-check failure FOUND via his screenshot: read ECONNRESET on the FIRST connection after app open (corporate firewall cold-path reset), success on second - one reset was treated as final and also silently killed the startup check (no update bar on first open). Fix: check retries 3x/2s on transient net errors, download retries once. Everything from the 3.0.5 ship note still applies - update in-app FIRST, then recreate the Schedule Test schedule.
+INCIDENT #2 (2026-07-17 ~10:15-10:36) — Schedule Test-flow.json deleted AGAIN
+  during the update hops to 3.0.6. MEASURED TIMELINE: 3.0.5 built 9:54; 3.0.6
+  built 10:15; userData\update-backup CREATED 10:36:14 by a 3.0.5+ install-
+  update (so a 3.0.4->3.0.5 hop happened first, then 3.0.5->3.0.6 at 10:36);
+  3.0.6 exe landed 10:36:48; flows dir (re)created 10:36:57. The 10:36 backup
+  ALREADY lacked Schedule Test => the file died in the FIRST hop (3.0.4's OLD
+  uninstaller/TEMP-park era), not in the new machinery. The SECOND hop (3.0.5
+  uninstaller park -> 3.0.6 restore) preserved all 22 files intact AND took the
+  code-side backup — the new machinery worked on its first live run.
+  UNRESOLVED: exactly how hop 1 dropped one file (whole-dir renames are all-or-
+  nothing; suspicion remains on the 3.0.4-era TEMP park/restore or a manual
+  install of 3.0.5). Academic unless it recurs: every future transition runs
+  3.0.5+ uninstallers only.
+  RECOVERED: Schedule Test-flow rebuilt again from the journal meta (10:42).
+  WATCH ON NEXT UPDATE (3.0.6 -> next): flows file count identical before/
+  after; update-backup refreshed; C:\BUU-preserved created and emptied in the
+  same install; no *-prev folders. If ANY file goes missing again with the new
+  machinery on both sides, the park/restore theory is wrong — escalate to
+  moving user data out of $INSTDIR entirely (option c).
