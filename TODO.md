@@ -730,3 +730,33 @@ BUG (2026-07-16, Matthew, still present on 3.0.3) — scrolling while moving/
   drag a step toward the top/bottom edge, so long flows cannot be reordered by
   drag beyond the visible screen. Verbatim: "scrolling while moveing steps
   still does not work". Logged as reported - no investigation done yet.
+FINDINGS — scheduled-run test #3 (2026-07-17 8:11 AM, pool1784290282524).
+  Flow order is FIXED now (nav -> butAdd[after:element textarea] -> type Note ->
+  type NoteCode -> butSaveNote). What went wrong, from the worker log:
+  1. BUG (BUU) — FIRST NAV AFTER WORKER LOGIN LANDS ON THE LOGIN SCREEN.
+     Every scheduled run (4 pools, 07-16 + 07-17) shows the same trace: steps
+     1-2 fail 3x (~90s burned), THEN "dead session (login screen detected).
+     Re-logging in" — after which everything works. The worker login is not
+     sticking for the first direct app.pestpac.com navigation on scheduled/
+     once flows. This is Matthew's "stuck on step 2 forever". IMPROVEMENTS:
+     (a) find why the first session dies (login flow vs direct-URL nav timing);
+     (b) check for the login screen on the FIRST step failure, not after all
+     row retries are exhausted.
+  2. DUPLICATE NOTES = NON-IDEMPOTENT RETRY ON A FALSE-NEGATIVE CHECK ("stuck
+     on step 5" + "3 notes per try"). Step 5 clicks butSaveNote with
+     after:"url" (wait for URL change until load). The save WORKS server-side
+     but the notes page does not navigate, so waitForURL times out, the row is
+     marked failed, and each retry saves ANOTHER note: 3 attempts = 3 notes per
+     run (3 on 07-16 4:36 PM + 3 on 07-17 = his 6). FLOW-SIDE FIX: after should
+     be element (e.g. butAdd visible again), not url. BUU-SIDE ITEM: a last-
+     step whose ACTION succeeded but whose after-check timed out gets the whole
+     row re-run — for write-actions this multiplies side effects. Consider
+     classifying after-check timeouts as validation (no blind row retry), or a
+     per-step "do not retry row on after-check failure" flag.
+  3. NOT BUGS: "5/5 steps but there are 7" — correct; locked login/logout are
+     lifecycle, only data steps count. "flow has skip saved instead of retry" —
+     scheduled fires HARDCODE errHandle:retry (scheduler.js fire()), so the
+     flow's saved skip is ignored on schedule; behavior was retry. DESIGN
+     QUESTION for Matthew: should scheduled runs honor the flow's errHandle
+     instead of hardcoding retry? (Given item 2, retry-on-error for write-flows
+     is exactly what multiplied the notes.)
