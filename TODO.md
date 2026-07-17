@@ -760,3 +760,22 @@ FINDINGS — scheduled-run test #3 (2026-07-17 8:11 AM, pool1784290282524).
      QUESTION for Matthew: should scheduled runs honor the flow's errHandle
      instead of hardcoding retry? (Given item 2, retry-on-error for write-flows
      is exactly what multiplied the notes.)
+CONFIRMED (2026-07-17) — Matthew was right: SCHEDULED JOBS NEVER LOG IN.
+  worker.js:57: LOGIN_STEPS = FLOW_STEPS.filter(s => s.locked && ...). The
+  locked pestpac-login/logout steps are added at RUNTIME by the renderer
+  (allSteps() = LOGIN_STEPS + steps + LOGOUT_STEPS) and are NEVER SAVED in the
+  flow JSON. scheduler.js fire() sends flow.steps raw => no locked steps =>
+  worker emits "logging-in" but runs ZERO login steps => first nav lands on the
+  login screen => ~90s of failed retries until dead-session recovery re-logs-in
+  directly. Worker LOGOUT is runtime-level (not step-driven), which is why it
+  always verified clean and masked the asymmetry.
+  FIX: fire() must wrap flow.steps with the same locked login/logout scaffold
+  the renderer uses ({id pp1, type pestpac-login, locked:true} front, {id pp99,
+  type pestpac-logout, locked:true} back). Keep the fast-fail improvement too:
+  check for the login screen on FIRST step failure, not after retries exhaust.
+
+DECIDED (Matthew, verbatim: "yes i want it to respect everything!!") —
+  scheduled runs must honor the flow's SAVED config exactly like manual runs:
+  errHandle (today hardcoded retry), retryCount (hardcoded 2), reauthInterval
+  (hardcoded 0), and anything else pool-submit-job accepts that the flow
+  carries. fire() reads flow.config and passes it through.
