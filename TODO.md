@@ -945,3 +945,5 @@ LIVE VALIDATION FOR MATTHEW (in order):
 NEXT-UPDATE CHECK (3.0.5 -> 3.0.6 eventually): C:\BUU-preserved should be
 created and emptied in the same install; if a *-prev folder ever appears
 there, a restore failed - investigate, data is IN it, not lost.
+
+3.0.6 SHIPPED 2026-07-17 minutes after 3.0.5 (Matthew never installed 3.0.5; he jumps 3.0.4 -> 3.0.6). ROOT CAUSE of the recurring update-check failure FOUND via his screenshot: read ECONNRESET on the FIRST connection after app open (corporate firewall cold-path reset), success on second - one reset was treated as final and also silently killed the startup check (no update bar on first open). Fix: check retries 3x/2s on transient net errors, download retries once. Everything from the 3.0.5 ship note still applies - update in-app FIRST, then recreate the Schedule Test schedule.
