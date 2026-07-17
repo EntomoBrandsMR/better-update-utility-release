@@ -966,3 +966,19 @@ INCIDENT #2 (2026-07-17 ~10:15-10:36) — Schedule Test-flow.json deleted AGAIN
   same install; no *-prev folders. If ANY file goes missing again with the new
   machinery on both sides, the park/restore theory is wrong — escalate to
   moving user data out of $INSTDIR entirely (option c).
+=============================================================================
+3.0.7 SHIPPED 2026-07-17 (~11 AM). FLOWS TRAVEL WITH THE INSTALLER (Matthew:
+"every flow i make here on my main computer is avalible where ever i install
+the BUU" - a previously-directed feature that had NEVER actually been built).
+ - build/snapshot-flows.js (tracked via force-add; build/ dir ignore defeats
+   ! negations) snapshots C:\BUU\flows -> flows-bundle at npm run build;
+   ships via extraResources. 23 flows in the 3.0.7 package, verified in
+   dist\win-unpacked\resources\flows-bundle.
+ - seedBundledFlows() on boot copies bundled flows the machine LACKS. NEVER
+   overwrites - local edits win; delete a flow file + relaunch to re-seed.
+   Dev runs never seed. VM builds with no C:\BUU\flows = empty bundle, valid.
+VM TEST (Matthew doing): install BUU-2.0-Setup-3.0.7.exe on the VM -> full
+23-flow library should appear on first launch, Schedule Test in the schedules
+picker (automation-flagged). Main rig update 3.0.6->3.0.7 doubles as the FIRST
+full test of the new park machinery on both sides: watch flows count 23 before/
+after, update-backup refreshed, C:\BUU-preserved created+emptied, no *-prev.
