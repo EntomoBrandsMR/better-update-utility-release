@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '3.0.6';
+const CURRENT_VERSION = '3.0.7';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -145,7 +145,32 @@ function getFlowsDir() {
   // Runs once — guarded by a .migrated marker — so after the copy the two apps stay fully
   // independent (editing a flow in 2.0 never touches Legacy's, and vice versa).
   migrateLegacyFlowsOnce(dir);
+  // 3.0.7: seed flows bundled INTO the installer (Matthew: "every flow i make here on
+  // my main computer is available wherever i install the BUU"). The build snapshots
+  // the build machine's C:\BUU\flows into resources\flows-bundle (build/snapshot-
+  // flows.js); here any bundled flow the local machine does NOT already have is
+  // copied in. NEVER overwrites an existing file — local edits always win; to force
+  // a re-seed of one flow, delete its .json and relaunch.
+  seedBundledFlows(dir);
   return dir;
+}
+function seedBundledFlows(destDir) {
+  try {
+    if (!app.isPackaged) return; // dev runs never seed
+    const bundle = path.join(process.resourcesPath, 'flows-bundle');
+    if (!fs.existsSync(bundle)) return;
+    let seeded = 0;
+    const walk = (srcDir, dstDir) => {
+      for (const e of fs.readdirSync(srcDir, { withFileTypes: true })) {
+        const s = path.join(srcDir, e.name);
+        const d = path.join(dstDir, e.name);
+        if (e.isDirectory()) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); walk(s, d); }
+        else if (e.name.toLowerCase().endsWith('.json') && !fs.existsSync(d)) { fs.copyFileSync(s, d); seeded++; }
+      }
+    };
+    walk(bundle, destDir);
+    if (seeded) console.log('[seed] ' + seeded + ' bundled flow(s) copied into ' + destDir);
+  } catch (e) { console.warn('[seed] bundled-flows seed failed: ' + e.message); }
 }
 
 // Copy Legacy's flow .json files into BUU 2.0's flows dir, exactly once. No-op for the Legacy

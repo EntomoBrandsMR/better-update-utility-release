@@ -1,12 +1,12 @@
 {
   "name": "buu-2",
-  "version": "3.0.6",
+  "version": "3.0.7",
   "description": "BUU 2.0 — PestPac automation with elastic worker pool",
   "author": "Entomo Brands",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder --win --x64",
+    "build": "node build/snapshot-flows.js && set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder --win --x64",
     "postinstall": "electron-builder install-app-deps && npx playwright install chromium"
   },
   "build": {
@@ -52,6 +52,10 @@
       {
         "from": "assets",
         "to": "assets"
+      },
+      {
+        "from": "flows-bundle",
+        "to": "flows-bundle"
       }
     ],
     "asarUnpack": [
