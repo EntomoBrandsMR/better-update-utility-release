@@ -856,3 +856,11 @@ CORRECTION (Matthew, 2026-07-17): the scheduler being a separate code path is a
 9. DRAG-REORDER AUTO-SCROLL: step list must scroll when dragging near edges.
 HELD / NOT IN 3.0.4: restart-at-end after scheduled runs (see correction
 above); hidden-element error message polish (optional, rides along if cheap).
+CLARIFIED (Matthew, 2026-07-17): item 6 — "once is ment for build up and tear
+  down, automation is a once flow with the automation checkbox checked". So the
+  schedules picker filter = once-flows whose AUTOMATION FLAG is true (the flag
+  in the flow JSON is the source of truth, NOT the subfolder — a once+automation
+  flow files under once/ today and that is fine). listOnceFlows must surface
+  the automation flag so the picker can filter on it.
+  Item 8 (D3 typing lockup): SKIPPED for now per Matthew — stays logged,
+  out of 3.0.4 scope.
