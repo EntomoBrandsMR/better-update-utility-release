@@ -1,5 +1,5 @@
 {
-    "version": "3.0.5",
-    "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.0.5/BUU-2.0-Setup-3.0.5.exe",
-    "notes": "BUU v3.0.5 - your data is now safe from installers. The uninstaller NEVER deletes flows, logs, failures, or schedules - on any path (in-app update, manually-run installer, or real uninstall; on 7/17 a manual install wiped them). Data parks to C:\\BUU-preserved and restores automatically; the in-app updater also backs up flows+schedules to the app data folder first. The update check times out after 15s instead of hanging and names exactly what failed. Start mode saves with each flow - saved as Run all, it runs unattended every time including schedules; older flows load as Run all. The schedules picker explains itself when empty."
+    "version": "3.0.6",
+    "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.0.6/BUU-2.0-Setup-3.0.6.exe",
+    "notes": "BUU v3.0.6 - update check fixed (plus all of 3.0.5). The 'read ECONNRESET' failure is solved: the firewall resets the first connection after opening BUU (why the update bar only appeared on second open) - checks and downloads now retry automatically. Includes 3.0.5's data safety: the uninstaller NEVER deletes flows/logs/failures/schedules on any path (parked to C:\\BUU-preserved, restored automatically) and the updater backs up flows+schedules before any install; checks time out in 15s with a clear reason; start mode saves with each flow (Run all = unattended every time, incl. schedules; older flows load as Run all); the schedules picker explains itself when empty."
 }
