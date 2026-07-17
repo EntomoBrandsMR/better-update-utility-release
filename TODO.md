@@ -809,3 +809,50 @@ REDESIGN DECIDED (Matthew, 2026-07-17, verbatim: "there should be no diffrence
   NOTE the underlying disease is stale in-process state between runs; the
   restart is honest mitigation, and the fatal-loop/stale-job 3.0.4 fixes
   attack the same disease from the other side.
+CORRECTION (Matthew, 2026-07-17): the scheduler being a separate code path is a
+  REGRESSION against the Phase 2 rebuild ("we just went through a rebuild to
+  remove all of the seperate code paths"). It does not have to literally drive
+  the human UI — but there must be ONE staging+launch path and the scheduler
+  must call it. RESTART-AT-END IS HELD (not built in 3.0.4): the state fixes
+  below get a two-runs-one-process gate test instead; if that gate is green and
+  stale-state still bites live, restart-at-end returns in 3.0.5.
+
+=============================================================================
+3.0.4 SCOPE (agreed 2026-07-17)
+=============================================================================
+1. SCHEDULER = SAME CODE PATH (the headline). Strip fire()'s hand-built
+   job/start payload and the renderer schedule-fire pipe. One shared staging+
+   launch routine used by BOTH the Run button and the scheduler: flow steps
+   wrapped with locked login/logout, flow's saved poolSettings + config
+   (errHandle, retryCount, reauth, selectorTimeout...) applied — no hardcodes.
+   ACCEPTANCE: a scheduled pool meta is shape-identical to a manual run meta
+   (locked steps present, flow config honored); offline test asserts it.
+2. BACK-TO-BACK-RUN STATE INTEGRITY (replaces restart-at-end):
+   a. Completed jobs cannot survive into the next launch (auto-unstage on
+      completion; pool-start refuses/clears finished leftovers).
+   b. Worker "fatal" handler + crash-loop breaker: N instant fatals with zero
+      rows => stop pool, surface the error. No more silent respawn-forever.
+   c. pool-start re-validates every staged spreadsheetPath exists (archive
+      moves it between runs) — fail loud with the filename.
+   d. GATE: _test-back-to-back.js — TWO full runs through ONE coordinator
+      instance (complete -> restage -> run), asserting no state bleed. THIS is
+      the evidence the close-between-runs rule can finally die.
+3. LOGIN-SCREEN FAST-FAIL: on the FIRST step failure, check for the login
+   screen (not after all retries exhaust). Saves ~90s per dead session.
+4. WRITE-RETRY HAZARD: a final write step whose action succeeded but whose
+   after-check timed out re-runs the whole row and multiplies side effects
+   (the 3-notes-per-try). Classify after-check timeout as validation (no blind
+   row retry) — design detail settled at build time.
+5. MAX WORKERS DEFAULT 150 -> 20 (hard ceiling stays 150). All 5 sites at once:
+   Max box value attr, poolResetDefaults, _pv fallbacks, saveFlow default,
+   loadFlow default.
+6. SCHEDULES PICKER: automation-marked flows only (NEEDS MATTHEW: once and
+   automation are mutually exclusive at save time and the scheduler is
+   spreadsheet-free — see the design question logged 07-16).
+7. STALE 2.2.9 ORPHAN INSTALL at %LOCALAPPDATA%\Programs\BUU 2.0: remove
+   (installer sweep or one-time cleanup).
+8. D3 TYPING LOCKUP (promoted; NEEDS MATTHEW's repro answers: when does it
+   hit + does refocus fix it). innerHTML-rebuild-under-focus is lead suspect.
+9. DRAG-REORDER AUTO-SCROLL: step list must scroll when dragging near edges.
+HELD / NOT IN 3.0.4: restart-at-end after scheduled runs (see correction
+above); hidden-element error message polish (optional, rides along if cheap).
