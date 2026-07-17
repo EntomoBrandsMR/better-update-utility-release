@@ -864,3 +864,18 @@ CLARIFIED (Matthew, 2026-07-17): item 6 — "once is ment for build up and tear
   the automation flag so the picker can filter on it.
   Item 8 (D3 typing lockup): SKIPPED for now per Matthew — stays logged,
   out of 3.0.4 scope.
+=============================================================================
+3.0.4 SHIPPED 2026-07-17 (same day as scoped). Branch v3.0.2 HEAD a61abbd,
+tag v3.0.4, release BUU-2.0-Setup-3.0.4.exe, update channel VERIFIED serving
+3.0.4 BOM-free. All 7 scope items landed; restart-at-end HELD per agreement.
+NEXT VALIDATION IS LIVE: Matthew updates + runs a real scheduled flow. Watch:
+ - scheduled worker log shows LOGIN STEPS executing (no more dead-session-
+   recover-on-first-nav trace), flow errHandle honored in the pool meta
+ - back-to-back runs WITHOUT closing BUU: no stale jobs re-run, crash-loop
+   breaker never needed. If stale state STILL bites => restart-at-end in 3.0.5.
+ - duplicate-note class: after-check timeout rows show errorCategory
+   validation and do NOT retry.
+STILL OPEN: D3 typing lockup (skipped per Matthew; repro questions pending),
+scheduler completion-watch label lost " · scheduled" suffix (cosmetic, staged
+label now comes from the shared path), 2.2.9 quarantine folder
+_to_delete_BUU-2.0-stale-2.2.9 awaiting Matthew's delete.
