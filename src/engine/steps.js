@@ -76,14 +76,29 @@ async function runStep(page, step, row, creds){
       }
       await loc.first().click();
       const after = step.after || (step.waitFor ? 'element' : 'none');
-      if(after === 'element'){
-        const _sel = step.afterSelector || step.waitFor;
-        if(_sel){ const wl = await findLocator(page, _sel, {timeout: waitMs}); await wl.first().waitFor({state:'visible', timeout: waitMs}); }
-      } else if(after === 'url'){
-        const _u0 = page.url();
-        await page.waitForURL(u => u.toString() !== _u0, {timeout: waitMs});
-      } else if(after === 'load'){
-        await page.waitForLoadState('load', {timeout: waitMs});
+      // 3.0.4 (item 4): past this point the CLICK ITSELF SUCCEEDED — a timeout in the
+      // after-check below is a VALIDATION failure, not an action failure. Mark it
+      // (err.__afterCheck) so retry logic can refuse to blindly re-run the row:
+      // re-clicking a Save multiplies side effects (07-17: a false-negative after:'url'
+      // on Save Note wrote 3 duplicate notes per run, one per retry).
+      try{
+        if(after === 'element'){
+          const _sel = step.afterSelector || step.waitFor;
+          if(_sel){ const wl = await findLocator(page, _sel, {timeout: waitMs}); await wl.first().waitFor({state:'visible', timeout: waitMs}); }
+        } else if(after === 'url'){
+          const _u0 = page.url();
+          await page.waitForURL(u => u.toString() !== _u0, {timeout: waitMs});
+        } else if(after === 'load'){
+          await page.waitForLoadState('load', {timeout: waitMs});
+        }
+      }catch(afterErr){
+        const _em = String((afterErr && afterErr.message) || afterErr);
+        if(/timeout|timed out/i.test(_em)){
+          const e2 = new Error('After-'+after+' check timed out (the click action itself SUCCEEDED): '+_em);
+          e2.__afterCheck = true;
+          throw e2;
+        }
+        throw afterErr;
       }
       break;
     }

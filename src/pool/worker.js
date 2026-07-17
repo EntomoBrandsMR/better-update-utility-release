@@ -357,6 +357,22 @@ async function processRow(page, row, creds, rowNum){
       done.push((s._label||s.type) + (_note ? ' ['+_note+']' : ''));
     }
   };
+  // 3.0.4 (item 3): FAST-FAIL ON A DEAD SESSION. When a row fails because the page is
+  // the LOGIN SCREEN, every further retry re-runs steps against that login page and can
+  // NEVER succeed — the old code burned the full retry budget (~90s at 30s selector
+  // timeouts, every scheduled run 07-16/07-17) before the OUTER recovery even probed.
+  // Probe after EVERY failed attempt (URL + login-field presence, no navigation); if
+  // logged out, stop retrying now and hand straight back to the outer re-login.
+  const _loginScreenProbe = async () => {
+    try{
+      const _u = page.url();
+      if(/login\.pestpac\.com/i.test(_u)) return true;
+      if((creds.platform||'pestpac')==='frankware' && /\/login/i.test(_u)) return true;
+      if(await page.$('input[name="uid"]')) return true;
+      if(await page.$('input[name="username"]')) return true;
+    }catch(e){}
+    return false;
+  };
   try{ await attempt(); return {status:'ok', fieldsWritten:done.join(' | ')}; }
   catch(e){
     // v2.2.2 Session 2C: step-mode sentinels short-circuit retry — they're user actions,
@@ -381,6 +397,21 @@ async function processRow(page, row, creds, rowNum){
       if (waitErr && waitErr.message === '__STOP__') throw waitErr;
       emit({type:'log', message:'Network gate unexpected error: '+(waitErr && waitErr.message)+' — continuing with retry logic'});
     }
+    // 3.0.4 (item 4): AFTER-CHECK timeout = VALIDATION failure. The action (e.g. the
+    // Save click) was PERFORMED — re-running the row would repeat the write (07-17:
+    // 3 duplicate notes per run, one per retry). No blind row retry; the row errors
+    // with category 'validation' so the log says exactly what happened.
+    if(e && e.__afterCheck){
+      emit({type:'log', message:'Row '+rowNum+': after-check timed out but the action was performed — NOT retrying (a retry would repeat the write). Check the step\'s After condition.'});
+      return { status:'error', error: e.message, failedStep: done[done.length-1]||'?', errorCategory: 'validation', phase: 'post-action' };
+    }
+    // 3.0.4 (item 3): dead session detected on the FIRST failure => skip the whole
+    // retry budget; the outer session-recovery re-login retries the row once.
+    if(await _loginScreenProbe()){
+      emit({type:'log', message:'Row '+rowNum+': login screen detected on first failure — skipping retries, handing to session recovery.'});
+      const errMsg = 'Dead session (login screen) on first attempt: '+e.message;
+      return { status:'error', error: errMsg, failedStep: done[done.length-1]||'?', errorCategory: 'auth-dead', phase: classifyPhase(e.message) };
+    }
     if(ERR_HANDLE==='retry'){
       let attemptN=0, lastErr=e;
       while(attemptN<RETRY_COUNT){
@@ -390,6 +421,18 @@ async function processRow(page, row, creds, rowNum){
           if(e2 && e2.message === '__STOP__') throw e2;
           if(e2 && e2.message === '__NEXT_ROW__') return {status:'error', error:'Skipped via Next-row during step-through', failedStep:'(user skipped)'};
           lastErr=e2;
+          // 3.0.4 (item 4): a RETRY attempt performed the action but its after-check
+          // timed out => the write happened on this attempt; stop retrying immediately.
+          if(e2 && e2.__afterCheck){
+            emit({type:'log', message:'Row '+rowNum+': after-check timed out on retry '+attemptN+' but the action was performed — stopping retries.'});
+            return { status:'error', error: e2.message + ' (write performed on retry '+attemptN+'; retries stopped)', failedStep: done[done.length-1]||'?', errorCategory: 'validation', phase: 'post-action' };
+          }
+          // 3.0.4 (item 3): same fast-fail mid-retry — a session can die between attempts.
+          if(await _loginScreenProbe()){
+            emit({type:'log', message:'Row '+rowNum+': login screen detected mid-retry — stopping the retry loop, handing to session recovery.'});
+            lastErr = new Error('Dead session (login screen) mid-retry: '+e2.message);
+            break;
+          }
         }
       }
       // v2.2.2 Session 2D: enrich failure with error category/phase columns (was buildRunner-only).
