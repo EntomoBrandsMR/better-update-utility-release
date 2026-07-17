@@ -922,3 +922,26 @@ CRITICAL BUG (2026-07-17, data loss, ship the fix FIRST in 3.0.5) — a MANUALLY
   user data out of $INSTDIR entirely (contradicts R8 one-place decision).
   RELATED: the in-app update-check failure that pushed him to a manual install
   is the previous backlog entry — fixing it removes the trigger, not the gun.
+=============================================================================
+3.0.5 SHIPPED 2026-07-17 (same day). Tag v3.0.5, channel VERIFIED serving
+3.0.5 BOM-free. Contents: uninstaller NEVER deletes user data (unconditional
+park to C:\BUU-preserved incl schedules, stale-park shove to *-prev, plain-dir
+restore checks, legacy TEMP-park restore for the 3.0.4->3.0.5 transition);
+code-side flows+schedules backup to userData\update-backup before any in-app
+update; update-check 15s timeout + diagnostic errors (live check from dev
+WORKED - his installed-app failure never reproduced; next failure names its
+cause); startMode saves with the flow (pre-key flows load run-all); empty
+picker hint. Schedule Test-flow rebuilt earlier from journal meta with
+automation:true.
+LIVE VALIDATION FOR MATTHEW (in order):
+ 1. Update IN-APP to 3.0.5 (schedules dir is empty right now, so nothing to
+    lose in this last old-uninstaller transition; flows ride the TEMP park +
+    are backed up to userData\update-backup by nothing yet - 3.0.4 has no
+    backup code - the NSIS TEMP park is the protection this one time).
+ 2. AFTER updating: verify flows survived, recreate the Schedule Test
+    schedule, confirm the picker lists the flow.
+ 3. Save the flow with Run all; scheduled fire should log in via locked steps
+    and run unattended. Back-to-back fires need no BUU restart.
+NEXT-UPDATE CHECK (3.0.5 -> 3.0.6 eventually): C:\BUU-preserved should be
+created and emptied in the same install; if a *-prev folder ever appears
+there, a restore failed - investigate, data is IN it, not lost.
