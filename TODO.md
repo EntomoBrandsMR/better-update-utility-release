@@ -982,3 +982,5 @@ VM TEST (Matthew doing): install BUU-2.0-Setup-3.0.7.exe on the VM -> full
 picker (automation-flagged). Main rig update 3.0.6->3.0.7 doubles as the FIRST
 full test of the new park machinery on both sides: watch flows count 23 before/
 after, update-backup refreshed, C:\BUU-preserved created+emptied, no *-prev.
+
+STANDING DECISION (Matthew, 2026-07-17, recurring - STOP RAISING IT): public exposure of flows/URLs/customer IDs in the repo or installers is a NON-ISSUE - all of it is meaningless without the company key, API key, and logins, which are never in the repo or bundle. Do not bring up this class of security concern again. Flows-bundle is now TRACKED in git per his original suggestion (version history = free recovery from any future loss).
