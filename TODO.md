@@ -986,3 +986,31 @@ after, update-backup refreshed, C:\BUU-preserved created+emptied, no *-prev.
 STANDING DECISION (Matthew, 2026-07-17, recurring - STOP RAISING IT): public exposure of flows/URLs/customer IDs in the repo or installers is a NON-ISSUE - all of it is meaningless without the company key, API key, and logins, which are never in the repo or bundle. Do not bring up this class of security concern again. Flows-bundle is now TRACKED in git per his original suggestion (version history = free recovery from any future loss).
 
 LATER RELEASE (Matthew, 2026-07-17): GO PRIVATE. Make the release repo private and teach the updater to authenticate. Scope when picked up: fine-grained read-only GitHub token baked into the app (or a public releases-only mirror), fetchJSON + downloadFile send the auth header, raw.githubusercontent fetch of version-buu2.json switches to the authenticated contents API, verify in-app update end-to-end from a private repo before flipping visibility. Not scheduled - Matthew will say when.
+=============================================================================
+3.0.8 BACKLOG
+=============================================================================
+BUG (2026-07-17, Matthew on the VM, 3.0.7) — scheduled fire hits the login
+  step, LOGIN FAILS (bad/unreadable stored credentials suspected), worker is
+  killed, a new worker spawns, "cycle continues indefinatly EVEN IF I TELL IT
+  TO STOP". Two distinct defects on top of the credential problem:
+  DEFECT A — THE CRASH-LOOP BREAKER IS EVADED BY SLOW FATALS. The 3.0.4
+  breaker counts only exits <15s with 0 rows. A login failure burns selector
+  timeouts first (30s+), so every login-failed fatal exits SLOWLY, the
+  instant-exit counter never increments, and the stall-guard respawns forever.
+  FIX SHAPE: count consecutive FATAL-message exits with zero rows REGARDLESS
+  of lifetime (the fatal message already marks them); 3 in a row => stop pool,
+  surface the error. The <15s rule stays as a catch-all for silent crashes.
+  DEFECT B — STOP DID NOT STOP IT (per Matthew). Unconfirmed mechanism; needs
+  the VM logs. Suspects: pool-stop vs a mid-login worker (login not at a step
+  boundary; drain/stop cmd unread until login resolves, force-kill fuse 10s
+  should still fire); scheduler re-fire window; or the stop click erroring in
+  the renderer. DO NOT GUESS - read the logs first.
+  CREDENTIAL SIDE (root trigger): profiles = %APPDATA%\buu-2\credentials.enc
+  (DPAPI = machine+user bound - COPYING IT BETWEEN MACHINES CANNOT WORK) +
+  Windows Credential Manager entries under service BUU2. VM remedy: delete +
+  re-create the profile in-app on the VM. WORTH A GUARD in 3.0.8: if the
+  profile store fails DPAPI decryption, say so in the UI ("credentials were
+  created on another machine/user - re-create the profile") instead of letting
+  workers discover it as a login crash-loop.
+  DIAGNOSIS MATERIALS WANTED FROM THE VM: C:\BUU\logs newest buu2-worker-*.log
+  (a few) + the pool-journal meta from %APPDATA%\buu-2 for the looping run.
