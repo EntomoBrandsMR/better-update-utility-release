@@ -1,5 +1,5 @@
 {
-    "version": "3.0.6",
-    "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.0.6/BUU-2.0-Setup-3.0.6.exe",
-    "notes": "BUU v3.0.6 - update check fixed (plus all of 3.0.5). The 'read ECONNRESET' failure is solved: the firewall resets the first connection after opening BUU (why the update bar only appeared on second open) - checks and downloads now retry automatically. Includes 3.0.5's data safety: the uninstaller NEVER deletes flows/logs/failures/schedules on any path (parked to C:\\BUU-preserved, restored automatically) and the updater backs up flows+schedules before any install; checks time out in 15s with a clear reason; start mode saves with each flow (Run all = unattended every time, incl. schedules; older flows load as Run all); the schedules picker explains itself when empty."
+    "version": "3.0.7",
+    "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.0.7/BUU-2.0-Setup-3.0.7.exe",
+    "notes": "BUU v3.0.7 - your flows travel with the installer. Every build packages the flow library from the machine it was built on, and on first launch after any install or update BUU copies in any flow the local machine does not already have - install on a VM or fresh machine and your whole library is there. Existing flows are NEVER overwritten (local edits win; delete a flow's .json and relaunch to re-pull the bundled copy). Includes 3.0.5/3.0.6: installers can never delete flows/logs/failures/schedules, the updater backs data up before installing, the first-open update check retries through connection resets, and start mode saves with each flow so Run all flows run unattended including on schedules."
 }
