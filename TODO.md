@@ -879,3 +879,19 @@ STILL OPEN: D3 typing lockup (skipped per Matthew; repro questions pending),
 scheduler completion-watch label lost " · scheduled" suffix (cosmetic, staged
 label now comes from the shared path), 2.2.9 quarantine folder
 _to_delete_BUU-2.0-stale-2.2.9 awaiting Matthew's delete.
+=============================================================================
+3.0.5 BACKLOG
+=============================================================================
+BUG (2026-07-17, Matthew) — in-app UPDATE CHECK "still fails with the same
+  error" (recurring; exact on-screen error text NOT yet captured — get it from
+  Matthew or reproduce in dev with the update dialog open).
+  PROBED AT REPORT TIME from the same machine (scripts/_304-updcheck-probe.js):
+  the channel itself is HEALTHY — GET version-buu2.json = HTTP 200 in 118ms,
+  1140 bytes, first byte 123, parses, version 3.0.4. So the failure is app-side,
+  not the channel. SUSPECTS, in order: (1) checkForUpdates() error path only
+  reports on MANUAL checks and shows e.message with no context - what message?
+  (2) fetchJSON has no timeout at all - a hung socket = eternal silence, which
+  the user reads as "failed"; (3) renderer update-status error display; (4) the
+  old D1 note: second-instance handler never re-checks updates.
+  NEXT STEP: capture the exact error string, then reproduce in dev (the check
+  path is drivable over CDP: API.checkForUpdates() with update-status listener).
