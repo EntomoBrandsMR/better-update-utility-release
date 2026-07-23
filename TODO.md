@@ -1014,3 +1014,36 @@ BUG (2026-07-17, Matthew on the VM, 3.0.7) — scheduled fire hits the login
   workers discover it as a login crash-loop.
   DIAGNOSIS MATERIALS WANTED FROM THE VM: C:\BUU\logs newest buu2-worker-*.log
   (a few) + the pool-journal meta from %APPDATA%\buu-2 for the looping run.
+=============================================================================
+3.1.1 BUG (found right after shipping 3.1.0, 2026-07-17) — DUPLICATE FLOWS,
+root vs subfolder, self-perpetuated by flows-bundle.
+=============================================================================
+C:\BUU\flows has every OLDER flow TWICE: once loose in the root AND once in its
+general\ / once\ subfolder. 47 files = 22 subfolder + 22 root dupes + 2 once + 1
+automation. New flows (saveFlow) go to subfolders only, so they are clean.
+
+DANGER (real): read-flow-by-name scans ROOT FIRST (order ["", general, automation,
+once]) but saveFlow WRITES to subfolders. Verified the "Add Billing Note" pair has
+DIVERGED (root 1647B @12:29 vs sub 1623B @10:57) => a pool run can execute the ROOT
+copy while the builder edits/saves the SUBFOLDER copy. Edit a flow, run it, and it
+may run the OLD version. Latent, time-wasting.
+
+ORIGIN CHAIN (mine): root-loose copies pre-existed (6/29 legacy migration copies
+FLAT to root; marker dated 2026-06-29). snapshot-flows.js walks C:\BUU\flows
+RECURSIVELY incl the root-loose files and bundles them at flows-bundle root.
+seedBundledFlows (on every install/launch) copies bundle-root files back into
+flows root => the dupes regenerate every install. Self-perpetuating.
+
+FIX (3.1.1):
+ (a) snapshot-flows.js: SKIP a root-loose flow whose basename also exists in a
+     subfolder (subfolders are canonical). Likely skip root-loose entirely.
+ (b) read-flow-by-name + list-once-flows: prefer SUBFOLDER over root (put root LAST,
+     or de-dupe by basename keeping the subfolder copy).
+ (c) ONE-TIME CLEANUP: move the 22 root-loose dupes out of C:\BUU\flows so subfolder
+     copies win. NEEDS MATTHEW — root mtimes are seed-time not edit-time, so "newest"
+     is misleading; must confirm the SUBFOLDER copies are the ones edited in the
+     builder. device_bash cannot delete; move to a _to_delete folder for him to remove.
+
+DO NOT auto-delete his flows. The 3.1.0 FEATURE is unaffected (Fieldwork is new).
+ALSO: the tracked flows-bundle/ in git now carries the dupes too — after fix (a),
+regenerate + re-commit a clean bundle.
