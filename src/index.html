@@ -1093,6 +1093,7 @@ textarea { resize: vertical; min-height: 60px; }
         <div style="display:inline-flex;border:1px solid var(--bd,#3a3a44);border-radius:8px;overflow:hidden;width:fit-content">
           <button type="button" id="pfBtnPestpac" onclick="setPlatform('pestpac')" style="padding:9px 18px;border:none;cursor:pointer;font:inherit">PestPac</button>
           <button type="button" id="pfBtnFrankware" onclick="setPlatform('frankware')" style="padding:9px 18px;border:none;cursor:pointer;font:inherit">Frankware</button>
+          <button type="button" id="pfBtnFieldwork" onclick="setPlatform('fieldwork')" style="padding:9px 18px;border:none;cursor:pointer;font:inherit">Fieldwork</button>
         </div>
       </div>
     </div>
@@ -3119,15 +3120,21 @@ function setActiveProfile(id){activeProfileId=id;if(API.setConfig)API.setConfig(
 // v2.2.7: the Frankware scrape step only makes sense with a Frankware login, so its add-menu
 // button shows only when the active profile is Frankware. Called from renderProfiles (the one
 // choke point hit on both initial load and profile switches).
-function syncFrankwareStepVisibility(){ const b=document.getElementById('addOptFwScrape'); if(!b) return; const ap=profiles.find(p=>p.id===activeProfileId); b.style.display=(ap&&ap.platform==='frankware')?'':'none'; }
+function syncFrankwareStepVisibility(){ const ap=profiles.find(p=>p.id===activeProfileId); const plat=ap&&ap.platform; const fw=document.getElementById('addOptFwScrape'); if(fw) fw.style.display=(plat==='frankware')?'':'none'; const fld=document.getElementById('addOptFieldworkScrape'); if(fld) fld.style.display=(plat==='fieldwork')?'':'none'; }
 const FRANKWARE_LOGIN_URL='https://production-pestnow-docker-76d36437bfc0.herokuapp.com/login';
 const PESTPAC_LOGIN_URL='https://login.pestpac.com/';
+const FIELDWORK_LOGIN_URL='https://app.fieldworkhq.com/'; // 3.1.0
+const _PLATFORMS=['pestpac','frankware','fieldwork'];
+const _PLATFORM_URL={pestpac:PESTPAC_LOGIN_URL,frankware:FRANKWARE_LOGIN_URL,fieldwork:FIELDWORK_LOGIN_URL};
+const _normPlatform=p=>_PLATFORMS.includes(p)?p:'pestpac';
 // applyPlatformUI: sync the toggle + form to a platform WITHOUT touching the URL
 // (used by newProfile/editProfile so a loaded custom URL isn't clobbered).
-function applyPlatformUI(p){p=(p==='frankware')?'frankware':'pestpac';document.getElementById('pPlatform').value=p;const onP=document.getElementById('pfBtnPestpac'),onF=document.getElementById('pfBtnFrankware');const act='var(--purple,#6b4fbb)',actT='#fff',inT='var(--t2,#9a9aa6)';if(onP){onP.style.background=p==='pestpac'?act:'transparent';onP.style.color=p==='pestpac'?actT:inT;}if(onF){onF.style.background=p==='frankware'?act:'transparent';onF.style.color=p==='frankware'?actT:inT;}const ckg=document.getElementById('pCompanyKeyGroup');if(ckg)ckg.style.display=p==='frankware'?'none':'';}
-// setPlatform: user clicked the toggle. Sync UI and swap the login URL to the
-// platform default, but only if the field still holds the OTHER default or is blank.
-function setPlatform(p){p=(p==='frankware')?'frankware':'pestpac';applyPlatformUI(p);const url=document.getElementById('pUrl');const cur=(url.value||'').trim();if(p==='frankware'){if(!cur||cur===PESTPAC_LOGIN_URL)url.value=FRANKWARE_LOGIN_URL;}else{if(!cur||cur===FRANKWARE_LOGIN_URL)url.value=PESTPAC_LOGIN_URL;}}
+// 3.1.0: tri-state (pestpac|frankware|fieldwork). Company-key field shows for PestPac
+// only — Frankware and Fieldwork are email+password, no company key.
+function applyPlatformUI(p){p=_normPlatform(p);document.getElementById('pPlatform').value=p;const act='var(--purple,#6b4fbb)',actT='#fff',inT='var(--t2,#9a9aa6)';const btns={pestpac:'pfBtnPestpac',frankware:'pfBtnFrankware',fieldwork:'pfBtnFieldwork'};for(const k of _PLATFORMS){const b=document.getElementById(btns[k]);if(b){b.style.background=(p===k)?act:'transparent';b.style.color=(p===k)?actT:inT;}}const ckg=document.getElementById('pCompanyKeyGroup');if(ckg)ckg.style.display=(p==='pestpac')?'':'none';}
+// setPlatform: user clicked the toggle. Sync UI and swap the login URL to the platform
+// default, but only if the field still holds ANOTHER platform's default or is blank.
+function setPlatform(p){p=_normPlatform(p);applyPlatformUI(p);const url=document.getElementById('pUrl');const cur=(url.value||'').trim();const isADefault=Object.values(_PLATFORM_URL).includes(cur);if(!cur||isADefault)url.value=_PLATFORM_URL[p];}
 function newProfile(){editingProfileId=null;document.getElementById('profileFormTitle').textContent='New profile';document.getElementById('pName').value='';document.getElementById('pUrl').value='https://login.pestpac.com/';document.getElementById('pCompanyKey').value='';document.getElementById('pUsername').value='';document.getElementById('pPassword').value='';applyPlatformUI('pestpac');document.getElementById('deleteProfileBtn').style.display='none';document.getElementById('profileForm').style.display='block';document.getElementById('pName').focus();}
 async function editProfile(id){editingProfileId=id;document.getElementById('profileFormTitle').textContent='Edit profile';const p=API.getProfile?await API.getProfile(id):profiles.find(x=>x.id===id);if(!p)return;document.getElementById('pName').value=p.name||'';document.getElementById('pUrl').value=p.loginUrl||'https://login.pestpac.com/';document.getElementById('pCompanyKey').value=p.companyKey||'';document.getElementById('pUsername').value=p.username||'';document.getElementById('pPassword').value=p.password||'';applyPlatformUI(p.platform||'pestpac');document.getElementById('deleteProfileBtn').style.display='';document.getElementById('profileForm').style.display='block';}
 async function saveProfile(){const platform=document.getElementById('pPlatform').value||'pestpac';const name=document.getElementById('pName').value.trim();if(!name){alert('Enter a profile name.');return;}const companyKey=document.getElementById('pCompanyKey').value.trim();if(platform==='pestpac'&&!companyKey){alert('Enter the company key.');return;}const username=document.getElementById('pUsername').value.trim();if(!username){alert('Enter the username.');return;}const password=document.getElementById('pPassword').value;if(!password){alert('Enter the password.');return;}const profile={id:editingProfileId||('p_'+Date.now()),name,platform,loginUrl:document.getElementById('pUrl').value.trim()||'https://login.pestpac.com/',companyKey,username,password};try{if(API.saveProfile)await API.saveProfile(profile);else{const i=profiles.findIndex(p=>p.id===profile.id);if(i>=0)profiles[i]=profile;else profiles.push(profile);}}catch(e){alert('Could not save profile: '+((e&&e.message)?e.message:e));return;}await loadProfiles();document.getElementById('profileForm').style.display='none';if(!activeProfileId)setActiveProfile(profile.id);}
