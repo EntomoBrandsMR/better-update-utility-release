@@ -1,5 +1,5 @@
 {
-    "version": "3.1.0",
-    "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.1.0/BUU-2.0-Setup-3.1.0.exe",
-    "notes": "BUU v3.1.0 - Fieldwork cancellation scraper. New Fieldwork login type + a scrape step that reads a location's Service History and pulls every cancelled recurring service (frequency, reason, date, tech, amount) - one row per cancellation. Make a Fieldwork profile (email+password), navigate to the history URL with {{account_number}}/{{location_number}} tokens, add the Fieldwork scrape step. Output = two CSVs in results\\ (cancellations deduped + a per-location log); input sheet untouched. First run: visible + step-by-step, log in at the first pause, check the first CSV, then Run all. Includes all of 3.0.5-3.0.7 (installers never delete your data, flows travel with the installer, update check fixed)."
+    "version": "3.1.1",
+    "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.1.1/BUU-2.0-Setup-3.1.1.exe",
+    "notes": "BUU v3.1.1 - Fieldwork scraper now catches ALL cancellations. v3.1.0 missed cancellations Fieldwork renders outside the service-history panel (~half). Now finds every cancellation on the page regardless of container. Re-run your list (or just the empty locations) to pick up the missed ones."
 }
