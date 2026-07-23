@@ -1076,3 +1076,38 @@ delay. RELATED backlog: the ECONNRESET-era update-check issues + this launch iss
 are the whole updater hardening pass.
 IMMEDIATE UNBLOCK for Matthew: the complete installer is already at
 %APPDATA%\buu-2\updates\buu-update.exe — double-click it to install 3.1.0 now.
+=============================================================================
+BUG / ARCHITECTURE (2026-07-23, Matthew) — BUU must be FULLY self-contained in
+C:\BUU. All BUU-written paths belong under the install root, not %APPDATA%.
+=============================================================================
+Matthew: "everything BUU goes in the BUU folder... all download or write paths
+need to be in the BUU folder self contained."
+
+CURRENT SPLIT (installed app):
+ - IN C:\BUU (correct, via buuRoot(): flows\ logs\ failures\ schedules\.
+ - IN %APPDATA%\buu-2 (WRONG, via app.getPath(userData)): credentials.enc,
+   buu-config.json, ALL pool journals (pool-journal-*.jsonl/.meta/.done, ~50 of
+   them), worker-pids.json, update-backup\, updates\ (the downloaded installer!),
+   browsers\. Plus Electron chromium cache (Cache/GPUCache/Network/... — leave
+   those; regenerable, and moving them means fighting Electron).
+
+THIS is why the 3.1.0 update .exe downloaded to %APPDATA%\buu-2\updates instead
+of C:\BUU (install-update uses getPath(userData)/updates, main.js ~1411).
+
+EXACT SITES to move from app.getPath(userData) -> buuRoot() (a new buuDataDir()):
+ - main.js: credFilePath (217), getConfigPath (283), update-backup (1402),
+   updates dir (1411), worker-pids (1937), browsers (210), the ud/pf refs (1924/1937).
+ - journal.js: coordJournalPath/MetaPath/DonePath + the dir scans (12,13,119,132,154,186).
+ - coordinator.js: PIDFILE (15), orphan-scan dir (83), worker runContext userDataDir (290).
+
+MIGRATION COST (the careful part — do NOT skip): credentials.enc, buu-config.json,
+and existing journals currently live in %APPDATA%. If the path just flips, Matthew
+LOSES saved credentials + config (has to re-enter) and orphan-resume loses history.
+=> the version that flips paths MUST run a one-time migrate: on first launch, if a
+BUU-data file exists in %APPDATA%\buu-2 and not in C:\BUU, copy it over (guarded by
+a marker). Same shape as migrateLegacyFlowsOnce.
+
+NOTE dev mode already uses userData as buuRoot(), so switching installed paths to
+buuRoot() is CONSISTENT — dev keeps using userData, packaged uses C:\BUU.
+PAIRS WITH the just-logged updater-launch bug (openPath return ignored): fixing both
+is the updater/self-containment hardening pass.
