@@ -1111,3 +1111,28 @@ NOTE dev mode already uses userData as buuRoot(), so switching installed paths t
 buuRoot() is CONSISTENT — dev keeps using userData, packaged uses C:\BUU.
 PAIRS WITH the just-logged updater-launch bug (openPath return ignored): fixing both
 is the updater/self-containment hardening pass.
+=============================================================================
+BUG / DESIGN (2026-07-23, Matthew) — scrape "dry run" write-toggle is a footgun;
+a scrape step must ALWAYS write its output.
+=============================================================================
+The "Write Frankware scrape to CSV" checkbox (index.html ~926, config
+scrapeCsvEnabled) gates the WRITE on/off: unchecked = "scrapes but writes no file"
+(its own hint). Matthew reasonably assumed it was a FORMAT choice (CSV vs XLSX for
+size) — it is NOT; there is no xlsx path. It is a persist-across-runs write-yes/no
+toggle, and being left unchecked from an earlier Frankware session silently turned a
+2,241-location / 702-cancellation Fieldwork run into a dry run (no file). Recovered
+this time by parsing the worker log (_311-recover-fieldwork.js).
+
+Matthew, verbatim: "why would there even be an option for this, this steps only
+pourpose is to scrape a file". Correct — a scrape step whose whole purpose is the
+output should not be able to silently produce nothing.
+
+FIX:
+ 1. Scrape steps (fw-scrape-orders AND fieldwork-cancel-scrape) ALWAYS write. Remove
+    the write-on/off gate (coordinator: drop the scrapeCsvEnabled skip; always call
+    coordAppendScrape / coordAppendFieldwork). Delete or repurpose the checkbox.
+ 2. IF a real need exists, replace it with a FORMAT picker (CSV | XLSX) — CSV for
+    huge scrapes, XLSX for convenience — NOT a write on/off. Default CSV (crash-safe
+    append; xlsx would need an end-of-run single write). Matthew floated XLSX-for-size.
+ 3. Until fixed: label is also wrong ("Frankware" — it gates Fieldwork too).
+INTERIM: user must CHECK "Write Frankware scrape to CSV" for any scrape run to save.
