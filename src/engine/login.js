@@ -6,6 +6,18 @@
 //      hand-synced string literal) and removes the drift hazard entirely.
 async function loginToPestPac(page, creds){
   await page.goto(creds.loginUrl||'https://login.pestpac.com/',{waitUntil:'load',timeout:30000});
+  if((creds.platform||'pestpac')==='fieldwork'){
+    // Fieldwork: single Rails-style login page, email + password, no company key.
+    // Selectors confirmed by Matthew 2026-07-17: #email, #sign-in-password, submit
+    // #sign-in-submit. Success = we leave the sign-in page.
+    await page.waitForSelector('#email',{timeout:20000});
+    await page.fill('#email',creds.username||'');
+    await page.fill('#sign-in-password',creds.password||'');
+    try{ await page.click('#sign-in-submit',{timeout:15000}); }
+    catch(e){ await page.press('#sign-in-password','Enter'); }
+    await page.waitForFunction(()=>!/\/(sign_in|login)\b/i.test(location.pathname),null,{timeout:30000});
+    return;
+  }
   if((creds.platform||'pestpac')==='frankware'){
     // Frankware: single Rails login page, no company key, submit via Enter.
     await page.waitForSelector('input[name="session[login]"]',{timeout:20000});

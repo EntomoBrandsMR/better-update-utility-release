@@ -366,8 +366,11 @@ async function processRow(page, row, creds, rowNum){
   const _loginScreenProbe = async () => {
     try{
       const _u = page.url();
+      const _plat=(creds.platform||'pestpac');
       if(/login\.pestpac\.com/i.test(_u)) return true;
-      if((creds.platform||'pestpac')==='frankware' && /\/login/i.test(_u)) return true;
+      if(_plat==='frankware' && /\/login/i.test(_u)) return true;
+      if(_plat==='fieldwork' && /\/sign_in\b/i.test(_u)) return true;
+      if(_plat==='fieldwork' && await page.$('#sign-in-password')) return true;
       if(await page.$('input[name="uid"]')) return true;
       if(await page.$('input[name="username"]')) return true;
     }catch(e){}
@@ -621,7 +624,7 @@ async function main(){
       if (nextReauthAt > 0 && Date.now() >= nextReauthAt) {
         emit({type:'log', message:'Session refresh (timer) before row '+rowNum+': logout then login'});
         try {
-          if((creds.platform||'pestpac')!=='frankware'){ try{ await logoutFromPestPac(page); }catch(e){} }
+          if((creds.platform||'pestpac')==='pestpac'){ try{ await logoutFromPestPac(page); }catch(e){} } // fieldwork/frankware: no PestPac Mode=Logout
           await loginToPestPac(page, creds);
           nextReauthAt = Date.now() + REAUTH_INTERVAL_MS;
           emit({type:'log', message:'Session refresh complete. Continuing.'});
@@ -665,8 +668,11 @@ async function main(){
         let _authDead=false;
         try{
           const _u=page.url();
+          const _plat=(creds.platform||'pestpac');
           if(/login\.pestpac\.com/i.test(_u)) _authDead=true;
-          else if((creds.platform||'pestpac')==='frankware' && /\/login/i.test(_u)) _authDead=true;
+          else if(_plat==='frankware' && /\/login/i.test(_u)) _authDead=true;
+          else if(_plat==='fieldwork' && /\/sign_in\b/i.test(_u)) _authDead=true; // Fieldwork login page
+          else if(_plat==='fieldwork' && await page.$('#sign-in-password')) _authDead=true;
           else if(await page.$('input[name="uid"]')) _authDead=true;
           else if(await page.$('input[name="username"]')) _authDead=true;
         }catch(e){}
@@ -739,7 +745,16 @@ async function main(){
   // the 28-stuck-sessions incident). Frankware has no Mode=Logout: single flow-step
   // attempt with a 5s cap, then a URL probe.
   let _loggedOut=false, _attempt=0;
-  if((creds.platform||'pestpac')==='frankware'){
+  if((creds.platform||'pestpac')==='fieldwork'){
+    // Fieldwork: no seat to free (operator's own login, one-time migration). The session
+    // ends when the browser closes below. Best-effort navigate to the sign-out URL so we
+    // land logged-out, but never block shutdown on it.
+    try{ await page.goto('https://app.fieldworkhq.com/users/sign_out',{waitUntil:'domcontentloaded',timeout:5000}); }catch(e){}
+    _attempt=1;
+    let _u=''; try{ _u=page.url(); }catch(e){}
+    _loggedOut = /\/(sign_in|login)\b/i.test(_u) || true; // browser close is the guarantee
+    emit({type:'logout-attempt', attempt:1, ok:true, url:_u});
+  } else if((creds.platform||'pestpac')==='frankware'){
     try{
       await Promise.race([
         runStep(page, LOGOUT_STEP, {}, creds),
