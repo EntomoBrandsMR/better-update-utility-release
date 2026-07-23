@@ -749,7 +749,7 @@ async function main(){
     // Fieldwork: no seat to free (operator's own login, one-time migration). The session
     // ends when the browser closes below. Best-effort navigate to the sign-out URL so we
     // land logged-out, but never block shutdown on it.
-    try{ await page.goto('https://app.fieldworkhq.com/users/sign_out',{waitUntil:'domcontentloaded',timeout:5000}); }catch(e){}
+    try{ await page.goto('https://app.fieldworkhq.com/log_out',{waitUntil:'domcontentloaded',timeout:5000}); }catch(e){} // logout href confirmed by Matthew 2026-07-17
     _attempt=1;
     let _u=''; try{ _u=page.url(); }catch(e){}
     _loggedOut = /\/(sign_in|login)\b/i.test(_u) || true; // browser close is the guarantee
