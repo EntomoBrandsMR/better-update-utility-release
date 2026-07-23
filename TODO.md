@@ -1143,3 +1143,20 @@ build it that way. The current write-yes/no behavior (scrapeCsvEnabled gating th
 write) is the bug â€” replace with the format picker, output always produced. Applies
 to BOTH scrape steps (Frankware orders + Fieldwork cancellations); label must not
 say "Frankware".
+=============================================================================
+BUG (2026-07-23) — Fieldwork scraper UNDER-DETECTS cancellations (likely parser gap).
+=============================================================================
+First real run: 2241 input rows / 1844 unique locations, run complete, 0 errors.
+But only 702 cancellations (from 555 locations) captured. Breakdown of the 1844:
+  555 with >=1 detected cancellation
+  295 empty in Fieldwork (0 service groups)
+  994 HAVE services but 0 cancellations detected  <-- the gap (54%)
+Matthew expected ~2241+ (report is one row per cancelled service). 54% miss is far
+too high to be a real data mismatch => the parser's single marker
+(a.edit_cancellation_details, validated on ONE page in the spec) is very likely
+missing other cancellation renderings.
+DIAGNOSTIC PENDING: inspect a 'has-groups-0-cancels' page live, e.g.
+16134/2172339 (input: 0040 Gold Pest Plan cancelled 04/12/2024; scrape saw 3 groups,
+0 cancels). Need the actual HTML of how Fieldwork shows THAT cancellation to broaden
+the selector. Do NOT trust the 702 as complete until resolved.
+Recovery CSVs from this run: results\07232026_recovered_fieldwork-*.csv.
