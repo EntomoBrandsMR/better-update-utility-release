@@ -196,6 +196,58 @@ async function runStep(page, step, row, creds){
       row.__scrape=orders;
       break;
     }
+    case 'fieldwork-cancel-scrape':{
+      // Fieldwork-only (3.1.0): read the Service History tab, emit ONE record per CANCELLED
+      // service (keyed off a.edit_cancellation_details — the only marker present on cancels).
+      // Extraction JS is the spec's validated parser, run in-page. Records land in
+      // row.__scrape with row.__scrapeKind so the coordinator writes Fieldwork columns.
+      // ALWAYS emits at least the per-location log record (even zero cancellations) so the
+      // operator can tell "scraped, none found" from "never scraped".
+      const stampVal = function(f){ if(!f) return ''; var t=String(f).trim(); if(t.indexOf('{{')>=0) return r(t); return (row[t]!==undefined ? String(row[t]) : ''); };
+      const acct = stampVal(step.acctCol);
+      const loc  = stampVal(step.locCol);
+      const url  = r(step.url); if(!url) throw new Error('Fieldwork scrape: history URL is empty');
+      await page.goto(url,{waitUntil:'domcontentloaded',timeout:NAV_TIMEOUT});
+      // give the server-rendered history nodes a beat to be present (they load with the page).
+      try{ await page.waitForSelector('div.service-history-group, #email, #sign-in-password',{timeout:15000}); }catch(e){}
+      const scan = await page.evaluate(() => {
+        const onLogin = !!document.querySelector('#sign-in-password, #email') || /\/sign_in\b/i.test(location.pathname);
+        const groups = [...document.querySelectorAll('div.service-history-group')];
+        const out = [];
+        for (const g of groups) {
+          const link = g.querySelector('a.edit_cancellation_details');
+          if (!link) continue;
+          const tr = link.closest('tr');
+          const td = tr ? [...tr.querySelectorAll('td')].map(x => (x.textContent||'').trim().replace(/\s+/g,' ')) : [];
+          out.push({
+            service_type: ((g.querySelector('.panel-heading')||{}).textContent||'').trim(),
+            frequency:    ((g.querySelector('thead th[colspan]')||{}).textContent||'').trim(),
+            status: td[0]||'', reason: td[1]||'', technician: td[2]||'',
+            cancel_date: td[3]||'', cancelled_at: td[4]||'', amount: td[5]||'',
+            data_id:          link.getAttribute('data-id')||'',
+            data_reason:      link.getAttribute('data-reason')||'',
+            data_cancel_date: link.getAttribute('data-cancel-date')||''
+          });
+        }
+        return { onLogin, total_groups: groups.length, cancelled: out };
+      });
+      // Session-expiry guard (spec §5): no history groups AND a login form => STOP the run,
+      // do NOT count these locations as done. A distinctive error so the operator re-auths.
+      if(scan.total_groups===0 && scan.onLogin){
+        throw new Error('__FIELDWORK_SESSION_EXPIRED__: hit the Fieldwork login screen — session expired. Log back in and resume; the remaining locations were NOT scraped.');
+      }
+      let src=''; try{ src=page.url(); }catch(e){}
+      const recs = scan.cancelled.map(c => Object.assign({
+        __k:'fieldwork', account_number:acct, location_number:loc, source_url:src
+      }, c));
+      // per-location log record (always) — groups_found / cancellations_found / status.
+      recs.push({ __k:'fieldwork-log', account_number:acct, location_number:loc,
+        groups_found:scan.total_groups, cancellations_found:scan.cancelled.length,
+        status:(scan.total_groups>0?'scraped':'scraped-empty'), source_url:src });
+      row.__scrape=recs;
+      row.__scrapeKind='fieldwork-cancellations';
+      break;
+    }
     // v2.2.2 Session 2B: textedit ported from buildRunner. Multi-mode in-place text manipulation
     // on the field at step.selector. Reads current value, transforms per editMode, writes back.
     // editModes: find-replace / exact-remove / partial-remove-word / partial-remove-piece /

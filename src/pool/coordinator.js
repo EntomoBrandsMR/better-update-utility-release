@@ -535,8 +535,14 @@ function coordHandleWorkerMessage(workerId, msg){
       // still runs either way, so unchecking it is a dry run. Read once per job and cached.
       if(job && Array.isArray(msg.scrape)){
         if(job.scrapeCsvEnabled===undefined){ try{ const c=readConfig(); job.scrapeCsvEnabled = !(c && c.scrapeCsvEnabled===false); }catch(e){ job.scrapeCsvEnabled=true; } }
-        if(msg.scrape.length){ if(job.scrapeCsvEnabled) coordAppendScrape(job, msg.scrape); }
-        else console.warn('[coord] Frankware scrape: row '+msg.row+' returned 0 orders');
+        // 3.1.0: scrapeKind routes to the right column writer. Fieldwork always emits at
+        // least the per-location log record, so an "empty" scrape still writes; Frankware
+        // keeps its prior "0 orders = note only" behavior.
+        if(msg.scrapeKind === 'fieldwork-cancellations'){
+          if(job.scrapeCsvEnabled) coordAppendFieldwork(job, msg.scrape);
+        } else if(msg.scrape.length){
+          if(job.scrapeCsvEnabled) coordAppendScrape(job, msg.scrape);
+        } else console.warn('[coord] Frankware scrape: row '+msg.row+' returned 0 orders');
       }
       break;
     }
@@ -728,6 +734,48 @@ function coordAppendScrape(job, rows){
     }
     if(out) fs.appendFileSync(job.scrapeCsvPath, out, 'utf8');
   }catch(e){ console.error('[coord] Frankware scrape CSV append failed for job', job && job.label, e.message); }
+}
+
+// 3.1.0: Fieldwork cancellation scrape -> stream to two CSVs in the run's results\ folder.
+// Records tagged __k==='fieldwork-log' go to the per-location LOG csv (one line per visited
+// location, incl. zero-found); all other records are cancellations -> the CANCELLATIONS csv,
+// deduped on data_id. Both crash-safe (append as results arrive). Input sheet never touched.
+function coordAppendFieldwork(job, rows){
+  if(!job || !Array.isArray(rows) || !rows.length) return;
+  try{
+    if(!job.fwScrapePaths){
+      const RESULTS_DIR = path.join(path.dirname(job.spreadsheetPath || process.cwd()), 'results');
+      try{ fs.mkdirSync(RESULTS_DIR, { recursive:true }); }catch(e){}
+      const now = new Date();
+      const mm = String(now.getMonth()+1).padStart(2,'0'), dd = String(now.getDate()).padStart(2,'0'), yyyy = now.getFullYear();
+      const hh = String(now.getHours()).padStart(2,'0'), mi = String(now.getMinutes()).padStart(2,'0');
+      const safeFlow = String(job.label || 'flow').replace(/[\\/:*?"<>|]/g,'_').replace(/\.xlsx?$/i,'').slice(0,60);
+      const base = `${mm}${dd}${yyyy}_${hh}${mi}_${safeFlow}`;
+      job.fwScrapePaths = { data: path.join(RESULTS_DIR, base+'_fieldwork-cancellations.csv'),
+                            log:  path.join(RESULTS_DIR, base+'_fieldwork-scrapelog.csv') };
+      job.fwSeen = new Set(); job.fwCount = 0; job.fwDupes = 0; job.fwLogCount = 0;
+    }
+    const esc = v => { const s = (v==null ? '' : String(v)); return /[",\n\r]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    const DATA_COLS = ['account_number','location_number','service_type','frequency','status','reason','technician','cancel_date','cancelled_at','amount','data_id','data_reason','data_cancel_date','source_url'];
+    const LOG_COLS  = ['account_number','location_number','groups_found','cancellations_found','status','source_url'];
+    let dataOut = '', logOut = '';
+    if(!fs.existsSync(job.fwScrapePaths.data)) dataOut += DATA_COLS.join(',') + '\r\n';
+    if(!fs.existsSync(job.fwScrapePaths.log))  logOut  += LOG_COLS.join(',') + '\r\n';
+    for(const o of rows){
+      if(o.__k === 'fieldwork-log'){
+        logOut += LOG_COLS.map(c => esc(o[c])).join(',') + '\r\n';
+        job.fwLogCount++;
+        continue;
+      }
+      const key = o.data_id || '';
+      if(key && job.fwSeen.has(key)){ job.fwDupes++; console.warn('[coord] Fieldwork scrape: duplicate skipped data_id='+key); continue; }
+      if(key) job.fwSeen.add(key);
+      dataOut += DATA_COLS.map(c => esc(o[c])).join(',') + '\r\n';
+      job.fwCount++;
+    }
+    if(dataOut) fs.appendFileSync(job.fwScrapePaths.data, dataOut, 'utf8');
+    if(logOut)  fs.appendFileSync(job.fwScrapePaths.log,  logOut,  'utf8');
+  }catch(e){ console.error('[coord] Fieldwork scrape CSV append failed for job', job && job.label, e.message); }
 }
 
 // v1.3.4 Phase 3: license-aware cap. Launches a headless browser with the given profile,
@@ -1080,5 +1128,5 @@ async function coordRunOnceFlows(phase){
 
 // ── AUTO UPDATE ───────────────────────────────────────────────────────────────
 
-return { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows, coordEvalScale, coordSaveLastGoodW, coordPrepareLaunch };
+return { COORD, coordJournalPath, coordJournalMetaPath, coordOpenJournal, coordMarkPhaseProgress, coordJournalAppend, coordJournalAppendDialog, coordCloseJournal, coordJournalDonePath, coordMarkJournalDone, coordFindOrphanPools, coordNextBatch, coordAllDrained, coordEmitStatus, coordPickJobForWorker, coordSpawnWorker, coordHandleWorkerMessage, coordCheckComplete, coordWriteReadResults, coordAppendScrape, coordAppendFieldwork, coordRunLogoutSweep, coordMostRecentJournalPoolId, coordScaleTo, coordLicenseScale, coordRunOnceFlow, coordRunOnceFlows, coordEvalScale, coordSaveLastGoodW, coordPrepareLaunch };
 };

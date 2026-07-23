@@ -708,6 +708,7 @@ async function main(){
       // v2.2.3 Session 3A (A3): also pass captured dialogs through to the coordinator/renderer.
       emit({type:'row-result', row:rowNum, status:res.status, error:res.error||'', durationMs:Date.now()-t0, reads: row.__reads||null,
         scrape: row.__scrape||null,
+        scrapeKind: row.__scrapeKind||null, // 3.1.0: fieldwork vs frankware output columns
         errorCategory: res.errorCategory || '', phase: res.phase || '',
         dialogs: row.__dialogs || null});
       // Phase 3 CRASH SAFETY: the emit above went nowhere if the coordinator is dead.

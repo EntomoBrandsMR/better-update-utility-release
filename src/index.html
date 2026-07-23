@@ -891,6 +891,7 @@ textarea { resize: vertical; min-height: 60px; }
       <button class="add-opt" onclick="addStep('readfield')">Read field → column</button>
       <button class="add-opt" onclick="addStep('fileupload')">Upload file</button>
       <button class="add-opt" id="addOptFwScrape" onclick="addStep('fw-scrape-orders')" style="display:none">Frankware: scrape orders → CSV</button>
+      <button class="add-opt" id="addOptFieldworkScrape" onclick="addStep('fieldwork-cancel-scrape')" style="display:none">Fieldwork: scrape cancellations → CSV</button>
     </div>
     <div class="infobox">
       <strong>Login and logout are handled automatically</strong> — locked steps at the top and bottom handle PestPac authentication. Add a <strong>Navigate</strong> step using <span class="tok">{{URL}}</span> then add your field steps.
@@ -1476,6 +1477,9 @@ const SM = {
   'fw-scrape-orders': { label:'Frankware orders → CSV', badge:'bd-asr', desc: s => {
     return 'Scrape Frankware orders → CSV · ' + (s.url ? s.url : '(no URL set)');
   }},
+  'fieldwork-cancel-scrape': { label:'Fieldwork cancellations → CSV', badge:'bd-asr', desc: s => {
+    return 'Scrape Fieldwork cancellations → CSV · ' + (s.url ? s.url : '(no URL set)');
+  }},
 };
 
 function renderSteps() {
@@ -1868,6 +1872,11 @@ function bodyHTML(s) {
     + '<div class="row">' + valField(s.id,'locCol',s.locCol||'','{{Location Code}}','PP Location Code — drag the column chip here') + '</div>'
     + '<div class="row">' + valField(s.id,'invCol',s.invCol||'','{{Invoice #}}','PP Invoice # — drag the column chip here') + '</div>'
     + '<div class="infobox" style="margin-top:8px"><strong>Frankware only.</strong> Scrapes every order across all pages — one CSV row per order, balance keeps its sign (negative = owed). Output is a CSV in the run\'s <strong>results</strong> folder, deduped on property&nbsp;+&nbsp;order id.</div>';
+  if(s.type==='fieldwork-cancel-scrape') return tokenBar(s.id,'url')
+    + '<div class="row">' + valField(s.id,'url',s.url||'','https://app.fieldworkhq.com/customers/{{account_number}}/service_locations/{{location_number}}#tab=history','Service-history URL — use the {{account_number}} and {{location_number}} column tokens') + '</div>'
+    + '<div class="row">' + valField(s.id,'acctCol',s.acctCol||'','{{account_number}}','account_number — drag the column chip here (stamped onto each output row)') + '</div>'
+    + '<div class="row">' + valField(s.id,'locCol',s.locCol||'','{{location_number}}','location_number — drag the column chip here') + '</div>'
+    + '<div class="infobox" style="margin-top:8px"><strong>Fieldwork only.</strong> Reads the Service History tab and emits <strong>one CSV row per CANCELLED service</strong> (keyed off the cancellation edit-link; active/invoiced services are ignored). A location may yield 0, 1, or several rows. Output is a CSV in the run\'s <strong>results</strong> folder, deduped on the cancellation\'s data-id. A per-location log row is written even when nothing is found, so "scraped, none" is distinct from "not scraped". If a page shows the login screen the run STOPS (expired session) rather than burning the list.</div>';
   return '';
 }
 
@@ -1980,6 +1989,12 @@ function runValidation() {
       if(!(s.propCol||'').trim()){issues.push({t:'err',msg:'Set the Property # column (used to stamp rows and dedupe the CSV).'});errs++;}
       if(!(s.locCol||'').trim()){issues.push({t:'warn',msg:'No PP Location Code column set — that output column will be blank.'});warns++;}
       if(!(s.invCol||'').trim()){issues.push({t:'warn',msg:'No PP Invoice # column set — that output column will be blank.'});warns++;}
+    }
+    if(s.type==='fieldwork-cancel-scrape'){
+      if(!(s.url||'').trim()){issues.push({t:'err',msg:'No service-history URL set.'});errs++;}
+      else if(!/{{[^}]+}}/.test(s.url)){issues.push({t:'warn',msg:'History URL has no {{column}} token — every row would scrape the same location.'});warns++;}
+      if(!(s.acctCol||'').trim()){issues.push({t:'warn',msg:'No account_number column set — that output column will be blank.'});warns++;}
+      if(!(s.locCol||'').trim()){issues.push({t:'warn',msg:'No location_number column set — that output column will be blank.'});warns++;}
     }
     // v2.2.0: read-field token ORDERING backstop. A {{token}} that matches a read-field column
     // name is only valid if that read step is positioned BEFORE this step. Catch hand-typed
