@@ -1047,3 +1047,32 @@ FIX (3.1.1):
 DO NOT auto-delete his flows. The 3.1.0 FEATURE is unaffected (Fieldwork is new).
 ALSO: the tracked flows-bundle/ in git now carries the dupes too — after fix (a),
 regenerate + re-commit a clean bundle.
+=============================================================================
+BUG (2026-07-23, Matthew) — in-app update DOWNLOADS but the installer never runs.
+=============================================================================
+Update bar showed, hit Install, progress bar filled, BUU closed — but did NOT
+update or launch the installer. Still on 3.0.7 afterward.
+FORENSICS (main rig):
+ - installed = 3.0.7 (target was 3.1.0). update FAILED at the LAUNCH step, not
+   download.
+ - install-update DID run: userData\update-backup written 8:36:52 (the 3.0.6+
+   pre-update backup fired), then buu-update.exe fully downloaded 8:37:02
+   (217,451,425 bytes = complete, matches the release). BUU quit (0 procs).
+ - So: backup OK, download OK, then shell.openPath(tmp)+app.quit() ran but the
+   installer never elevated/installed.
+SUSPECTS (in order):
+ 1. shell.openPath(tmp) return value is IGNORED — it returns a non-empty error
+    STRING on failure (never throws). If Windows refused to open the exe (assoc,
+    AV lock, policy) we would never know. FIX: check the return; if non-empty,
+    surface it and do NOT quit (leave BUU up with a "run this file" path).
+ 2. Unsigned installer + SmartScreen/UAC: a brand-new unsigned exe can be blocked
+    with the elevation/SmartScreen prompt appearing AFTER BUU already quit, or the
+    prompt dismissed. forceCodeSigning is off (build), so this is plausible.
+ 3. 2s app.quit() race after openPath — if the shell had not yet spawned the
+    detached installer, quitting could orphan it. Increase delay or wait for spawn.
+FIX SHAPE (later): capture openPath error + keep BUU alive on failure with a
+clickable path; consider ShellExecute "runas" for the installer; lengthen the quit
+delay. RELATED backlog: the ECONNRESET-era update-check issues + this launch issue
+are the whole updater hardening pass.
+IMMEDIATE UNBLOCK for Matthew: the complete installer is already at
+%APPDATA%\buu-2\updates\buu-update.exe — double-click it to install 3.1.0 now.
