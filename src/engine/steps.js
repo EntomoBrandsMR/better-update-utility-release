@@ -209,19 +209,40 @@ async function runStep(page, step, row, creds){
       const url  = r(step.url); if(!url) throw new Error('Fieldwork scrape: history URL is empty');
       await page.goto(url,{waitUntil:'domcontentloaded',timeout:NAV_TIMEOUT});
       // give the server-rendered history nodes a beat to be present (they load with the page).
-      try{ await page.waitForSelector('div.service-history-group, #email, #sign-in-password',{timeout:15000}); }catch(e){}
+      try{ await page.waitForSelector('a.edit_cancellation_details, .panel-heading, #email, #sign-in-password',{timeout:15000}); }catch(e){}
       const scan = await page.evaluate(() => {
         const onLogin = !!document.querySelector('#sign-in-password, #email') || /\/sign_in\b/i.test(location.pathname);
-        const groups = [...document.querySelectorAll('div.service-history-group')];
+        // 3.1.1: KEY OFF THE LINK, not a wrapper. Fieldwork renders cancellations in
+        // more than one container (div.service-history-group OR div.tab-content, ...),
+        // so the old "scan inside div.service-history-group" missed every cancellation
+        // outside that wrapper (54% of Matthew's real run). a.edit_cancellation_details
+        // is present on EVERY cancellation regardless of container — find them all, then
+        // derive service_type/frequency/row by DOM proximity from each link.
+        const panelCount = document.querySelectorAll('.panel-heading').length; // service blocks present
+        const links = [...document.querySelectorAll('a.edit_cancellation_details')];
         const out = [];
-        for (const g of groups) {
-          const link = g.querySelector('a.edit_cancellation_details');
-          if (!link) continue;
+        for (const link of links) {
           const tr = link.closest('tr');
           const td = tr ? [...tr.querySelectorAll('td')].map(x => (x.textContent||'').trim().replace(/\s+/g,' ')) : [];
+          const table = link.closest('table');
+          let frequency = '';
+          if (table) { const th = table.querySelector('thead th[colspan]'); if (th) frequency = (th.textContent||'').trim().replace(/\s+/g,' '); }
+          // service_type = nearest .panel-heading preceding this service's table (walk up+left).
+          let service_type = '';
+          let node = table || link;
+          while (node && !service_type) {
+            let sib = node.previousElementSibling;
+            while (sib) {
+              if (sib.classList && sib.classList.contains('panel-heading')) { service_type = (sib.textContent||'').trim().replace(/\s+/g,' '); break; }
+              const inner = sib.querySelector && sib.querySelector('.panel-heading');
+              if (inner) { service_type = (inner.textContent||'').trim().replace(/\s+/g,' '); break; }
+              sib = sib.previousElementSibling;
+            }
+            node = node.parentElement;
+          }
           out.push({
-            service_type: ((g.querySelector('.panel-heading')||{}).textContent||'').trim(),
-            frequency:    ((g.querySelector('thead th[colspan]')||{}).textContent||'').trim(),
+            service_type: service_type,
+            frequency:    frequency,
             status: td[0]||'', reason: td[1]||'', technician: td[2]||'',
             cancel_date: td[3]||'', cancelled_at: td[4]||'', amount: td[5]||'',
             data_id:          link.getAttribute('data-id')||'',
@@ -229,7 +250,9 @@ async function runStep(page, step, row, creds){
             data_cancel_date: link.getAttribute('data-cancel-date')||''
           });
         }
-        return { onLogin, total_groups: groups.length, cancelled: out };
+        // total_groups now = service blocks on the page (panel-headings), used only to
+        // tell "scraped, none" from "empty page" in the log; cancellations = out.length.
+        return { onLogin, total_groups: panelCount, cancelled: out };
       });
       // Session-expiry guard (spec §5): no history groups AND a login form => STOP the run,
       // do NOT count these locations as done. A distinctive error so the operator re-auths.
