@@ -1136,3 +1136,10 @@ FIX:
     append; xlsx would need an end-of-run single write). Matthew floated XLSX-for-size.
  3. Until fixed: label is also wrong ("Frankware" — it gates Fieldwork too).
 INTERIM: user must CHECK "Write Frankware scrape to CSV" for any scrape run to save.
+CORRECTION (Matthew, 2026-07-23) — the scrape output toggle is a FORMAT choice:
+CSV vs XLSX, chosen for FILE SIZE (big scrape -> CSV, smaller -> XLSX). It ALWAYS
+writes. It is NOT a write-on/off / dry-run switch. That is the intended design;
+build it that way. The current write-yes/no behavior (scrapeCsvEnabled gating the
+write) is the bug — replace with the format picker, output always produced. Applies
+to BOTH scrape steps (Frankware orders + Fieldwork cancellations); label must not
+say "Frankware".
