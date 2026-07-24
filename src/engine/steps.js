@@ -208,8 +208,33 @@ async function runStep(page, step, row, creds){
       const loc  = stampVal(step.locCol);
       const url  = r(step.url); if(!url) throw new Error('Fieldwork scrape: history URL is empty');
       await page.goto(url,{waitUntil:'domcontentloaded',timeout:NAV_TIMEOUT});
-      // give the server-rendered history nodes a beat to be present (they load with the page).
-      try{ await page.waitForSelector('a.edit_cancellation_details, .panel-heading, #email, #sign-in-password',{timeout:15000}); }catch(e){}
+      // 3.1.3 FIX: cancellations are AJAX-loaded into div.agreement-container AFTER the
+      // server HTML renders. The prior wait keyed on .panel-heading (server-rendered) and
+      // resolved instantly -> we scanned an EMPTY container and missed live cancellations
+      // (1264/1289 locations). Now poll until the agreement AJAX has actually settled:
+      //   populated -> stop once the cancellation-link count stabilizes or the net goes idle
+      //   empty      -> stop once the net goes idle (or a 7s floor) with service panels present
+      //   login page -> break fast; the session-expiry guard below handles it
+      // Bounded at 20s hard cap so a hung location can't stall the whole run.
+      try{
+        const HARD_MS=20000, start=Date.now();
+        let netIdle=false;
+        page.waitForLoadState('networkidle',{timeout:HARD_MS}).then(()=>{netIdle=true;}).catch(()=>{});
+        let lastCount=-1, stableSince=Date.now();
+        while(Date.now()-start<HARD_MS){
+          const s=await page.evaluate(()=>({
+            login:!!document.querySelector('#sign-in-password, #email'),
+            links:document.querySelectorAll('a.edit_cancellation_details').length,
+            panels:document.querySelectorAll('.panel-heading').length
+          }));
+          if(s.login) break;                                            // login screen
+          if(s.links!==lastCount){ lastCount=s.links; stableSince=Date.now(); }
+          const stableMs=Date.now()-stableSince, elapsed=Date.now()-start;
+          if(s.links>0 && (netIdle || stableMs>=1200)) break;           // cancels loaded & settled
+          if(s.links===0 && s.panels>0 && (netIdle || elapsed>=7000)) break; // loaded, none found
+          await page.waitForTimeout(250);
+        }
+      }catch(e){}
       const scan = await page.evaluate(() => {
         const onLogin = !!document.querySelector('#sign-in-password, #email') || /\/sign_in\b/i.test(location.pathname);
         // 3.1.1: KEY OFF THE LINK, not a wrapper. Fieldwork renders cancellations in

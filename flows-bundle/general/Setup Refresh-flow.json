@@ -1,0 +1,59 @@
+{
+  "version": "1.1",
+  "name": "Setup Refresh-flow",
+  "runMode": "per-row",
+  "automation": false,
+  "poolSettings": {
+    "maxWorkers": 20,
+    "startWorkers": 5,
+    "hwSlider": 4,
+    "ppSlider": 4,
+    "evalMin": 2,
+    "elastic": true,
+    "diag": true,
+    "diagCap": 10,
+    "startMode": "step"
+  },
+  "setupFlowId": null,
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 1,
+      "type": "navigate",
+      "url": "{{URL}}",
+      "waitAfter": "load",
+      "open": false
+    },
+    {
+      "id": 2,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "after": "element",
+      "selector": "button[name=\"butEdit\"]",
+      "afterSelector": "button[name=\"butSaveTop\"]"
+    },
+    {
+      "id": 3,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "after": "element",
+      "selector": "button[name=\"butSaveTop\"]",
+      "afterSelector": "button[name=\"butHistoryShow\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "skip",
+    "selectorTimeout": "45",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "0",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}

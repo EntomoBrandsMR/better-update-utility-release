@@ -1,0 +1,81 @@
+{
+  "version": "1.1",
+  "name": "Add Salesperson in Autofill Table-flow",
+  "runMode": "per-row",
+  "setupFlowId": null,
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 2,
+      "type": "navigate",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "url": "https://app.pestpac.com/lookup/TechnicianAutoFill/"
+    },
+    {
+      "id": 8,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butAddAutoFill\"]",
+      "waitFor": "button[name=\"butAdd\"]"
+    },
+    {
+      "id": 9,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Zip\"]",
+      "value": "{{Zip Code}}"
+    },
+    {
+      "id": 10,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Class\"]",
+      "value": "LEAD"
+    },
+    {
+      "id": 5,
+      "type": "type",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "input[name=\"Tech1\"]",
+      "value": "{{PMC Username}}"
+    },
+    {
+      "id": 6,
+      "type": "dialog",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed"
+    },
+    {
+      "id": 7,
+      "type": "click",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "selector": "button[name=\"butAdd\"]",
+      "waitFor": "button[name=\"butAddAutoFill\"]"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "skip",
+    "selectorTimeout": "30",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "0",
+    "breakerThreshold": "20",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}
