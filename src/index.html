@@ -922,10 +922,10 @@ textarea { resize: vertical; min-height: 60px; }
         </select>
         <div class="hint">Retry: try again per retry count, then skip. Skip: log and continue immediately.</div>
       </div>
-      <div class="fg" id="scrapeCsvFg">
-        <label style="cursor:pointer;display:flex;align-items:center;gap:8px"><input type="checkbox" id="scrapeCsvChk" checked onchange="if(API.setConfig)API.setConfig({scrapeCsvEnabled:this.checked})" style="width:16px;height:16px;cursor:pointer"/>Write Frankware scrape to CSV</label>
-        <div class="hint">Frankware order-scrape runs write one deduped CSV to the run's results folder. Uncheck for a dry run (scrapes but writes no file). Setting persists across runs.</div>
-      </div>
+      <!-- 3.1.2: removed the "Write scrape to CSV" checkbox. Scrape steps ALWAYS write
+           their output now (a write on/off toggle was a footgun on a step whose whole
+           purpose is the file). Output goes to the run's results\ folder, deduped. -->
+
       <div class="fg">
         <label>Selector timeout (seconds)</label>
         <input type="number" id="selectorTimeout" value="30" min="1" max="60" step="1"/>

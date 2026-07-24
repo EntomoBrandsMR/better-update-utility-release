@@ -529,19 +529,17 @@ function coordHandleWorkerMessage(workerId, msg){
         for(const cn of Object.keys(msg.reads)){ if(!job.readColumns.includes(cn)) job.readColumns.push(cn); }
         job.readResults.push({ row: msg.row, reads: msg.reads });
       }
-      // v2.2.7: Frankware order scrape -> stream to the run CSV as results arrive (crash-safe).
-      // An empty array means the scrape step ran but the account had no orders -> note it.
-      // The persistent run-setting "scrapeCsvEnabled" (config) gates the WRITE only — the scrape
-      // still runs either way, so unchecking it is a dry run. Read once per job and cached.
+      // Scrape -> stream to the run CSV as results arrive (crash-safe append).
+      // 3.1.2: ALWAYS WRITE. The old scrapeCsvEnabled "dry run" gate was a footgun on a
+      // step whose only purpose IS the output (Matthew, 2026-07-23: it silently turned a
+      // 2241-location Fieldwork scrape into no file). The write is unconditional now;
+      // scrapeKind only routes to the right column writer. Fieldwork always emits at least
+      // the per-location log record so 0-cancellation locations are still recorded.
       if(job && Array.isArray(msg.scrape)){
-        if(job.scrapeCsvEnabled===undefined){ try{ const c=readConfig(); job.scrapeCsvEnabled = !(c && c.scrapeCsvEnabled===false); }catch(e){ job.scrapeCsvEnabled=true; } }
-        // 3.1.0: scrapeKind routes to the right column writer. Fieldwork always emits at
-        // least the per-location log record, so an "empty" scrape still writes; Frankware
-        // keeps its prior "0 orders = note only" behavior.
         if(msg.scrapeKind === 'fieldwork-cancellations'){
-          if(job.scrapeCsvEnabled) coordAppendFieldwork(job, msg.scrape);
+          coordAppendFieldwork(job, msg.scrape);
         } else if(msg.scrape.length){
-          if(job.scrapeCsvEnabled) coordAppendScrape(job, msg.scrape);
+          coordAppendScrape(job, msg.scrape);
         } else console.warn('[coord] Frankware scrape: row '+msg.row+' returned 0 orders');
       }
       break;
