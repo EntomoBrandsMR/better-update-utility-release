@@ -1,5 +1,5 @@
 {
-    "version": "3.1.1",
-    "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.1.1/BUU-2.0-Setup-3.1.1.exe",
-    "notes": "BUU v3.1.1 - Fieldwork scraper now catches ALL cancellations. v3.1.0 missed cancellations Fieldwork renders outside the service-history panel (~half). Now finds every cancellation on the page regardless of container. Re-run your list (or just the empty locations) to pick up the missed ones."
+    "version": "3.1.2",
+    "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.1.2/BUU-2.0-Setup-3.1.2.exe",
+    "notes": "BUU v3.1.2 - scrape output is always written. Removed the old 'Write scrape to CSV' checkbox: a scrape step now always writes its results to the run's results folder, so a run can no longer silently produce no file. Combined with 3.1.1 (catches all cancellation layouts), re-run your list to capture everything."
 }
