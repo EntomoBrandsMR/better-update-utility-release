@@ -390,7 +390,7 @@ ipcMain.handle('get-worker-caps', async () => {
 const LOGIN_TO_PESTPAC_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'login.js'), 'utf8');
 const LOCATE_STACK_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'locate.js'), 'utf8');
 const STEPS_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'steps.js'), 'utf8');
-const { loginToPestPac: loginToPestPacInPage } = require('./engine/login');
+const { loginToPestPac: loginToPestPacInPage, logoutFromPestPac: logoutFromPestPacInPage, logoutFrom: logoutFromInPage } = require('./engine/login');
 
 // ════════════════════════════════════════════════════════════════════════════
 // v2.2.2 (Session 2A) — SHARED RUNTIME HELPERS (drift-proof, template-interpolated)
@@ -520,20 +520,11 @@ const CLASSIFY_PHASE_FN_SRC = `function classifyPhase(errMsg){
 // The License Manager exposes logout as a plain link href="/default.asp?Mode=Logout", so the
 // most reliable logout is to navigate there directly (no fragile click), then verify we land
 // back on the login page. Best-effort + verified; never throws (callers still close the browser).
+// v3.x: delegates to the ONE canonical verified logout (engine/login.js). Kept as a named
+// alias so the ctx.licenseReaderLogout wiring into the coordinator stays intact. Returns a
+// boolean (was the seat confirmed freed?) for the existing callers.
 async function licenseReaderLogout(page){
-  try{
-    await page.goto('https://app.pestpac.com/default.asp?Mode=Logout',{waitUntil:'load',timeout:15000});
-    // Confirm: a logged-out session lands on login (input[name="uid"]) or the login host.
-    let out=false;
-    try{ out = /login\.pestpac\.com/i.test(page.url()) || !!(await page.$('input[name="uid"]')); }catch(_){}
-    if(!out){
-      // Fallback: use the user-widget logout link in the masthead.
-      try{ await page.click('a.logout',{timeout:5000}); await page.waitForTimeout(1200); }catch(_){}
-      try{ await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'domcontentloaded',timeout:12000}); }catch(_){}
-      try{ out = /login\.pestpac\.com/i.test(page.url()) || !!(await page.$('input[name="uid"]')); }catch(_){}
-    }
-    return out;
-  }catch(e){ return false; }
+  try{ const r = await logoutFromPestPacInPage(page); return !!(r && r.ok); }catch(e){ return false; }
 }
 
 // v1.3.4 Phase 3: license-aware cap. Launches a headless browser with the given profile,
@@ -681,7 +672,7 @@ ipcMain.handle('pool-start', async (_, { workerCount, startWorkers, maxWorkers, 
   // v2.1.1 (#8): setup/teardown scope. 'per-worker' (default) keeps the proven behavior where
   // each worker runs the once-flows for its own session. 'per-job' / 'global' run them ONCE,
   // executed by the coordinator via a dedicated headless session, with workers skipping them.
-  COORD.setupScope = (setupScope === 'per-job' || setupScope === 'global') ? setupScope : 'per-worker';
+  COORD.setupScope = (setupScope === 'per-worker' || setupScope === 'global') ? setupScope : 'per-job'; // 3.x: default per-job (run setup/teardown once), per-worker only if explicitly chosen
   // v2.2.2 Session 2C: startMode replaces the single-runner's start-mode dropdown. Step modes
   // FORCE workers=1 and batchSize=1 regardless of configured target — the configured target
   // is remembered in startModeTarget and restored when the user clicks Run-All mid-step
@@ -986,7 +977,7 @@ ipcMain.handle('pool-resume', async (_, { poolId, workerCount, startWorkers, max
   for (const job of COORD.jobs.values()){ job.done = job.completedRows.size; }
 
   // v2.2.2 Session 2F: restore pool-level configuration from meta (defaults preserve old behavior).
-  COORD.setupScope = meta.setupScope || 'per-worker';
+  COORD.setupScope = meta.setupScope || 'per-job'; // 3.x default per-job
   COORD.startMode = meta.startMode || 'run-all';
   COORD.startModeTarget = meta.startModeTarget || { workers: 1 };
   // v2.2.3 Session 3C (A1): restore diagnostic-capture config from meta. Default ON if missing
@@ -1204,16 +1195,9 @@ async function main(){
     if(result.after===0) break;
     await page.waitForTimeout(2000);
   }
-  // Log THIS sweeper's own session out too, so it doesn't leave a license consumed.
+  // Log THIS sweeper's own session out too (canonical verified logout, engine/login.js).
   let _selfOut=false;
-  try{
-    await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});
-    await page.waitForSelector('div.select',{timeout:10000}); await page.click('div.select');
-    await page.waitForSelector('a.logout',{timeout:5000}); await page.click('a.logout');
-    await page.waitForTimeout(1500);
-    await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'domcontentloaded',timeout:15000});
-    _selfOut = /login\\.pestpac\\.com/i.test(page.url()) || !!(await page.$('input[name="uid"]'));
-  }catch(e){}
+  try{ const _r = await logoutFromPestPac(page); _selfOut = !!(_r && _r.ok); }catch(e){}
   emit({type:'sweep-done', remaining:result.after, loggedOut:result.loggedOut, selfLoggedOut:_selfOut});
   try{ await browser.close(); }catch(e){}
   process.exit(result.after===0 ? 0 : 2);
@@ -1268,18 +1252,9 @@ async function main(){
   let _ok=true, _err='';
   for(let i=0;i<ONCE_STEPS.length;i++){ try{ await runStep(page,ONCE_STEPS[i],creds); }catch(e){ _ok=false; _err='step '+(i+1)+': '+e.message; break; } }
   emit({type:'once-steps-done', ok:_ok, error:_err, phase:RUN_CONTEXT.phase});
-  // Verified logout (mirror of the worker): attempt -> probe login page -> retry within budget.
-  let _out=false; const _deadline=Date.now()+90000;
-  while(!_out && Date.now()<_deadline){
-    try{
-      await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'load',timeout:15000});
-      await page.waitForSelector('div.select',{timeout:10000}); await page.click('div.select');
-      await page.waitForSelector('a.logout',{timeout:5000}); await page.click('a.logout');
-      await page.waitForTimeout(1500);
-    }catch(e){}
-    try{ await page.goto('https://app.pestpac.com/search/default.asp',{waitUntil:'domcontentloaded',timeout:15000}); _out = /login\\.pestpac\\.com/i.test(page.url()) || !!(await page.$('input[name="uid"]')); }catch(e){ _out=false; }
-    if(_out) break; await page.waitForTimeout(2000).catch(()=>{});
-  }
+  // Verified logout via the ONE canonical routine (engine/login.js), platform-aware.
+  let _out=false;
+  try{ const _r = await logoutFrom(page, creds); _out = !!(_r && _r.ok); }catch(e){ _out=false; }
   emit({type:'once-done', ok:_ok, loggedOut:_out, phase:RUN_CONTEXT.phase});
   try{ await browser.close(); }catch(e){}
   process.exit(_ok?0:2);
@@ -1431,7 +1406,27 @@ ipcMain.handle('install-update', async (_, { downloadUrl }) => {
     // v3.0.3: forceClosing MUST be set before quitting, or the R10 close gate blocks
     // the update restart. This one missing line made the in-app updater unusable.
     forceClosing = true;
-    shell.openPath(tmp);
+    // 3.x FIX: the installer launch was fire-and-forget. shell.openPath() returns an ERROR
+    // STRING (it does not throw) and that return was ignored, so a failed launch still let
+    // the app quit 2s later — leaving the user with the app closed and NO installer running
+    // (the "downloads but never installs" bug). Launch as a DETACHED child so the installer
+    // survives this app quitting, VERIFY it started, and only quit on a confirmed launch.
+    let launched = false, launchErr = '';
+    try {
+      const child = spawn(tmp, [], { detached: true, stdio: 'ignore' });
+      child.on('error', () => {}); // never let a spawn error bubble as an unhandled rejection
+      child.unref();
+      launched = true;
+    } catch (e) { launchErr = e.message; }
+    if (!launched) {
+      // Fallback to the shell association; openPath returns '' on success, else an error string.
+      const openErr = await shell.openPath(tmp);
+      if (openErr) { launchErr = openErr; } else { launched = true; }
+    }
+    if (!launched) {
+      forceClosing = false; // stand down — do NOT quit; the update did not start
+      return { ok: false, error: 'Downloaded, but could not launch the installer: ' + (launchErr || 'unknown') + '. It is saved at ' + tmp };
+    }
     setTimeout(() => app.quit(), 2000);
     return { ok: true };
   }
@@ -2018,6 +2013,13 @@ const __coordCtx = {
   readConfig,
   getBundledChromiumPath,
   licenseReaderLogout,
+  // 3.x CRITICAL: the coordinator's elastic license checker (coordLicenseScale) needs the
+  // canonical login. The v2.2.2 refactor moved login into engine/login.js but never passed it
+  // here, so coordLicenseScale threw "loginToPestPacInPage is not defined" on EVERY eval —
+  // the license cap silently never applied and the buffer was never enforced (the pool ran up
+  // to the hardware/max limit). Wiring it restores the license cap.
+  loginToPestPacInPage,
+  logoutFromInPage,
   resolveOnceFlowByName,
   buildPoolWorker,
   buildLogoutSweeper,

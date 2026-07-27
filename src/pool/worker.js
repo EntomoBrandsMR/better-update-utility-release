@@ -741,36 +741,18 @@ async function main(){
   emit({type:'shutting-down'});
   if(TEARDOWN_STEPS.length){ try{ await runOnceFlow(page,TEARDOWN_STEPS,creds); }catch(e){} }
   emit({type:'logging-out'});
-  // Phase 3 NEW LOGOUT — one URL (Mode=Logout), verify login page, 5s total budget,
-  // every URL touched is logged. Replaces the 4-step dance + 150s budget (KB item 34;
-  // the 28-stuck-sessions incident). Frankware has no Mode=Logout: single flow-step
-  // attempt with a 5s cap, then a URL probe.
+  // v3.x: ONE canonical, verified, platform-aware logout (engine/login.js). Replaces the
+  // per-platform inline branches (PestPac Mode=Logout, Fieldwork /log_out, Frankware step).
+  // Logout MUST free the seat, so the canonical routine PROVES it (loads an authed page and
+  // confirms the bounce to login) and we report the verified result. For Fieldwork/Frankware
+  // (operator logins, no shared seat) browser close below is still the final guarantee.
   let _loggedOut=false, _attempt=0;
-  if((creds.platform||'pestpac')==='fieldwork'){
-    // Fieldwork: no seat to free (operator's own login, one-time migration). The session
-    // ends when the browser closes below. Best-effort navigate to the sign-out URL so we
-    // land logged-out, but never block shutdown on it.
-    try{ await page.goto('https://app.fieldworkhq.com/log_out',{waitUntil:'domcontentloaded',timeout:5000}); }catch(e){} // logout href confirmed by Matthew 2026-07-17
-    _attempt=1;
-    let _u=''; try{ _u=page.url(); }catch(e){}
-    _loggedOut = /\/(sign_in|login)\b/i.test(_u) || true; // browser close is the guarantee
-    emit({type:'logout-attempt', attempt:1, ok:true, url:_u});
-  } else if((creds.platform||'pestpac')==='frankware'){
-    try{
-      await Promise.race([
-        runStep(page, LOGOUT_STEP, {}, creds),
-        new Promise((_,rej)=>setTimeout(()=>rej(new Error('logout step timeout')), 5000)),
-      ]);
-    }catch(e){}
-    _attempt=1;
-    let _u=''; try{ _u=page.url(); }catch(e){}
-    _loggedOut = /\/login/i.test(_u);
-    emit({type:'logout-attempt', attempt:1, ok:_loggedOut, url:_u});
-  } else {
-    const _r = await logoutFromPestPac(page);
-    _loggedOut=_r.ok; _attempt=_r.attempts;
-    for(let _i=0;_i<_r.urls.length;_i++){
-      emit({type:'logout-attempt', attempt:_i+1, ok:(_i===_r.urls.length-1)&&_r.ok, url:_r.urls[_i]});
+  {
+    const _r = await logoutFrom(page, creds);
+    _loggedOut = !!(_r && _r.ok); _attempt = (_r && _r.attempts) || 1;
+    const _urls = (_r && _r.urls && _r.urls.length) ? _r.urls : [''];
+    for(let _i=0;_i<_urls.length;_i++){
+      emit({type:'logout-attempt', attempt:_i+1, ok:(_i===_urls.length-1)&&_loggedOut, url:_urls[_i]});
     }
   }
   emit({type:'logged-out', ok:_loggedOut, attempts:_attempt});
