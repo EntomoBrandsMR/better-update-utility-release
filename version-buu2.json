@@ -1,5 +1,5 @@
 {
-    "version":  "3.1.4",
-    "downloadUrl":  "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.1.4/BUU-2.0-Setup-3.1.4.exe",
-    "notes":  "BUU v3.1.4 - PestPac session/license fixes. The elastic license check had been silently failing since the login rebuild (a wiring bug), so the free-license BUFFER was never enforced and the pool could consume every seat until no one could log in. This release fixes that: the license cap works again, the buffer is an absolute floor (the pool hard-stops rather than taking the last seats), every logout is now VERIFIED (proven on the server, retried) so sessions stop leaking, the license checker shows as its own counted card, and setup/teardown default to running once per job. Also: restored the sidebar Stop button and fixed the in-app updater so it reliably launches the installer. NOTE: significant change to license scaling - watch the first PestPac run."
+    "version":  "3.1.5",
+    "downloadUrl":  "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.1.5/BUU-2.0-Setup-3.1.5.exe",
+    "notes":  "BUU v3.1.5 - includes everything in 3.1.4 (PestPac license cap fixed, verified logout, buffer as an absolute floor, visible license-checker card, per-job setup default, restored Stop button, updater launch fix) PLUS: pool journals are never auto-deleted anymore. The startup orphan scan used to unlink the journal of any completed run that was not cleanly marked done - which silently erased run history. It now just marks the run done and KEEPS the journal + meta as the audit trail. NOTE: significant license-scaling change - watch the first PestPac run."
 }
