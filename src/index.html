@@ -2703,7 +2703,14 @@ function renderCoordStatus(st){
       if(st && st.active){
         const _lw = (st.liveWorkers!=null ? st.liveWorkers : (st.workers?st.workers.length:0));
         let _t=_lw+' live / target '+(st.desiredWorkers!=null?st.desiredWorkers:'?')+' (cap: '+(st.capReason||'manual')+')';
-        if(st.freeLicenses!=null) _t+='  |  '+st.freeLicenses+' free seats';
+        if(st.usedLicenses!=null || st.freeLicenses!=null){
+          let _lic='  |  licenses ';
+          if(st.usedLicenses!=null && st.totalLicenses!=null) _lic+=st.usedLicenses+'/'+st.totalLicenses+' in use';
+          else if(st.usedLicenses!=null) _lic+=st.usedLicenses+' in use';
+          else if(st.totalLicenses!=null) _lic+='of '+st.totalLicenses;
+          if(st.freeLicenses!=null) _lic+=', '+st.freeLicenses+' free';
+          _t+=_lic;
+        }
         if(st.liveSessions!=null && st.liveSessions!==_lw) _t+='  |  '+st.liveSessions+' sessions (incl. checker)';
         if(st.pressure!=null) _t+=' \u00b7 pressure '+st.pressure;
         if(st.licenseCap!=null) _t+=' \u00b7 lic cap '+st.licenseCap;

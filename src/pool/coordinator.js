@@ -65,6 +65,8 @@ const COORD = {
   licenseCap: Infinity,  // set by coordLicenseScale each eval when elastic is on
   licenseChecker: null,  // 3.x: { active, status } while the elastic license-reader session is logged in — COUNTED + shown as a card so it is never an invisible seat
   _lastFreeLicenses: null, // 3.x: last measured PestPac free-license count (for the readout)
+  _lastUsedLicenses: null,  // 3.x: last measured PestPac IN-USE license count
+  _lastTotalLicenses: null, // 3.x: last measured PestPac TOTAL license count
   // v3.0.3: _durBaseline/_durRolling/_pressureHigh DELETED. Scaling measures rows/min
   // (COORD._rowTimes / COORD._tp), never row latency. See TODO.md 3.0.3 for the data.
   pressure: null,
@@ -226,6 +228,8 @@ function _coordEmitStatusNow(){
     liveWorkers: COORD.workers.size,
     liveSessions: COORD.workers.size + _checkerLive,   // 3.x: total real PestPac sessions BUU holds (workers + checker)
     freeLicenses: COORD._lastFreeLicenses,
+    usedLicenses: COORD._lastUsedLicenses,   // 3.x: PestPac licenses currently IN USE
+    totalLicenses: COORD._lastTotalLicenses, // 3.x: PestPac total licenses
     licenseChecker: _checkerLive ? { status: COORD.licenseChecker.status } : null,
     jobs, workers,
   });
@@ -1053,13 +1057,24 @@ async function coordLicenseScale(profileId, buffer, hwCap){
       await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
       // v2.2.1: read the PestPac FREE value from the #div_PestPac panel with an EXACT label match
       // (avoids the old startsWith bug that could read used/total or a Mobile/RouteOp table).
-      const freeText = await page.evaluate(() => {
+      // 3.x: read all three PestPac numbers from the #div_PestPac panel — TOTAL, USED (in use),
+      // and FREE (available) — so the UI can show "in use / available / total", not just free.
+      const lic = await page.evaluate(() => {
         const scope = document.querySelector('#div_PestPac') || document;
         const tds = Array.from(scope.querySelectorAll('td'));
-        for (const td of tds) { const label=(td.textContent||'').trim().toLowerCase().replace(/\s+/g,' '); if (label==='number of free licenses:'||label==='number of free licenses') { const s = td.nextElementSibling; if (s) return (s.textContent||'').trim(); } }
-        return null;
+        const read = (labels) => { for (const td of tds){ const l=(td.textContent||'').trim().toLowerCase().replace(/\s+/g,' '); if(labels.indexOf(l)>=0){ const s=td.nextElementSibling; if(s) return (s.textContent||'').trim(); } } return null; };
+        return {
+          free:  read(['number of free licenses:','number of free licenses']),
+          used:  read(['number of used licenses:','number of used licenses']),
+          total: read(['number of licenses:','number of licenses']),
+        };
       });
-      const free = (freeText == null) ? NaN : parseInt(String(freeText).replace(/[^0-9]/g, ''));
+      const _num = (t) => { if (t == null) return NaN; const n = parseInt(String(t).replace(/[^0-9]/g,'')); return isNaN(n) ? NaN : n; };
+      const free  = _num(lic && lic.free);
+      const used  = _num(lic && lic.used);
+      const total = _num(lic && lic.total);
+      COORD._lastUsedLicenses  = isNaN(used)  ? null : used;
+      COORD._lastTotalLicenses = isNaN(total) ? null : total;
       if (!isNaN(free)) {
         COORD._lastFreeLicenses = free;
         // `free` is measured WHILE all our sessions (workers + THIS checker) are logged in, so
@@ -1069,7 +1084,7 @@ async function coordLicenseScale(profileId, buffer, hwCap){
         // for people and is never bypassed.
         const newTarget = COORD.workers.size + (free - BUF);
         COORD.licenseCap = newTarget;
-        if (ctx.mainWindow) _send('pool-license-update', { freeLicenses: free, buffer: BUF, newTarget: Math.max(0, newTarget), liveWorkers: COORD.workers.size });
+        if (ctx.mainWindow) _send('pool-license-update', { freeLicenses: free, usedLicenses: (isNaN(used)?null:used), totalLicenses: (isNaN(total)?null:total), buffer: BUF, newTarget: Math.max(0, newTarget), liveWorkers: COORD.workers.size });
       }
     } finally {
       // GUARANTEED verified logout — runs even if the read threw. THIS is the leak fix: the
