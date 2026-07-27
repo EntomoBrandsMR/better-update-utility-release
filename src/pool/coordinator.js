@@ -107,8 +107,11 @@ function coordFindOrphanPools(){
       });
       // Only surface pools that actually have remaining work.
       if(totalRemaining > 0) out.push({ poolId, startedAt: meta.startedAt, jobs, totalRemaining, inFlightRows: st.inFlight.map(x => x.r).sort((a,b)=>a-b).slice(0, 50) });
-      else { // fully done but never cleaned — remove the stale files
-        try{ fs.unlinkSync(jp); }catch{} try{ fs.unlinkSync(path.join(dir, f)); }catch{}
+      else { // 3.x: fully done but never marked. KEEP the journal + meta (they are the audit
+        // trail — Matthew: never auto-delete journals). Just write the .done marker so this run
+        // is not offered for resume or re-scanned. This replaces the old fs.unlinkSync that was
+        // silently erasing completed-run journals on the next startup.
+        try{ fs.writeFileSync(coordJournalDonePath(poolId), new Date().toISOString()); }catch(e){}
       }
     }catch(e){}
   }
