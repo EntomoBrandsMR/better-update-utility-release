@@ -19,7 +19,7 @@ function coordPidfileAdd(pid){ if(!pid) return; const p = coordPidfileRead(); if
 function coordPidfileRemove(pid){ if(!pid) return; coordPidfileWrite(coordPidfileRead().filter(x => x !== pid)); }
 
 module.exports = function wireCoordinator(ctx) {
-const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, getFlowsDir, encStore, readAllProfiles, readConfig, getBundledChromiumPath, licenseReaderLogout, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper, buildOnceFlowRunner } = ctx;
+const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, getFlowsDir, encStore, readAllProfiles, readConfig, getBundledChromiumPath, licenseReaderLogout, loginToPestPacInPage, logoutFromInPage, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper, buildOnceFlowRunner } = ctx;
 
 // ════════════════════════════════════════════════════════════════════════════
 // v2.0.0 — ELASTIC POOL COORDINATOR (main-process owned)
@@ -63,11 +63,13 @@ const COORD = {
   _tpBest: null,         // { w, t } best measured — this is what lands in the flow
   scaleMultiplier: 3,    // cores × this = comfortable hardware cap (advisory; amber past it)
   licenseCap: Infinity,  // set by coordLicenseScale each eval when elastic is on
+  licenseChecker: null,  // 3.x: { active, status } while the elastic license-reader session is logged in — COUNTED + shown as a card so it is never an invisible seat
+  _lastFreeLicenses: null, // 3.x: last measured PestPac free-license count (for the readout)
   // v3.0.3: _durBaseline/_durRolling/_pressureHigh DELETED. Scaling measures rows/min
   // (COORD._rowTimes / COORD._tp), never row latency. See TODO.md 3.0.3 for the data.
   pressure: null,
   capReason: 'manual',  // v2.1.1: guards against double-spawning the logout sweeper
-  setupScope: 'per-worker', // v2.1.1 (#8): 'per-worker' | 'per-job' | 'global'
+  setupScope: 'per-job', // 3.x: DEFAULT changed per-worker -> per-job so setup/teardown run ONCE per job (one batch opened/released), not once per worker. 'per-worker' | 'per-job' | 'global'
   startMode: 'run-all',     // v2.2.2 Session 2C: 'run-all' | 'step' | 'step-row'. Forces
                             // workers=1 batch=1 when 'step'/'step-row'. Transitions via
                             // pool-run-control(cmd:'run-all') unlock the configured worker count.
@@ -205,9 +207,23 @@ function _coordEmitStatusNow(){
     currentRow: w.currentRow,
     step: w.step, totalSteps: w.totalSteps, loggedOut: w.loggedOut, logoutAttempts: w.logoutAttempts||0,
   }));
+  // 3.x: the elastic license-checker is a REAL logged-in PestPac session (a consumed seat).
+  // Surface it as its own card and count it toward live sessions, so it is never an
+  // invisible/uncounted login. status carries an 'lc-' prefix the renderer labels distinctly.
+  const _checkerLive = (COORD.licenseChecker && COORD.licenseChecker.active) ? 1 : 0;
+  if (_checkerLive) {
+    workers.push({ workerId:'license-checker', kind:'license-checker', jobId:null,
+      status:'lc-'+(COORD.licenseChecker.status||'checking'), done:0, ok:0, err:0,
+      currentRow:null, step:null, totalSteps:null, loggedOut:true, logoutAttempts:0 });
+  }
   _send('pool-status', {
     active: COORD.active,
-    desiredWorkers: COORD.desiredWorkers, pressure: COORD.pressure, capReason: COORD.capReason, manualTarget: COORD.manualTarget, licenseCap: Number.isFinite(COORD.licenseCap) ? COORD.licenseCap : null, liveWorkers: COORD.workers.size,
+    desiredWorkers: COORD.desiredWorkers, pressure: COORD.pressure, capReason: COORD.capReason, manualTarget: COORD.manualTarget,
+    licenseCap: Number.isFinite(COORD.licenseCap) ? COORD.licenseCap : null,
+    liveWorkers: COORD.workers.size,
+    liveSessions: COORD.workers.size + _checkerLive,   // 3.x: total real PestPac sessions BUU holds (workers + checker)
+    freeLicenses: COORD._lastFreeLicenses,
+    licenseChecker: _checkerLive ? { status: COORD.licenseChecker.status } : null,
     jobs, workers,
   });
 }
@@ -386,7 +402,12 @@ async function coordSpawnWorker(){
       try { _send('pool-row-error', { workerId: workerId, jobId: null, row: '-', reason: 'fatal', error: 'POOL STOPPED: 3 workers in a row died instantly with zero rows done. Last fatal: ' + why }); } catch (e) {}
       if(!COORD._stopSweepFired){ COORD._stopSweepFired = true; setTimeout(() => coordRunLogoutSweep('fatal-loop'), 1500); }
     }
-    if(COORD.active && !COORD.stopping && COORD.workers.size === 0 && coordPickJobForWorker()){
+    // 3.x: do NOT respawn when the license cap is intentionally holding the pool at 0 (free
+    // seats hit the buffer / saturation). The always-on eval timer re-checks licenses and
+    // brings workers back the moment seats free up. Without this gate the stall-guard would
+    // fight the license hard-stop and re-consume the buffer.
+    const _licenseHold = Number.isFinite(COORD.licenseCap) && COORD.licenseCap < 1;
+    if(COORD.active && !COORD.stopping && !_licenseHold && COORD.workers.size === 0 && coordPickJobForWorker()){
       coordSpawnWorker().catch(e => { try{ console.error('[coord] stall-guard respawn failed:', e.message); }catch(_){} });
     }
     coordCheckComplete();
@@ -981,7 +1002,12 @@ async function coordEvalScale(){
   const _max = Math.max(1, Math.min(parseInt(COORD.maxWorkers) || MAX_WORKERS_HARD_CEILING, MAX_WORKERS_HARD_CEILING));
   if (_max < target) { target = _max; reason = 'max'; }
 
-  target = Math.max(1, target);
+  // 3.x: the license cap is an ABSOLUTE floor protecting the free-seat buffer for people —
+  // it MAY drive the target to 0 (a true hard-stop / pause) when free seats hit the buffer or
+  // PestPac is saturated. Only the license cap may push below 1; every other path (throughput,
+  // hardware, max, manual) always keeps at least one worker. The old Math.max(1,...) here was
+  // the bug that let the pool always keep one more login and never honor a hard limit.
+  target = (reason === 'license') ? Math.max(0, target) : Math.max(1, target);
   COORD.capReason = reason;
     COORD.desiredWorkers = target;
     await coordScaleTo(target);
@@ -1005,40 +1031,68 @@ async function coordLicenseScale(profileId, buffer, hwCap){
     prof.username   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
     prof.password   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
   }
-  let browser;
+  // 3.x: the checker is a REAL logged-in PestPac session for its whole lifetime — mark it
+  // ACTIVE so it is COUNTED and shown as a card (coordEmitStatus). Never an invisible seat.
+  COORD.licenseChecker = { active: true, status: 'logging-in', startedAt: Date.now() };
+  coordEmitStatus();
+  let browser, loginOk = false;
   try {
     const { chromium } = require('playwright-core');
     browser = await chromium.launch({ headless: true, executablePath: chromiumExe, args: ['--disable-gpu','--disable-dev-shm-usage'] });
     const page = await (await browser.newContext()).newPage();
-    // Login via the shared canonical helper (drift-proof; also platform-aware).
-    // Replaces the old inline copy the v2.2.2 refactor missed (check-license-cap
-    // was converted, this recheck path was not). Behavior identical for PestPac.
-    await loginToPestPacInPage(page, { loginUrl: prof.loginUrl, companyKey: prof.companyKey, username: prof.username, password: prof.password, platform: prof.platform });
-    await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
-    // v2.2.1: read the PestPac FREE value from the #div_PestPac panel with an EXACT label match
-    // (avoids the old startsWith bug that could read used/total or a Mobile/RouteOp table).
-    const freeText = await page.evaluate(() => {
-      const scope = document.querySelector('#div_PestPac') || document;
-      const tds = Array.from(scope.querySelectorAll('td'));
-      for (const td of tds) { const label=(td.textContent||'').trim().toLowerCase().replace(/\s+/g,' '); if (label==='number of free licenses:'||label==='number of free licenses') { const s = td.nextElementSibling; if (s) return (s.textContent||'').trim(); } }
-      return null;
-    });
-    await licenseReaderLogout(page); // v2.2.1: the elastic recheck session is a consumed license — log out before closing.
-    await browser.close();
-    if (freeText == null) return;
-    const free = parseInt(String(freeText).replace(/[^0-9]/g, ''));
-    if (isNaN(free)) return;
-    // free here is measured WHILE our workers are logged in, so it already reflects our usage.
-    // The number of additional workers we can safely add is (free - buffer); never go below 1.
-    const headroom = free - BUF;
-    const newTarget = Math.max(1, COORD.workers.size + headroom); // R4: pure license cap; composition happens in coordEvalScale
-    if (ctx.mainWindow) _send('pool-license-update', { freeLicenses: free, buffer: BUF, newTarget, liveWorkers: COORD.workers.size });
-    // R4: license math yields a CAP; the ONE evaluation path (coordEvalScale) composes
-    // it with pressure + the manual slider and does the actual scaling.
-    COORD.licenseCap = newTarget;
+    try {
+      // Login via the shared canonical helper (drift-proof; platform-aware). NOTE: this
+      // helper is now wired through ctx — before 3.x it was undefined here and this whole
+      // function threw, so the license cap never applied.
+      await loginToPestPacInPage(page, { loginUrl: prof.loginUrl, companyKey: prof.companyKey, username: prof.username, password: prof.password, platform: prof.platform });
+      loginOk = true;
+      COORD.licenseChecker.status = 'reading'; coordEmitStatus();
+      await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
+      // v2.2.1: read the PestPac FREE value from the #div_PestPac panel with an EXACT label match
+      // (avoids the old startsWith bug that could read used/total or a Mobile/RouteOp table).
+      const freeText = await page.evaluate(() => {
+        const scope = document.querySelector('#div_PestPac') || document;
+        const tds = Array.from(scope.querySelectorAll('td'));
+        for (const td of tds) { const label=(td.textContent||'').trim().toLowerCase().replace(/\s+/g,' '); if (label==='number of free licenses:'||label==='number of free licenses') { const s = td.nextElementSibling; if (s) return (s.textContent||'').trim(); } }
+        return null;
+      });
+      const free = (freeText == null) ? NaN : parseInt(String(freeText).replace(/[^0-9]/g, ''));
+      if (!isNaN(free)) {
+        COORD._lastFreeLicenses = free;
+        // `free` is measured WHILE all our sessions (workers + THIS checker) are logged in, so
+        // it already reflects our usage. Additional workers we may safely hold = free - buffer.
+        // The cap MAY be <= 0: when free seats are at/under the buffer the pool must hard-stop
+        // (coordEvalScale floors a license-bound target at 0). The buffer is an ABSOLUTE reserve
+        // for people and is never bypassed.
+        const newTarget = COORD.workers.size + (free - BUF);
+        COORD.licenseCap = newTarget;
+        if (ctx.mainWindow) _send('pool-license-update', { freeLicenses: free, buffer: BUF, newTarget: Math.max(0, newTarget), liveWorkers: COORD.workers.size });
+      }
+    } finally {
+      // GUARANTEED verified logout — runs even if the read threw. THIS is the leak fix: the
+      // old catch-path did browser.close() WITHOUT logging out, leaking a seat every time the
+      // read errored after a successful login. licenseReaderLogout delegates to the ONE
+      // canonical verified logout (engine/login.js).
+      if (loginOk) {
+        COORD.licenseChecker.status = 'logging-out'; coordEmitStatus();
+        try { await licenseReaderLogout(page); } catch(_){}
+      }
+    }
   } catch (e) {
+    // Launch or LOGIN failed. If LOGIN was refused, treat it as SATURATION (PestPac would not
+    // grant a seat) and SHED: force the cap below our live worker count so coordEvalScale drains
+    // a worker and hands a seat back toward the buffer. Retries next interval. Only ever reduces,
+    // so a transient blip self-corrects; erring toward protecting people's seats is intentional.
+    if (!loginOk) {
+      COORD.licenseCap = Math.max(0, COORD.workers.size - 1);
+      if (ctx.mainWindow) _send('pool-license-update', { error: 'could not get a license seat (saturated) — shedding to protect the buffer', saturated: true, liveWorkers: COORD.workers.size });
+    } else if (ctx.mainWindow) {
+      _send('pool-license-update', { error: e.message });
+    }
+  } finally {
     try { if (browser) await browser.close(); } catch(_){}
-    if (ctx.mainWindow) _send('pool-license-update', { error: e.message });
+    COORD.licenseChecker = { active: false };
+    coordEmitStatus();
   }
 }
 

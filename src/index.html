@@ -740,8 +740,8 @@ textarea { resize: vertical; min-height: 60px; }
     <div style="display:flex;align-items:center;justify-content:space-between;gap:6px" title="When a flow has a setup/teardown attached, choose how often they run across the pool. Per worker (default): each worker runs them for its own session. Per job: once per staged job. Global: once for the whole pool run.">
       <span style="font-size:11px;color:var(--t3)">Setup/teardown</span>
       <select id="poolSetupScope" style="width:104px;padding:4px 6px;background:var(--bg2);border:1px solid var(--brd);border-radius:6px;color:var(--t1);font-size:11px">
+        <option value="per-job" selected>Per job (once)</option>
         <option value="per-worker">Per worker</option>
-        <option value="per-job">Per job (once)</option>
         <option value="global">Global (once)</option>
       </select>
     </div>
@@ -754,6 +754,7 @@ textarea { resize: vertical; min-height: 60px; }
     <div id="scaleStatus" style="font-size:10px;color:var(--t3);line-height:1.5"></div>
     <button class="tbtn" onclick="poolResetDefaults()" style="width:100%;font-size:11px" title="Restore Max 150, Start 9, Hardware 4, PestPac 4, Buffer 10, Eval 2 min">Reset defaults</button>
     <button class="tbtn grn" id="poolRunBtn" onclick="poolRunClick()" style="width:100%" title="Start the worker pool">Run pool</button>
+    <button class="tbtn" id="poolStopBtn" onclick="poolStopClick()" style="width:100%;margin-top:2px" title="Gracefully stop the pool: every worker finishes its current row, runs teardown, logs out (verified), then the run ends.">Stop pool</button>
     <button class="tbtn" id="poolSweepBtn" onclick="poolLogoutSweepClick()" style="width:100%;margin-top:2px" title="Log out any BUU sessions still logged in on PestPac (License Manager). Use if you see stuck sessions.">Log out stuck sessions</button>
     <button class="tbtn" onclick="checkUpdates()" style="width:100%;margin-top:2px" title="Check for a new BUU version now">Check for updates</button>
   </div>
@@ -2473,10 +2474,24 @@ async function poolRunClick(){
   const elastic = !!(document.getElementById('poolElastic')||{}).checked;
   const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
   const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
-  const setupScope = (document.getElementById('poolSetupScope')||{}).value || 'per-worker';
+  const setupScope = (document.getElementById('poolSetupScope')||{}).value || 'per-job';
   if(!confirm('Start worker pool?\n\n• '+n+' workers (headless)\n• '+(status.jobs||1)+' job(s) staged\n• Elastic license scaling: '+(elastic?'ON (buffer '+licBuffer+', every '+licInterval+'min)':'OFF')+'\n• Setup/teardown: '+setupScope+'\n\nWorkers pull rows until all jobs drain. Continue?')) return;
   const r = await poolLaunchCurrent();
   if(r && r.ok===false) alert('Could not start pool: '+(r.error||'unknown'));
+}
+
+// 3.x: graceful pool STOP from the sidebar. The old floating Stop button was removed and
+// never re-added; this restores it. Backend pool-stop drains every worker (finish current
+// row -> teardown -> verified logout -> exit) then fires the logout sweep. Confirm first.
+async function poolStopClick(){
+  if(!API.poolStop){ alert('Stop is unavailable in this build.'); return; }
+  let live = null;
+  try{ const st = API.poolGetStatus ? await API.poolGetStatus() : null; if(st) live = (st.liveWorkers != null ? st.liveWorkers : (st.runningWorkers||0)); }catch(e){}
+  if(!confirm('Stop the worker pool?\n\nEach active worker finishes its CURRENT row, runs teardown, and logs out (verified) before exiting. Rows not yet started are left unprocessed — you can resume later.'+(live!=null?('\n\nActive workers: '+live):''))) return;
+  const btn = document.getElementById('poolStopBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Stopping…'; }
+  try{ await API.poolStop(); }catch(e){ alert('Stop failed: '+e.message); }
+  setTimeout(()=>{ if(btn){ btn.disabled=false; btn.textContent='Stop pool'; } }, 4000);
 }
 
 // 3.0.4 single-code-path: THE launch routine. The Run button (above, after its confirm)
@@ -2494,7 +2509,7 @@ async function poolLaunchCurrent(){
   const elastic = !!(document.getElementById('poolElastic')||{}).checked;
   const licBuffer = parseInt((document.getElementById('poolLicBuffer')||{}).value) || 10;
   const licInterval = parseInt((document.getElementById('poolLicInterval')||{}).value) || 5;
-  const setupScope = (document.getElementById('poolSetupScope')||{}).value || 'per-worker';
+  const setupScope = (document.getElementById('poolSetupScope')||{}).value || 'per-job';
   // v2.2.3 Session 3C (A1): diagnostic capture config. ON by default; user can flip off.
   const diagnosticCapture = !!(document.getElementById('poolDiagCapture')||{checked:true}).checked;
   const captureBucketCap = parseInt((document.getElementById('poolDiagCap')||{}).value) || 10;
@@ -2686,7 +2701,10 @@ function renderCoordStatus(st){
     const _se=document.getElementById('scaleStatus');
     if(_se){
       if(st && st.active){
-        let _t=(st.workers?st.workers.length:0)+' live / target '+(st.desiredWorkers!=null?st.desiredWorkers:'?')+' (cap: '+(st.capReason||'manual')+')';
+        const _lw = (st.liveWorkers!=null ? st.liveWorkers : (st.workers?st.workers.length:0));
+        let _t=_lw+' live / target '+(st.desiredWorkers!=null?st.desiredWorkers:'?')+' (cap: '+(st.capReason||'manual')+')';
+        if(st.freeLicenses!=null) _t+='  |  '+st.freeLicenses+' free seats';
+        if(st.liveSessions!=null && st.liveSessions!==_lw) _t+='  |  '+st.liveSessions+' sessions (incl. checker)';
         if(st.pressure!=null) _t+=' \u00b7 pressure '+st.pressure;
         if(st.licenseCap!=null) _t+=' \u00b7 lic cap '+st.licenseCap;
         _se.textContent=_t;
@@ -2714,6 +2732,11 @@ function renderCoordStatus(st){
       'logging-out':{label:'LOGGING OUT',  color:'var(--amber)'},
       'shut-down':  {label:'SHUT DOWN',    color:'var(--green)'},
       'error':      {label:'ERROR',        color:'var(--red)'},
+      // 3.x: the elastic license-checker shown as its own COUNTED session card.
+      'lc-logging-in': {label:'LICENSE CHECK · LOGIN', color:'var(--purple)'},
+      'lc-reading':    {label:'LICENSE CHECK · READ',  color:'var(--purple)'},
+      'lc-logging-out':{label:'LICENSE CHECK · LOGOUT',color:'var(--purple)'},
+      'lc-checking':   {label:'LICENSE CHECK',         color:'var(--purple)'},
     };
     const ph = PH[w.status] || {label:String(w.status||'').toUpperCase(), color:'var(--t3)'};
     // v2.1.1 (#6): per-worker graceful stop. Only offered while the worker is still active
@@ -2737,7 +2760,7 @@ function renderCoordStatus(st){
     }
     return '<div class="card" style="padding:11px 13px;border:1.5px solid var(--bdr2);border-radius:10px;background:var(--surf2);box-shadow:0 1px 3px rgba(0,0,0,.18)">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">'
-        + '<div style="font-size:12px;font-weight:700;color:var(--t2)">'+w.workerId.slice(-6)+'</div>'
+        + '<div style="font-size:12px;font-weight:700;color:var(--t2)">'+(w.kind==='license-checker'?'LIC·CHK':w.workerId.slice(-6))+'</div>'
         + '<div style="display:flex;align-items:center;gap:6px"><div style="font-size:10px;font-weight:700;color:'+ph.color+';text-transform:uppercase">'+ph.label+'</div>'+logoutBadge+stopBtn+'</div>'
       + '</div>'
       + detail
