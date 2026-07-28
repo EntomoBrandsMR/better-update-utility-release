@@ -320,7 +320,7 @@ async function coordSpawnWorker(){
     : path.join(__dirname, '..', 'node_modules');
   env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
 
-  const entry = { workerId, jobId, process: null, status: 'starting', batch: [], done:0, ok:0, err:0, startedAt: Date.now(), runnerLogStream, runnerPath, credPath, logPath };
+  const entry = { workerId, jobId, process: null, status: 'starting', batch: [], done:0, ok:0, err:0, startedAt: Date.now(), lastActivity: Date.now(), runnerLogStream, runnerPath, credPath, logPath };
   COORD.workers.set(workerId, entry);
 
   const proc = spawn(process.execPath, [runnerPath, job.spreadsheetPath || '__none__', credPath], { stdio:['pipe','pipe','pipe'], env });
@@ -428,6 +428,7 @@ async function coordSpawnWorker(){
 function coordHandleWorkerMessage(workerId, msg){
   const w = COORD.workers.get(workerId);
   if(!w) return;
+  w.lastActivity = Date.now(); // 3.x watchdog: any message = proof of life; silence => frozen
   const job = COORD.jobs.get(w.jobId);
   switch(msg.type){
     case 'logging-in':
@@ -1115,6 +1116,34 @@ async function coordLicenseScale(profileId, buffer, hwCap){
 }
 
 
+
+// 3.x WORKER WATCHDOG. A hung worker (frozen on a dialog, a wedged page, a lost child) used to
+// hang the ENTIRE pool forever, because the coordinator only completes once every worker exits —
+// one frozen worker on row 288 kept a 1219-row run "running" for 13.5h overnight. This single
+// module-level timer force-kills any worker that has emitted ZERO output for WATCHDOG_MS; killing
+// the process fires the normal 'close' handler, which reclaims its unfinished rows (lossless
+// reclaim) and lets the pool respawn/complete. It runs every 30s and no-ops whenever no pool is
+// active, so it needs no per-run start/stop wiring. Threshold is deliberately generous — far
+// longer than any legitimate single step (nav / selector timeouts are ~30s) — so it never kills a
+// worker that is merely on a slow row.
+const WATCHDOG_MS = 240000; // 4 minutes of total silence = frozen
+setInterval(() => {
+  try {
+    if(!COORD.active || COORD.stopping) return;
+    const now = Date.now();
+    for(const w of COORD.workers.values()){
+      if(['running','starting','logging-in','shutting-down','draining'].indexOf(w.status) < 0) continue;
+      const idle = now - (w.lastActivity || w.startedAt || now);
+      if(idle >= WATCHDOG_MS){
+        try{ console.error('[coord] watchdog: worker '+w.workerId+' silent '+Math.round(idle/1000)+'s (status '+w.status+') — force-killing so the pool can proceed'); }catch(_){}
+        try{ _send('pool-row-error', { workerId:w.workerId, jobId:w.jobId, row:(w.currentRow||'-'), reason:'watchdog', error:'Worker frozen ('+Math.round(idle/1000)+'s with no activity, likely a stuck browser dialog) — force-killed by the watchdog; its unfinished rows were returned to the queue.' }); }catch(_){}
+        w.status = 'error';
+        w._killedByWatchdog = true;
+        try{ w.process.kill(); }catch(_){}
+      }
+    }
+  } catch(_){}
+}, 30000);
 
 // ── AUTOMATION RUNNER ─────────────────────────────────────────────────────────
 // v1.2.8: resolve a flow by its `name` field. Scans the flows directory, matches by
