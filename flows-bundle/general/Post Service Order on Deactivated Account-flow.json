@@ -2,6 +2,18 @@
   "version": "1.1",
   "name": "Post Service Order on Deactivated Account-flow",
   "runMode": "per-row",
+  "automation": false,
+  "poolSettings": {
+    "maxWorkers": 15,
+    "startWorkers": 1,
+    "hwSlider": 4,
+    "ppSlider": 4,
+    "evalMin": 2,
+    "elastic": true,
+    "diag": false,
+    "diagCap": 10,
+    "startMode": "step"
+  },
   "setupFlowId": "Open Empty Batch-flow",
   "teardownFlowId": null,
   "steps": [
@@ -22,19 +34,14 @@
       "waitFor": "button[name=\"butHistoryShow\"]"
     },
     {
-      "id": 5,
-      "type": "dialog",
-      "open": false,
-      "checkAction": "check",
-      "waitType": "fixed"
-    },
-    {
       "id": 4,
       "type": "click",
       "open": false,
       "checkAction": "check",
       "waitType": "fixed",
-      "selector": "button[name=\"butActivate\"]"
+      "selector": "button[name=\"butActivate\"]",
+      "dialogAccept": true,
+      "dialogDecline": false
     },
     {
       "id": 6,
@@ -45,20 +52,15 @@
       "url": "{{URL}}"
     },
     {
-      "id": 15,
-      "type": "dialog",
-      "open": false,
-      "checkAction": "check",
-      "waitType": "fixed"
-    },
-    {
       "id": 7,
       "type": "click",
       "open": false,
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "button[name=\"butPost\"]",
-      "waitFor": "button[name=\"PostNew\"]"
+      "waitFor": "button[name=\"PostNew\"]",
+      "dialogAccept": true,
+      "dialogDecline": false
     },
     {
       "id": 8,
@@ -79,11 +81,11 @@
     {
       "id": 10,
       "type": "type",
-      "open": false,
+      "open": true,
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "input[name=\"WorkDate1\"]",
-      "value": "06/30/2026"
+      "value": "{{TODAY}}"
     },
     {
       "id": 11,
@@ -97,18 +99,11 @@
     {
       "id": 12,
       "type": "type",
-      "open": false,
+      "open": true,
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "textarea[name=\"FieldComment1\"]",
-      "value": "Posted by BUU on 06/30/2026 as part of the Service Order cleanup project"
-    },
-    {
-      "id": 14,
-      "type": "dialog",
-      "open": false,
-      "checkAction": "check",
-      "waitType": "fixed"
+      "value": "{{Note}}"
     },
     {
       "id": 13,
@@ -117,7 +112,9 @@
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "button[name=\"butPost\"]",
-      "waitFor": "button[name=\"NewBatch\"]"
+      "waitFor": "button[name=\"NewBatch\"]",
+      "dialogAccept": true,
+      "dialogDecline": false
     }
   ],
   "config": {
@@ -127,7 +124,6 @@
     "selectorTimeout": "30",
     "pageLoadMode": "domcontentloaded",
     "retryCount": "2",
-    "breakerThreshold": "10000",
     "reauthInterval": "120",
     "flowNotes": "",
     "headless": false

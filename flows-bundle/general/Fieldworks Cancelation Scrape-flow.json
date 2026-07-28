@@ -1,0 +1,42 @@
+{
+  "version": "1.1",
+  "name": "Fieldworks Cancelation Scrape-flow",
+  "runMode": "per-row",
+  "automation": false,
+  "poolSettings": {
+    "maxWorkers": 1,
+    "startWorkers": 1,
+    "hwSlider": 4,
+    "ppSlider": 4,
+    "evalMin": 2,
+    "elastic": false,
+    "diag": true,
+    "diagCap": 10,
+    "startMode": "step"
+  },
+  "setupFlowId": null,
+  "teardownFlowId": null,
+  "steps": [
+    {
+      "id": 2,
+      "type": "fieldwork-cancel-scrape",
+      "open": true,
+      "checkAction": "check",
+      "waitType": "fixed",
+      "url": "https://app.fieldworkhq.com/customers/{{Account Number}}/service_locations/{{Location #}}#tab=history",
+      "acctCol": "{{Account Number}}",
+      "locCol": "{{Location #}}"
+    }
+  ],
+  "config": {
+    "rowDelayMin": "0",
+    "rowDelayMax": "0",
+    "errHandle": "retry",
+    "selectorTimeout": "30",
+    "pageLoadMode": "domcontentloaded",
+    "retryCount": "2",
+    "reauthInterval": "120",
+    "flowNotes": "",
+    "headless": false
+  }
+}
