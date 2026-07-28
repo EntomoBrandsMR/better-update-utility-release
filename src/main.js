@@ -391,6 +391,35 @@ const LOGIN_TO_PESTPAC_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'log
 const LOCATE_STACK_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'locate.js'), 'utf8');
 const STEPS_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'steps.js'), 'utf8');
 const { loginToPestPac: loginToPestPacInPage, logoutFromPestPac: logoutFromPestPacInPage, logoutFrom: logoutFromInPage } = require('./engine/login');
+const mailer = require('./mailer'); // 3.x: MS Graph run-notification email (config in the vault)
+
+// 3.x EMAIL CONFIG IPC — status/save/test for the Settings panel. Secrets go to the Windows
+// Credential Vault via keytar (never the repo). status never returns the secret.
+ipcMain.handle('email-config-status', async () => {
+  try {
+    const cfg = await mailer.getEmailConfig(keytar);
+    const cid = String(cfg.clientId || '');
+    return { ok: true, configured: true, fromMailbox: cfg.fromMailbox, tenantId: cfg.tenantId,
+      clientIdMasked: cid ? (cid.slice(0, 8) + '…' + cid.slice(-4)) : '' };
+  } catch (e) { return { ok: true, configured: false, error: e.message, defaultFrom: mailer.DEFAULT_FROM }; }
+});
+ipcMain.handle('email-config-save', async (_, cfg) => {
+  try { await mailer.setEmailConfig(keytar, cfg || {}); return { ok: true }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('email-send-test', async (_, { to }) => {
+  try {
+    const built = mailer.buildRunEmail({
+      flowName: 'Email Test-flow', frequencyPhrase: 'once', scheduleTimeLabel: _fmtNowTimeLabel(),
+      tz: 'America/New_York', startTs: Date.now() - 4000, endTs: Date.now(), ok: 1, err: 0, total: 1,
+      trail: [{ n: 1, label: 'Confirm Microsoft Graph send', status: 'ok', ms: 900 }],
+      poolId: 'email-test', recipients: to,
+    });
+    const r = await mailer.sendMail(keytar, { to, subject: 'BUU email test — ' + built.subject.replace(/^Success! /, ''), body: built.html, html: true });
+    return { ok: true, sentTo: r.sentTo };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+function _fmtNowTimeLabel() { try { return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date()); } catch (e) { return ''; } }
 
 // ════════════════════════════════════════════════════════════════════════════
 // v2.2.2 (Session 2A) — SHARED RUNTIME HELPERS (drift-proof, template-interpolated)
@@ -1965,6 +1994,7 @@ app.whenReady().then(() => {
     app, ipcMain,
     buuRoot,
     COORD,
+    keytar, // 3.x: scheduler sends run-notification emails via mailer.js, which reads config from the vault
     getWindow: () => mainWindow,
     readFlowByName: (name) => {
       try {

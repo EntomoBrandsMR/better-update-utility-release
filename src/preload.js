@@ -79,6 +79,10 @@ contextBridge.exposeInMainWorld('api', {
   onScheduleFire:      (cb)    => ipcRenderer.on('schedule-fire', (_, d) => cb(d)),
   onSchedulesMissed:   (cb)    => ipcRenderer.on('schedules-missed', (_, d) => cb(d)),
   onSchedulesChanged:  (cb)    => ipcRenderer.on('schedules-changed', (_, d) => cb(d)),
+  // 3.x: run-notification email config (stored per-machine in the Windows Credential Vault).
+  emailConfigStatus:   ()      => ipcRenderer.invoke('email-config-status'),
+  emailConfigSave:     (d)     => ipcRenderer.invoke('email-config-save', d),
+  emailSendTest:       (d)     => ipcRenderer.invoke('email-send-test', d),
   // v2.2.3 Session 3A (A3): per-worker dialog events. Captures every dialog (alert/confirm/
   // prompt/beforeunload) along with its text and the row it fired during. Renderer can show
   // a "recent dialogs" pane or attach to a worker card.

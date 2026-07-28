@@ -109,9 +109,28 @@ module.exports = { partsInZone, zonedEpoch, nextFire, firesWithin, findOverlap, 
 // directly — it sends a complete launch payload to the renderer, which is a dumb
 // pipe into the existing pool-submit-job/pool-start IPC (zero renderer state).
 // ─────────────────────────────────────────────────────────────────────────────
+// 3.x run-notification email helpers.
+const mailer = require('./mailer');
+function _ordinal(n){ const s=['th','st','nd','rd'], v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
+function _timeLabel(t){ const p=String(t||'09:00').split(':'); let h=parseInt(p[0],10)||0; const m=(p[1]||'00'); const ap=h>=12?'PM':'AM'; h=h%12; if(h===0)h=12; return h+':'+m+' '+ap; }
+const _DOW = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const _DOW3 = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function _freqPhrase(s){
+  if(s.type==='daily') return 'daily';
+  if(s.type==='once') return 'once';
+  if(s.type==='monthly') return 'monthly on the ' + _ordinal(parseInt(s.dayOfMonth,10)||1);
+  if(s.type==='weekly'){
+    const days=(Array.isArray(s.days)?s.days:[]).slice().sort((a,b)=>a-b);
+    if(days.length===0) return 'weekly';
+    if(days.length===1) return 'weekly on ' + _DOW[days[0]] + 's';
+    return 'weekly on ' + days.map(d=>_DOW3[d]).join(', ');
+  }
+  return String(s.type||'once');
+}
+
 function initScheduler(deps) {
-  // deps: { app, ipcMain, buuRoot, COORD, getWindow, readFlowByName }
-  const { app, ipcMain, buuRoot, COORD, getWindow, readFlowByName } = deps;
+  // deps: { app, ipcMain, buuRoot, COORD, getWindow, readFlowByName, keytar }
+  const { app, ipcMain, buuRoot, COORD, getWindow, readFlowByName, keytar } = deps;
   const dir = () => { const d = path.join(buuRoot(), 'schedules'); try { fs.mkdirSync(d, { recursive: true }); } catch (e) {} return d; };
   let watch = null; // { id, firedAt, sawActive }
 
@@ -127,6 +146,35 @@ function initScheduler(deps) {
   function saveOne(s) { try { fs.writeFileSync(path.join(dir(), s.id + '.json'), JSON.stringify(s, null, 2)); } catch (e) {} }
   function deleteOne(id) { try { fs.unlinkSync(path.join(dir(), String(id).replace(/[^\w-]/g, '') + '.json')); } catch (e) {} }
   function send(ch, d) { try { const w = getWindow(); if (w) w.webContents.send(ch, d); } catch (e) {} }
+
+  // 3.x: send the run-notification email for a completed scheduled run (best-effort; never
+  // throws into the tick loop). Uses the step trail the coordinator captured (COORD._lastRunTrail).
+  function maybeSendEmail(s, j, startTs, endTs) {
+    try {
+      if (!s || !s.emailNotify) return;
+      const err = (j && j.err) || 0;
+      if (s.emailOnlyOnFailure && err === 0) return; // "only on failure" opt-in
+      const to = (s.emailTo && String(s.emailTo).trim()) || 'pestpac-help@palmettoexterminators.net';
+      const trailObj = COORD._lastRunTrail;
+      const trail = (trailObj && Array.isArray(trailObj.steps)) ? trailObj.steps : [];
+      const data = {
+        flowName: s.flowName,
+        frequencyPhrase: _freqPhrase(s),
+        scheduleTimeLabel: _timeLabel(s.time),
+        tz: s.tz || 'America/New_York',
+        startTs: startTs, endTs: endTs,
+        ok: (j && j.ok) || 0, err: err, total: (j && j.totalRows) || 1,
+        trail: trail,
+        errorText: (trailObj && trailObj.error) || '',
+        poolId: COORD.poolId,
+        recipients: to,
+      };
+      const built = mailer.buildRunEmail(data);
+      mailer.sendMail(keytar, { to: to, subject: built.subject, body: built.html, html: true })
+        .then(() => { try { const cur = loadAll().find(x => x.id === s.id); if (cur) { cur.lastResult = Object.assign({}, cur.lastResult, { emailed: true }); saveOne(cur); send('schedules-changed', {}); } } catch (e) {} })
+        .catch((e2) => { console.error('[scheduler] run-notification email failed:', e2.message); try { const cur = loadAll().find(x => x.id === s.id); if (cur) { cur.lastResult = Object.assign({}, cur.lastResult, { emailError: e2.message }); saveOne(cur); send('schedules-changed', {}); } } catch (e) {} });
+    } catch (e) { console.error('[scheduler] email build failed:', e.message); }
+  }
   function summarize(s) {
     const nf = s.enabled === false ? null : nextFire(s, Math.max(Date.now(), s.lastFiredAt || 0));
     return Object.assign({}, s, { nextFireTs: nf, nextFireLocal: nf ? new Date(nf).toLocaleString() : null });
@@ -162,7 +210,11 @@ function initScheduler(deps) {
       else if (watch.sawActive) {
         const j = Array.from(COORD.jobs.values())[0];
         const s = loadAll().find(x => x.id === watch.id);
-        if (s) { s.lastResult = { ts: now, status: j && j.err ? 'errors' : 'ok', ok: (j && j.ok) || 0, err: (j && j.err) || 0 }; saveOne(s); send('schedules-changed', {}); }
+        if (s) {
+          s.lastResult = { ts: now, status: j && j.err ? 'errors' : 'ok', ok: (j && j.ok) || 0, err: (j && j.err) || 0 };
+          saveOne(s); send('schedules-changed', {});
+          maybeSendEmail(s, j, watch.firedAt, now); // 3.x run-notification email
+        }
         watch = null;
       } else if (now - watch.firedAt > 120000) {
         const s = loadAll().find(x => x.id === watch.id);

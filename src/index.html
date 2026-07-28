@@ -1123,6 +1123,26 @@ textarea { resize: vertical; min-height: 60px; }
     <div class="page-sub">Run spreadsheet-free (once) flows at set times — "run this flow at this time"</div>
   </div>
   <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+      <div style="font-size:12px;font-weight:700;color:var(--t2)">Email notifications — setup (this computer)</div>
+      <div id="emailCfgStatus" style="font-size:11px;color:var(--t3)">checking…</div>
+    </div>
+    <div class="hint" style="margin-bottom:10px">Run-notification emails send through Microsoft Graph as <b>help-autoreply@palmettoexterminators.net</b>. The credentials are stored in the Windows Credential Vault on THIS computer only (never in the app), so enter them once per machine.</div>
+    <div class="row">
+      <div class="fg"><label>Azure tenant ID</label><input type="text" id="emailTenant" placeholder="tenant GUID"/></div>
+      <div class="fg"><label>Application (client) ID</label><input type="text" id="emailClient" placeholder="client GUID"/></div>
+    </div>
+    <div class="row">
+      <div class="fg"><label>Client secret</label><input type="password" id="emailSecret" placeholder="paste secret value"/><div class="hint">Stored encrypted in the OS vault; not shown again after saving.</div></div>
+      <div class="fg"><label>Send-as mailbox</label><input type="text" id="emailFrom" value="help-autoreply@palmettoexterminators.net"/></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn grn" onclick="emailCfgSave()">Save email settings</button>
+      <input type="text" id="emailTestTo" placeholder="test recipient email" style="max-width:260px"/>
+      <button class="btn" onclick="emailSendTest()">Send test email</button>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:14px">
     <div style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:8px" id="schFormTitle">New schedule</div>
     <div class="row">
       <div class="fg"><label>Flow (automation flows only)</label><select id="schFlow"></select><div class="hint">Only once-flows with the Automation box checked are schedulable. Plain once-flows are build-up/tear-down blocks; per-row flows are not schedulable.</div></div>
@@ -1138,6 +1158,17 @@ textarea { resize: vertical; min-height: 60px; }
     <div class="row">
       <div class="fg"><label>Timezone</label><select id="schTz"><option value="America/New_York" selected>America/New_York (ET)</option><option value="America/Chicago">America/Chicago (CT)</option><option value="America/Denver">America/Denver (MT)</option><option value="America/Phoenix">America/Phoenix (AZ)</option><option value="America/Los_Angeles">America/Los_Angeles (PT)</option><option value="UTC">UTC</option></select><div class="hint">Fire times come from THIS zone regardless of the machine clock — VM-safe.</div></div>
       <div class="fg"><label>Reserved block (minutes)</label><input type="number" id="schBlock" min="1" max="480" value="15"/><div class="hint">Saving refuses schedules whose blocks overlap another schedule within 14 days.</div></div>
+    </div>
+    <div class="row" style="border-top:1px solid var(--brd);margin-top:6px;padding-top:12px">
+      <div class="fg" style="flex:1">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="schEmailNotify" onchange="schEmailToggled()"/> Email a run notification when this schedule runs</label>
+        <div class="hint">Sends the success/failure email (with the full step log) to the recipients below every time this schedule runs. Requires email set up under Settings.</div>
+        <div id="schEmailRow" style="display:none;margin-top:10px">
+          <label>Recipients <span style="color:var(--t3);font-weight:400">— separate multiple with a semicolon ( ; )</span></label>
+          <input type="text" id="schEmailTo" value="pestpac-help@palmettoexterminators.net" placeholder="name@palmettoexterminators.net; other@palmettoexterminators.net" style="width:100%"/>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:10px;font-size:12px"><input type="checkbox" id="schEmailOnlyFail"/> Only email me when the run FAILS (skip success notifications)</label>
+        </div>
+      </div>
     </div>
     <div class="btn-row"><button class="btn grn" onclick="schSave()">Save schedule</button><button class="btn" onclick="schResetForm()">Clear form</button></div>
     <input type="hidden" id="schEditId"/>
@@ -2963,7 +2994,16 @@ function schResetForm(){
   document.getElementById('schBlock').value = '15';
   document.getElementById('schTz').value = 'America/New_York';
   document.querySelectorAll('.schDay').forEach(function(cb){ cb.checked = false; });
+  var _en=document.getElementById('schEmailNotify'); if(_en) _en.checked=false;
+  var _et=document.getElementById('schEmailTo'); if(_et) _et.value='pestpac-help@palmettoexterminators.net';
+  var _ef=document.getElementById('schEmailOnlyFail'); if(_ef) _ef.checked=false;
+  schEmailToggled();
   schTypeChanged();
+}
+function schEmailToggled(){
+  var on = !!(document.getElementById('schEmailNotify')||{}).checked;
+  var row = document.getElementById('schEmailRow');
+  if(row) row.style.display = on ? '' : 'none';
 }
 async function schSave(){
   const s = {
@@ -2977,8 +3017,13 @@ async function schSave(){
     days: Array.from(document.querySelectorAll('.schDay')).filter(function(cb){return cb.checked;}).map(function(cb){return parseInt(cb.dataset.d);}),
     tz: (document.getElementById('schTz')||{}).value || 'America/New_York',
     blockMin: parseInt((document.getElementById('schBlock')||{}).value) || 15,
+    emailNotify: !!(document.getElementById('schEmailNotify')||{}).checked,
+    emailTo: ((document.getElementById('schEmailTo')||{}).value || 'pestpac-help@palmettoexterminators.net').trim(),
+    emailOnlyOnFailure: !!(document.getElementById('schEmailOnlyFail')||{}).checked,
     enabled: true,
   };
+  if(s.emailNotify && !s.emailTo){ alert('Enter at least one email recipient (separate multiple with ;).'); return; }
+  if(s.emailNotify && !/@/.test(s.emailTo)){ alert('That does not look like a valid email address.'); return; }
   if(s.type === 'weekly' && !s.days.length){ alert('Pick at least one weekday.'); return; }
   if(s.type === 'once' && !s.date){ alert('Pick a date.'); return; }
   const r = await API.scheduleSave(s);
@@ -3000,6 +3045,10 @@ function schEdit(id){
   document.getElementById('schTz').value = s.tz || 'America/New_York';
   document.getElementById('schBlock').value = s.blockMin || 15;
   document.querySelectorAll('.schDay').forEach(function(cb){ cb.checked = (s.days||[]).indexOf(parseInt(cb.dataset.d)) >= 0; });
+  var _en=document.getElementById('schEmailNotify'); if(_en) _en.checked=!!s.emailNotify;
+  var _et=document.getElementById('schEmailTo'); if(_et) _et.value=s.emailTo||'pestpac-help@palmettoexterminators.net';
+  var _ef=document.getElementById('schEmailOnlyFail'); if(_ef) _ef.checked=!!s.emailOnlyOnFailure;
+  schEmailToggled();
   schTypeChanged();
 }
 async function schToggle(id, on){ if(API.scheduleToggle) await API.scheduleToggle({ id: id, enabled: on }); schRenderList(); }
@@ -3009,7 +3058,37 @@ async function schRunNow(id){
   if(!r || r.ok === false){ alert('Could not run: ' + ((r&&r.error)||'unknown')); return; }
   go('run');
 }
+async function emailCfgLoad(){
+  if(!API.emailConfigStatus) return;
+  let st; try{ st = await API.emailConfigStatus(); }catch(e){ return; }
+  const el = document.getElementById('emailCfgStatus');
+  if(st && st.configured){
+    if(el) el.innerHTML = '<span style="color:var(--green)">✓ configured</span> · '+esc(st.clientIdMasked||'')+' · '+esc(st.fromMailbox||'');
+    const t=document.getElementById('emailTenant'); if(t && !t.value) t.value=st.tenantId||'';
+    const f=document.getElementById('emailFrom'); if(f) f.value=st.fromMailbox||f.value;
+  } else {
+    if(el) el.innerHTML = '<span style="color:var(--amber)">not configured on this computer</span>';
+    const f=document.getElementById('emailFrom'); if(f && !f.value) f.value=(st&&st.defaultFrom)||'help-autoreply@palmettoexterminators.net';
+  }
+}
+async function emailCfgSave(){
+  const cfg={ tenantId:((document.getElementById('emailTenant')||{}).value||'').trim(), clientId:((document.getElementById('emailClient')||{}).value||'').trim(), clientSecret:((document.getElementById('emailSecret')||{}).value||'').trim(), fromMailbox:((document.getElementById('emailFrom')||{}).value||'').trim() };
+  if(!cfg.tenantId||!cfg.clientId||!cfg.clientSecret){ alert('Tenant ID, Client ID and Client secret are all required.'); return; }
+  const r=await API.emailConfigSave(cfg);
+  if(!r||r.ok===false){ alert('Could not save email settings:\n\n'+((r&&r.error)||'unknown')); return; }
+  const sec=document.getElementById('emailSecret'); if(sec) sec.value=''; // don't keep the secret in the field
+  alert('Email settings saved to this computer\'s Credential Vault.');
+  emailCfgLoad();
+}
+async function emailSendTest(){
+  const to=((document.getElementById('emailTestTo')||{}).value||'').trim();
+  if(!to){ alert('Enter a test recipient email address first.'); return; }
+  const r=await API.emailSendTest({ to:to });
+  if(r && r.ok){ alert('Test email sent to '+((r.sentTo&&r.sentTo.join(', '))||to)+'.'); }
+  else { alert('Test email failed:\n\n'+((r&&r.error)||'unknown')+'\n\n(If this mentions consent or permissions, the Azure Mail.Send admin consent may still be pending.)'); }
+}
 async function schRenderList(){
+  emailCfgLoad();
   const el = document.getElementById('schList');
   if(!el || !API.schedulesList) return;
   try{ _schCache = await API.schedulesList(); }catch(e){ return; }

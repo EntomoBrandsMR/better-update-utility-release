@@ -424,6 +424,56 @@ async function coordSpawnWorker(){
   return workerId;
 }
 
+// 3.x email trail: readable label for a flow step (used in run-notification emails).
+function coordStepLabel(s){
+  if(!s) return 'Step';
+  if(s._label) return s._label;
+  const shorten = (v)=>{ v=String(v||''); return v.length>42 ? v.slice(0,40)+'…' : v; };
+  switch(s.type){
+    case 'pestpac-login': return 'Log in to PestPac';
+    case 'pestpac-logout': return 'Log out of PestPac';
+    case 'navigate': return 'Navigate' + (s.url ? ' to ' + shorten(s.url) : '');
+    case 'click': return 'Click' + (s.selector ? ' ' + shorten(s.selector) : '');
+    case 'type': return 'Type' + (s.selector ? ' into ' + shorten(s.selector) : '');
+    case 'select': return 'Select' + (s.value ? ' ' + shorten(s.value) : (s.selector ? ' ' + shorten(s.selector) : ''));
+    case 'checkbox': return 'Checkbox' + (s.selector ? ' ' + shorten(s.selector) : '');
+    case 'wait': return 'Wait';
+    case 'readfield': return 'Read field' + (s.selector ? ' ' + shorten(s.selector) : '');
+    case 'textedit': return 'Edit text' + (s.selector ? ' ' + shorten(s.selector) : '');
+    case 'fileupload': return 'Upload file';
+    case 'fieldwork-cancel-scrape': return 'Scrape cancellations';
+    default: return s.type || 'Step';
+  }
+}
+// 3.x email trail: finalize the just-run row's step trail into COORD._lastRunTrail so the
+// scheduler can attach it to a run-notification email. Reconstructed from the 'step' events
+// the coordinator already receives — no changes to the worker's row loop.
+function coordFinalizeTrail(w, job, msg){
+  try{
+    const t = w._trail || { steps:{}, maxStep:0, total:0 };
+    const dataSteps = ((job && job.flowSteps) || []).filter(s => !s.locked && s.type !== 'pestpac-logout');
+    const N = t.total || dataSteps.length || 0;
+    const ok = String(msg.status||'').indexOf('ok') === 0;
+    const failStep = ok ? -1 : (t.maxStep || 1);
+    const steps = [];
+    for(let i=1;i<=N;i++){
+      let status;
+      if(ok || i < failStep) status='ok';
+      else if(i === failStep) status='failed';
+      else status='skipped';
+      let ms;
+      const t0 = t.steps[i];
+      if(t0){ const t1 = t.steps[i+1] || Date.now(); ms = Math.max(0, (status==='failed' ? Date.now() : t1) - t0); }
+      steps.push({ n:i, label: coordStepLabel(dataSteps[i-1]), status, ms: (ms!=null?Math.round(ms):null), error: (status==='failed' ? (msg.error||'') : undefined) });
+    }
+    COORD._lastRunTrail = {
+      poolId: COORD.poolId, jobId: w.jobId, status: ok?'ok':'error',
+      error: msg.error||'', failStep: ok?null:failStep, phase: msg.phase||null,
+      steps, at: Date.now()
+    };
+  }catch(e){ /* trail is best-effort; never break row processing */ }
+}
+
 // Handle a message from a worker: request-batch, row-result, ready, phase events.
 function coordHandleWorkerMessage(workerId, msg){
   const w = COORD.workers.get(workerId);
@@ -442,10 +492,15 @@ function coordHandleWorkerMessage(workerId, msg){
       w.status = 'running';
       w.currentRow = msg.row;
       w.step = 0; w.totalSteps = undefined;
+      w._trail = { steps:{}, maxStep:0, total:0, startAt: Date.now() }; // 3.x email step trail
       break;
     case 'step':
       // live detail - which step of the flow this row is on (e.g. 7/8).
       w.currentRow = msg.row; w.step = msg.step; w.totalSteps = msg.totalSteps;
+      // 3.x email step trail: record arrival time per step index (last-wins across retries).
+      if(!w._trail) w._trail = { steps:{}, maxStep:0, total:0, startAt: Date.now() };
+      if(msg.step){ w._trail.steps[msg.step] = Date.now(); if(msg.step > w._trail.maxStep) w._trail.maxStep = msg.step; }
+      if(msg.totalSteps) w._trail.total = msg.totalSteps;
       break;
     case 'pause-step':
       // v2.2.2 Session 2C: forward to renderer. Includes workerId so the renderer knows
@@ -531,6 +586,7 @@ function coordHandleWorkerMessage(workerId, msg){
         error: msg.error, durationMs: msg.durationMs,
         workerId: w.workerId, // v3.0.3: attribute every row to the worker that ran it
       });
+      coordFinalizeTrail(w, job, msg); // 3.x: capture the step trail for the run-notification email
       // R11: direct error feed to the renderer (errors only — the D3 lesson says no
       // per-row event floods; OK rows are visible through the counters).
       if(String(msg.status||'').indexOf('ok') !== 0 && ctx.mainWindow){
