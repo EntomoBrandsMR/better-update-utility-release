@@ -539,15 +539,17 @@ async function main(){
   // v2.2.3 Session 3A (A3): blanket dialog listener. Logs every dialog (PestPac validation
   // popups, confirmation dialogs, alerts) regardless of whether a Handle Dialog step is
   // registered. Multiple page.on('dialog') listeners are all called by Playwright — the
-  // Handle Dialog step's specific listener still does the accept/dismiss; this one only
-  // observes. If NO listener calls accept/dismiss, Playwright auto-dismisses, which is the
-  // pre-2.2.3 default behavior for unhandled dialogs. Captured dialogs flow two places:
+  // Handle Dialog step's specific listener still does the accept/dismiss. WARNING: registering
+  // ANY dialog listener DISABLES Playwright's auto-dismiss, so this listener MUST also close
+  // the dialog as a fallback (see the 3.x fix below) — otherwise unhandled dialogs freeze the
+  // page and hang the worker. Captured dialogs flow two places:
   //   1) row.__dialogs[] on the current row, written to the per-worker xlsx Log sheet
   //   2) emit({type:'dialog', ...}) so the coordinator journals it into the merged log
   page.on('dialog', dialog => {
+    let dialogType = '';
     try {
       const message = dialog.message();
-      const dialogType = dialog.type();  // 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+      dialogType = dialog.type();  // 'alert' | 'confirm' | 'prompt' | 'beforeunload'
       const captured = { ts: new Date().toISOString(), message: message, dialogType: dialogType, row: _currentRowNum };
       // Stash on the current row (if any). Setup/teardown have _currentRow=null; the emit
       // below still captures the dialog text into the journal, which is what matters.
@@ -557,8 +559,21 @@ async function main(){
       }
       emit({ type:'dialog', row: _currentRowNum, message: message, dialogType: dialogType, ts: captured.ts });
     } catch (e) { /* logging never throws */ }
-    // Intentionally NOT calling accept/dismiss here — that's the Handle Dialog step's job,
-    // or Playwright's default auto-dismiss otherwise.
+    // 3.x CRITICAL FIX: registering ANY page.on('dialog') listener DISABLES Playwright's
+    // automatic dialog dismissal. The pre-3.x comment here claimed "Playwright auto-dismisses"
+    // if no listener handles it — that is FALSE. So this log-only listener left every unhandled
+    // dialog OPEN, which freezes the whole page and hangs the worker forever. A single
+    // beforeunload on a navigate step stranded a worker for 13.5h and, because the coordinator
+    // waits for every worker to exit, hung the entire pool overnight. This listener is now a
+    // GUARANTEED fallback that always closes the dialog so nothing can freeze:
+    //   - beforeunload: accept immediately (leave the page — no step ever targets it).
+    //   - everything else: accept after a short grace so a per-step Handle Dialog listener,
+    //     if one is registered, still takes precedence; if it already handled the dialog this
+    //     accept throws ("already handled") and is harmlessly caught.
+    try {
+      if (dialogType === 'beforeunload') { dialog.accept().catch(()=>{}); }
+      else { setTimeout(() => { try { dialog.accept().catch(()=>{}); } catch(_){} }, 1200); }
+    } catch(_){}
   });
 
   // v2.2.3 Session 3C (A1): per-row console + HTTP-response capture for diagnostic dumps.
