@@ -1070,19 +1070,20 @@ ipcMain.handle('pool-discard-orphan', async (_, { poolId }) => {
 
 function resolveOnceFlowByName(name) {
   if (!name) return null;
-  const dir = getFlowsDir();
-  let entries;
-  try { entries = fs.readdirSync(dir); } catch { return null; }
-  for (const f of entries) {
-    if (!/\.json$/i.test(f)) continue;
-    try {
-      const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-      // v1.2.8.1 hotfix: match by filename stem only. Older flows have data.name === 'buu-flow'
-      // for every file; matching on that would collide. The dropdown now uses filename for
-      // its option value, so we look up the same way.
-      const candName = f.replace(/\.json$/i, '');
-      if (candName === name) return data;
-    } catch { /* skip malformed */ }
+  const base = getFlowsDir();
+  // 3.x: search SUBFOLDERS first, flat root last (matches read-flow-by-name). This resolves a
+  // setup/teardown reference to the user's edited subfolder copy, and — critically — keeps
+  // working after the startup dedup removes the flat root duplicates.
+  for (const sub of ['automation', 'once', 'general', '']) {
+    const dir = path.join(base, sub);
+    let entries;
+    try { entries = fs.readdirSync(dir); } catch { continue; }
+    for (const f of entries) {
+      if (!/\.json$/i.test(f)) continue;
+      // v1.2.8.1 hotfix: match by filename stem only.
+      if (f.replace(/\.json$/i, '') !== name) continue;
+      try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { /* skip malformed */ }
+    }
   }
   return null;
 }
@@ -1576,8 +1577,12 @@ ipcMain.handle('read-flow-by-name', async (_, { name }) => {
   try {
     const safe = String(name || '').replace(/[\\/:*?"<>|]/g, '_');
     if (!safe) return null;
-    // R9: search the flow folders (flat root first for pre-R9 stragglers).
-    for (const sub of ['', 'general', 'automation', 'once']) {
+    // 3.x FIX: search SUBFOLDERS FIRST, flat root LAST. Saving files a flow into a subfolder
+    // (automation/general/once), so the subfolder copy is always the freshest; the old
+    // root-first order made a stale bundled root duplicate win over the user's edited
+    // subfolder copy — the flow that RAN was not the flow that was SAVED. Root is now only a
+    // last-resort fallback for genuine flat stragglers with no subfolder copy.
+    for (const sub of ['automation', 'once', 'general', '']) {
       const fp = path.join(getFlowsDir(), sub, safe + '.json');
       if (fs.existsSync(fp)) return { json: fs.readFileSync(fp, 'utf8'), mtime: fs.statSync(fp).mtimeMs, path: fp };
     }
@@ -1665,27 +1670,9 @@ ipcMain.handle('validate-flow-references', async (_, { flow }) => {
       issues.push({ field, ref: null, status: 'not-applicable', msg: '' });
       return;
     }
-    const dir = getFlowsDir();
-    let found = null;
-    let foundFile = null;
-    try {
-      for (const filename of fs.readdirSync(dir)) {
-        if (!filename.toLowerCase().endsWith('.json')) continue;
-        try {
-          const data = JSON.parse(fs.readFileSync(path.join(dir, filename), 'utf8'));
-          // v1.2.8.1 hotfix: match by filename stem only (same reason as resolveOnceFlowByName).
-          const candName = filename.replace(/\.json$/i, '');
-          if (candName === ref) {
-            found = data;
-            foundFile = filename;
-            break;
-          }
-        } catch { /* skip malformed */ }
-      }
-    } catch (e) {
-      issues.push({ field, ref, status: 'missing', msg: 'Cannot read flows directory: ' + e.message });
-      return;
-    }
+    // 3.x: resolve subfolder-first (same lookup as the run path) so validation matches what
+    // actually runs, and doesn't false-report "missing" after the flat-root dedup.
+    const found = resolveOnceFlowByName(ref);
     if (!found) {
       issues.push({ field, ref, status: 'missing', msg: 'Flow "' + ref + '" not found in flows directory.' });
       return;
@@ -1694,7 +1681,7 @@ ipcMain.handle('validate-flow-references', async (_, { flow }) => {
       issues.push({ field, ref, status: 'wrong-mode', msg: 'Flow "' + ref + '" exists but is not a once-flow (runMode = ' + (found.runMode || 'per-row') + ').' });
       return;
     }
-    issues.push({ field, ref, status: 'ok', msg: '', filename: foundFile });
+    issues.push({ field, ref, status: 'ok', msg: '' });
   };
   checkOne('setupFlowId', flow ? flow.setupFlowId : null);
   checkOne('teardownFlowId', flow ? flow.teardownFlowId : null);
@@ -1927,15 +1914,24 @@ function migrateFlowsIntoFolders() {
     const dir = getFlowsDir();
     ensureFlowSubdirs(dir);
     const entries = fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.isFile() && e.name.toLowerCase().endsWith('.json'));
-    let moved = 0;
+    let moved = 0, deduped = 0;
     for (const e of entries) {
       const fp = path.join(dir, e.name);
       let sub = 'general';
       try { const d = JSON.parse(fs.readFileSync(fp, 'utf8')); if (d.runMode === 'once') sub = 'once'; } catch (err) {}
       const dst = path.join(dir, sub, e.name);
-      try { if (!fs.existsSync(dst)) { fs.renameSync(fp, dst); moved++; } } catch (err) {}
+      try {
+        if (!fs.existsSync(dst)) { fs.renameSync(fp, dst); moved++; }
+        else {
+          // 3.x: duplicate — subfolders are canonical. Keep the NEWER copy in the subfolder,
+          // then delete the redundant flat root copy so the resolver never sees a stale dup.
+          // (Root duplicates from the shipped flows-bundle were shadowing the user's edits.)
+          try { if (fs.statSync(fp).mtimeMs > fs.statSync(dst).mtimeMs) fs.copyFileSync(fp, dst); } catch (e2) {}
+          fs.unlinkSync(fp); deduped++;
+        }
+      } catch (err) {}
     }
-    if (moved) console.log('[r9] sorted ' + moved + ' flat flow(s) into folders');
+    if (moved || deduped) console.log('[r9] sorted ' + moved + ' flat flow(s) into folders; removed ' + deduped + ' flat duplicate(s)');
   } catch (e) {}
 }
 
@@ -2000,7 +1996,9 @@ app.whenReady().then(() => {
       try {
         const safe = String(name || '').replace(/[\\/:*?"<>|]/g, '_');
         if (!safe) return null;
-        for (const sub of ['', 'general', 'automation', 'once']) {
+        // 3.x FIX: subfolders first, flat root last (see read-flow-by-name) so a scheduled
+        // run executes the user's EDITED subfolder copy, not a stale bundled root duplicate.
+        for (const sub of ['automation', 'once', 'general', '']) {
           const fp = path.join(getFlowsDir(), sub, safe + '.json');
           if (fs.existsSync(fp)) return { json: fs.readFileSync(fp, 'utf8'), path: fp };
         }
