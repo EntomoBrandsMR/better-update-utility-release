@@ -527,6 +527,12 @@ async function main(){
   const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
   // R15: spreadsheet-free once-flow — one synthetic empty row = one pass of the steps.
   const ALL_ROWS = SPREADSHEET === '__none__' ? [{}] : loadAllRows(SPREADSHEET);
+  // 3.x: step-through for once-flows. A sheet-free once-flow has exactly ONE synthetic row,
+  // so 'step-row' (which only pauses AFTER each row) would run the ENTIRE flow with no
+  // per-step pause and then stop once at the very end — the user sees "everything happens but
+  // it never stops and waits." For a once-flow the meaningful granularity is per-STEP, so we
+  // coerce step-row -> step here. A once-flow now steps exactly like a per-row flow does.
+  if (SPREADSHEET === '__none__' && currentMode === 'step-row') currentMode = 'step';
   // v2.2.4: regression fix from v2.2.2 — when the single-runner was killed and step-by-step
   // was routed through the pool worker, the worker kept its headless:true setting. That made
   // step-by-step useless because the user can't watch what's happening. Now we honor

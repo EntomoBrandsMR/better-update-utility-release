@@ -1068,25 +1068,27 @@ ipcMain.handle('pool-discard-orphan', async (_, { poolId }) => {
 
 
 
-function resolveOnceFlowByName(name) {
-  if (!name) return null;
-  const base = getFlowsDir();
-  // 3.x: search SUBFOLDERS first, flat root last (matches read-flow-by-name). This resolves a
-  // setup/teardown reference to the user's edited subfolder copy, and — critically — keeps
-  // working after the startup dedup removes the flat root duplicates.
+// 3.x: THE ONE flow resolver. Every "find a flow by name" path goes through this — the pool
+// launch (read-flow-by-name), the scheduler, setup/teardown resolution, and validation — so
+// there is a SINGLE subfolder search order and it can never drift again. Subfolders first, flat
+// root last (the flow-location fix). Returns { json, data, path, mtime } or null.
+function resolveFlowByName(name) {
+  const safe = String(name || '').replace(/[\\/:*?"<>|]/g, '_');
+  if (!safe) return null;
   for (const sub of ['automation', 'once', 'general', '']) {
-    const dir = path.join(base, sub);
-    let entries;
-    try { entries = fs.readdirSync(dir); } catch { continue; }
-    for (const f of entries) {
-      if (!/\.json$/i.test(f)) continue;
-      // v1.2.8.1 hotfix: match by filename stem only.
-      if (f.replace(/\.json$/i, '') !== name) continue;
-      try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { /* skip malformed */ }
-    }
+    const fp = path.join(getFlowsDir(), sub, safe + '.json');
+    try {
+      if (fs.existsSync(fp)) {
+        const json = fs.readFileSync(fp, 'utf8');
+        let data = null; try { data = JSON.parse(json); } catch (e) {}
+        return { json, data, path: fp, mtime: fs.statSync(fp).mtimeMs };
+      }
+    } catch (e) {}
   }
   return null;
 }
+// Setup/teardown lookup — thin wrapper over the ONE resolver (returns parsed data or null).
+function resolveOnceFlowByName(name) { const r = resolveFlowByName(name); return r ? r.data : null; }
 
 // ════════════════════════════════════════════════════════════════════════════
 // v2.0.0 — POOL WORKER TEMPLATE (batch-pulling, persistent)
@@ -1574,20 +1576,11 @@ ipcMain.handle('save-flow', async (_, { json, name, sub }) => {
 // for flow names since v1.2.8.1). Returns { json, mtime, path } or null. The pool
 // launch path uses this so what RUNS is always the saved file, deterministically.
 ipcMain.handle('read-flow-by-name', async (_, { name }) => {
-  try {
-    const safe = String(name || '').replace(/[\\/:*?"<>|]/g, '_');
-    if (!safe) return null;
-    // 3.x FIX: search SUBFOLDERS FIRST, flat root LAST. Saving files a flow into a subfolder
-    // (automation/general/once), so the subfolder copy is always the freshest; the old
-    // root-first order made a stale bundled root duplicate win over the user's edited
-    // subfolder copy — the flow that RAN was not the flow that was SAVED. Root is now only a
-    // last-resort fallback for genuine flat stragglers with no subfolder copy.
-    for (const sub of ['automation', 'once', 'general', '']) {
-      const fp = path.join(getFlowsDir(), sub, safe + '.json');
-      if (fs.existsSync(fp)) return { json: fs.readFileSync(fp, 'utf8'), mtime: fs.statSync(fp).mtimeMs, path: fp };
-    }
-    return null;
-  } catch (e) { return null; }
+  // 3.x: routes through the ONE resolver (resolveFlowByName) so the run path, the scheduler,
+  // and reference-validation all resolve a flow the exact same way — subfolders first, flat
+  // root last — and the subfolder-first order can never drift between call sites again.
+  const r = resolveFlowByName(name);
+  return r ? { json: r.json, mtime: r.mtime, path: r.path } : null;
 });
 
 ipcMain.handle('load-flow', async () => {
@@ -1992,19 +1985,10 @@ app.whenReady().then(() => {
     COORD,
     keytar, // 3.x: scheduler sends run-notification emails via mailer.js, which reads config from the vault
     getWindow: () => mainWindow,
-    readFlowByName: (name) => {
-      try {
-        const safe = String(name || '').replace(/[\\/:*?"<>|]/g, '_');
-        if (!safe) return null;
-        // 3.x FIX: subfolders first, flat root last (see read-flow-by-name) so a scheduled
-        // run executes the user's EDITED subfolder copy, not a stale bundled root duplicate.
-        for (const sub of ['automation', 'once', 'general', '']) {
-          const fp = path.join(getFlowsDir(), sub, safe + '.json');
-          if (fs.existsSync(fp)) return { json: fs.readFileSync(fp, 'utf8'), path: fp };
-        }
-      } catch (e) {}
-      return null;
-    },
+    // 3.x: scheduled runs resolve through the ONE resolver too, so a scheduled run executes
+    // the user's EDITED subfolder copy exactly like an interactive run — never a stale root
+    // duplicate, and never a divergent subfolder order.
+    readFlowByName: (name) => { const r = resolveFlowByName(name); return r ? { json: r.json, path: r.path } : null; },
   }); } catch (e) { console.error('[r16] scheduler init failed:', e.message); }
     createWindow();
     // v2.2.3 Session 3E (B4): log retention. Runs asynchronously after window creation so a
