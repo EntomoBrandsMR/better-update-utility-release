@@ -114,7 +114,7 @@ const mailer = require('./mailer');
 function _ordinal(n){ const s=['th','st','nd','rd'], v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
 function _timeLabel(t){ const p=String(t||'09:00').split(':'); let h=parseInt(p[0],10)||0; const m=(p[1]||'00'); const ap=h>=12?'PM':'AM'; h=h%12; if(h===0)h=12; return h+':'+m+' '+ap; }
 const _DOW = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-const _DOW3 = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+// R6: _DOW3 deleted — it duplicated WD (top of file) verbatim.
 function _freqPhrase(s){
   if(s.type==='daily') return 'daily';
   if(s.type==='once') return 'once';
@@ -123,7 +123,7 @@ function _freqPhrase(s){
     const days=(Array.isArray(s.days)?s.days:[]).slice().sort((a,b)=>a-b);
     if(days.length===0) return 'weekly';
     if(days.length===1) return 'weekly on ' + _DOW[days[0]] + 's';
-    return 'weekly on ' + days.map(d=>_DOW3[d]).join(', ');
+    return 'weekly on ' + days.map(d=>WD[d]).join(', ');
   }
   return String(s.type||'once');
 }

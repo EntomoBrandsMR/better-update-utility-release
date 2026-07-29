@@ -119,6 +119,46 @@ async function logoutFrom(page, creds){
   return logoutFromPestPac(page);
 }
 
+// R5 (3.2.0): THE login-screen probe. True when the page is CURRENTLY showing a login
+// screen for the platform — passive, never navigates. This one set of URL patterns and
+// form selectors replaces the worker's two hand-written copies (the fast-fail probe and
+// the dead-session recovery block, which had drifted into if/else-chain form). Never
+// throws; a probe error reads as "not a login screen" so recovery logic stays gentle.
+async function isLoginScreen(page, platform){
+  try{
+    const _plat = platform || 'pestpac';
+    const _u = page.url();
+    if(/login\.pestpac\.com/i.test(_u)) return true;
+    if(_plat==='frankware' && /\/login/i.test(_u)) return true;
+    if(_plat==='fieldwork' && /\/sign_in\b/i.test(_u)) return true;
+    if(_plat==='fieldwork' && await page.$('#sign-in-password')) return true;
+    if(await page.$('input[name="uid"]')) return true;
+    if(await page.$('input[name="username"]')) return true;
+  }catch(e){}
+  return false;
+}
+
+// R5 (3.2.0): THE license-page reader — one DOM scraper for license.asp?Mode=View,
+// shared by the check-license-cap IPC and the coordinator's elastic checker (they had
+// two independent copies that would have drifted the day PestPac changes that page).
+// v2.2.1 rules preserved: scan ONLY the #div_PestPac panel (the page also has Mobile
+// App and RouteOp tables with identical row labels) and require an EXACT normalized
+// label match so "free" can never read the used/total cell. Returns RAW text values
+// { free, used, total } (null per field when not found) — callers parse.
+async function readLicensePage(page){
+  await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
+  return await page.evaluate(() => {
+    const scope = document.querySelector('#div_PestPac') || document;
+    const tds = Array.from(scope.querySelectorAll('td'));
+    const read = (labels) => { for (const td of tds){ const l=(td.textContent||'').trim().toLowerCase().replace(/\s+/g,' '); if(labels.indexOf(l)>=0){ const s=td.nextElementSibling; if(s) return (s.textContent||'').trim(); } } return null; };
+    return {
+      free:  read(['number of free licenses:','number of free licenses']),
+      used:  read(['number of used licenses:','number of used licenses']),
+      total: read(['number of licenses:','number of licenses']),
+    };
+  });
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { loginToPestPac, logoutFrom, logoutFromPestPac, logoutFromFieldwork, logoutFromFrankware };
+  module.exports = { loginToPestPac, logoutFrom, logoutFromPestPac, logoutFromFieldwork, logoutFromFrankware, isLoginScreen, readLicensePage };
 }

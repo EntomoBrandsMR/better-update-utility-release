@@ -1,6 +1,6 @@
 {
   "name": "buu-2",
-  "version": "3.1.7",
+  "version": "3.2.0",
   "description": "BUU 2.0 — PestPac automation with elastic worker pool",
   "author": "Entomo Brands",
   "main": "src/main.js",
@@ -61,8 +61,7 @@
     "asarUnpack": [
       "node_modules/playwright-core/**/*",
       "node_modules/xlsx/**/*",
-      "node_modules/keytar/**/*",
-      "node_modules/csv-parse/**/*"
+      "node_modules/keytar/**/*"
     ]
   },
   "devDependencies": {
@@ -71,7 +70,6 @@
     "exceljs": "^4.4.0"
   },
   "dependencies": {
-    "csv-parse": "^5.5.0",
     "keytar": "^7.9.0",
     "playwright-core": "^1.59.1",
     "xlsx": "^0.18.5"

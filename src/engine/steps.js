@@ -2,28 +2,12 @@
 // VERBATIM into the pool worker child script via ${STEPS_SRC}.
 // SCOPE CONTRACT — the host that inlines this file must define, before this point:
 //   RUN_CONTEXT, PAGE_LOAD_MODE, NAV_TIMEOUT, SELECTOR_TIMEOUT (config globals),
-//   resolveStepLocator/findLocator (engine/locate.js), loginToPestPac (engine/login.js),
+//   resolveStepLocator/findLocator (engine/locate.js), loginToPestPac + logoutFrom
+//   (engine/login.js), resolveToken/stampVal (engine/tokens.js — R2: ALL token logic
+//   lives there; tokens.js must be inlined BEFORE this file),
 //   fs (node builtin, used by fileupload).
 // Extracted verbatim from buildPoolWorker template — Phase 2 refactor, 2026-07-10.
 // ifclick + dialog handlers intentionally survive Phase 2; they die with R2/R3.
-// R6 system date tokens. {{TODAY}} is LIVE per resolution (crosses midnight mid-run);
-// {{RUNDATE}} is frozen at pool start (runContext.runStartTs). Both accept ±N days:
-// {{TODAY-1}}, {{RUNDATE+30}}. MM/DD/YYYY zero-padded, straight day arithmetic (the
-// local-date constructor normalizes month/DST rollover). System tokens WIN over
-// same-named columns; the save-time warning covers the collision. Returns null when
-// ref is not a system date token so column resolution proceeds.
-function buuSystemToken(ref, runContext){
-  const m = /^(TODAY|RUNDATE)([+-]\d+)?$/.exec(String(ref||'').trim());
-  if(!m) return null;
-  let base;
-  if(m[1] === 'TODAY') base = new Date();
-  else {
-    const ts = runContext && runContext.runStartTs;
-    base = ts ? new Date(ts) : new Date();
-  }
-  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + (m[2] ? parseInt(m[2], 10) : 0));
-  return String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getDate()).padStart(2,'0') + '/' + d.getFullYear();
-}
 
 async function runStep(page, step, row, creds){
 
@@ -38,7 +22,7 @@ async function runStep(page, step, row, creds){
     page.on('dialog', _r3Handler);
   }
   try {
-  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ ref=String(ref).trim(); /* v3.0.2: header/token whitespace — trimmed headers and trimmed refs must agree, and this keeps flows written against an untrimmed header working */ const _sys=buuSystemToken(ref, typeof RUN_CONTEXT!=='undefined'?RUN_CONTEXT:null); if(_sys!==null)return _sys; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return row[ref]!==undefined?String(row[ref]):''; }); };
+  const r=v=>resolveToken(v,{ row, creds, runContext:(typeof RUN_CONTEXT!=='undefined'?RUN_CONTEXT:null) }); // R2: THE resolver (engine/tokens.js) — no local token logic
   const ms=s=>Math.round(parseFloat(s||1)*1000);
   switch(step.type){
     case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:PAGE_LOAD_MODE,timeout:NAV_TIMEOUT}); break;}
@@ -153,13 +137,11 @@ async function runStep(page, step, row, creds){
       // Frankware's "entries" count and Next button are unreliable, so termination is the EMPTY
       // PAGE. Balance is rendered NEGATIVE when owed; we keep the sign and parse to a number.
       const url=r(step.url); if(!url) throw new Error('Frankware scrape: orders URL is empty');
-      // Stamp values accept {{Token}} syntax (resolved through r(), exactly like the URL field)
-      // OR a bare column name. The v2.2.7 bug read row['{{Old Acct #}}'] literally; now a token
-      // is resolved via r() and a bare name falls back to a direct row[column] lookup.
-      const stampVal = function(f){ if(!f) return ''; var t=String(f).trim(); if(t.indexOf('{{')>=0) return r(t); return (row[t]!==undefined ? String(row[t]) : ''); };
-      const prop = stampVal(step.propCol);
-      const loc  = stampVal(step.locCol);
-      const inv  = stampVal(step.invCol);
+      // Stamp values accept {{Token}} syntax OR a bare column name — shared stampVal
+      // (engine/tokens.js) since R2; the v2.2.7 literal-read bug note lives there.
+      const prop = stampVal(step.propCol, r, row);
+      const loc  = stampVal(step.locCol, r, row);
+      const inv  = stampVal(step.invCol, r, row);
       await page.goto(url,{waitUntil:'domcontentloaded',timeout:NAV_TIMEOUT});
       const rowSel='#tab-orders .dataTables_scrollBody table.dataTable tbody tr';
       const num=s=>{ const t=(s==null?'':String(s)).replace(/[$,]/g,'').trim(); if(t===''||t==='-') return ''; const n=parseFloat(t); return isNaN(n)?'':n; };
@@ -203,9 +185,8 @@ async function runStep(page, step, row, creds){
       // row.__scrape with row.__scrapeKind so the coordinator writes Fieldwork columns.
       // ALWAYS emits at least the per-location log record (even zero cancellations) so the
       // operator can tell "scraped, none found" from "never scraped".
-      const stampVal = function(f){ if(!f) return ''; var t=String(f).trim(); if(t.indexOf('{{')>=0) return r(t); return (row[t]!==undefined ? String(row[t]) : ''); };
-      const acct = stampVal(step.acctCol);
-      const loc  = stampVal(step.locCol);
+      const acct = stampVal(step.acctCol, r, row);  // shared stampVal (engine/tokens.js, R2)
+      const loc  = stampVal(step.locCol, r, row);
       const url  = r(step.url); if(!url) throw new Error('Fieldwork scrape: history URL is empty');
       await page.goto(url,{waitUntil:'domcontentloaded',timeout:NAV_TIMEOUT});
       // 3.1.3 FIX: cancellations are AJAX-loaded into div.agreement-container AFTER the
@@ -296,16 +277,15 @@ async function runStep(page, step, row, creds){
       row.__scrapeKind='fieldwork-cancellations';
       break;
     }
-    // v2.2.2 Session 2B: textedit ported from buildRunner. Multi-mode in-place text manipulation
-    // on the field at step.selector. Reads current value, transforms per editMode, writes back.
-    // editModes: find-replace / exact-remove / partial-remove-word / partial-remove-piece /
-    //            partial-replace-piece / remove-after / remove-before / trim /
-    //            remove-extra-spaces / regex. Bug fix on port: the regex editMode previously
-    //            referenced undefined "replace" — corrected to "replaceStr".
+    // R5 (3.2.0): 'textedit' REMOVED (Matthew's call). Its case was silently lost in the
+    // Phase 2 extraction (only this comment's predecessor survived), the builder cannot
+    // create the type, and no flow on disk uses it — an unknown type here is a silent
+    // no-op, so its ghosts (pause preview, email label, validation fields) were purged
+    // with it. readfield + type cover the surviving use cases.
     case 'dialog':{ const matchText=step.dialogMatch||''; const dialogAction=step.dialogAction||'accept'; if(page._buuDialogListener){ try{page.off('dialog',page._buuDialogListener);}catch(_){} page._buuDialogListener=null; } const handler=async dialog=>{ try{page.off('dialog',handler);}catch(_){} if(page._buuDialogListener===handler)page._buuDialogListener=null; const msg=dialog.message(); const matches=!matchText||msg.toLowerCase().includes(matchText.toLowerCase()); try{ if(matches){ if(dialogAction==='dismiss')await dialog.dismiss(); else await dialog.accept(); } else { await dialog.dismiss(); } }catch(e){} }; page._buuDialogListener=handler; page.on('dialog',handler); break; }
   }
   } finally {
     if (_r3Handler) { try { page.off('dialog', _r3Handler); } catch (e) {} }
   }
 }
-if (typeof module !== "undefined" && module.exports) { module.exports = { runStep, buuSystemToken }; }
+if (typeof module !== "undefined" && module.exports) { module.exports = { runStep }; } // buuSystemToken moved to engine/tokens.js (R2)

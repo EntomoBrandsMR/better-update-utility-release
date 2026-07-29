@@ -3,9 +3,14 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"/>
 <title>Better Update Utility</title>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- R6: the CDN SheetJS script is GONE — zero references in this file (the renderer gets
+     headers/preview/count from the open-spreadsheet IPC, which uses engine/rows.js).
+     It was a network fetch through the corporate firewall on every boot, for nothing.
+     CSP tightened accordingly: no external script/source origins remain. -->
+<!-- R2b: THE token module (window.BUUTokens) — the SAME file the engine runs, not a copy -->
+<script src="engine/tokens.js"></script>
 <style>
 :root {
   --bg: #0f0f11;
@@ -458,61 +463,8 @@ textarea { resize: vertical; min-height: 60px; }
 .vstep.err { border-left-color: var(--red); }
 .vstep.locked-step { border-left-color: var(--purple); background: var(--plt); }
 
-/* ── DRY RUN ── */
-.dr-ctrl {
-  display: flex; align-items: center; gap: 10px;
-  padding: 13px 16px; background: var(--surf);
-  border: 1px solid var(--bdr); border-radius: var(--rl);
-  margin-bottom: 14px; position: sticky; top: 0; z-index: 10;
-}
-.dr-prog { flex: 1; height: 4px; background: var(--bdr2); border-radius: 2px; overflow: hidden; }
-.dr-fill { height: 100%; background: var(--blue); border-radius: 2px; transition: width .25s; }
-.dr-step {
-  background: var(--surf2); border: 1px solid var(--bdr);
-  border-radius: var(--rl); padding: 14px 17px;
-  margin-bottom: 7px; transition: all .2s;
-}
-.dr-step.dr-pending { opacity: .3; }
-.dr-step.dr-current { border: 2px solid var(--blue); background: var(--blt); }
-.dr-step.dr-done { border-color: var(--gmd); background: var(--glt); opacity: .75; }
-.dr-step.dr-err { border: 2px solid var(--red); background: var(--rlt); }
-.dr-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.dr-num {
-  width: 24px; height: 24px; border-radius: 50%;
-  background: var(--surf3); display: flex; align-items: center;
-  justify-content: center; font-size: 10px; font-weight: 700;
-  color: var(--t2); flex-shrink: 0;
-}
-.dr-step.dr-current .dr-num { background: var(--blue-dk); color: #fff; }
-.dr-step.dr-done .dr-num { background: var(--green-dk); color: #fff; }
-.dr-step.dr-err .dr-num { background: var(--red-dk); color: #fff; }
-.dr-action { font-size: 13px; font-weight: 600; color: var(--tx); }
-.dr-detail { font-size: 12px; color: var(--t2); padding-left: 34px; line-height: 1.8; }
-.dr-val {
-  background: var(--surf3); border: 1px solid var(--bmd);
-  border-radius: 4px; padding: 2px 7px;
-  font-family: 'Consolas', monospace; font-size: 11px;
-  color: var(--blue); display: inline-block; margin: 1px 2px;
-}
-.dr-cred {
-  background: var(--plt); border: 1px solid var(--pmd);
-  border-radius: 4px; padding: 2px 7px;
-  font-family: 'Consolas', monospace; font-size: 11px;
-  color: var(--purple); display: inline-block; margin: 1px 2px;
-}
-.dr-missing {
-  background: var(--rlt); border: 1px solid var(--rmd);
-  border-radius: 4px; padding: 2px 7px;
-  font-family: 'Consolas', monospace; font-size: 11px;
-  color: var(--red); display: inline-block; margin: 1px 2px;
-}
-.dr-err-box {
-  background: var(--rlt); border: 1px solid var(--rmd);
-  border-radius: var(--r); padding: 9px 13px;
-  margin-top: 8px; font-size: 11px; color: #ff8080; line-height: 1.6;
-}
-.row-sel { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
-.row-sel label { font-size: 12px; color: var(--t2); white-space: nowrap; }
+/* R6: the DRY RUN style block is gone — the dry-run preview feature was deleted long
+   ago; no .dr-* or .row-sel markup or JS remained anywhere in this file. */
 
 /* ── RUN PANEL ── */
 .run-panel { margin-bottom: 14px; }
@@ -522,17 +474,7 @@ textarea { resize: vertical; min-height: 60px; }
 .run-stat { background: var(--surf3); border: 1px solid var(--bdr); border-radius: var(--r); padding: 10px; text-align: center; }
 .run-stat-val { font-size: 20px; font-weight: 700; line-height: 1; color: var(--tx); }
 .run-stat-lbl { font-size: 9px; color: var(--t3); text-transform: uppercase; letter-spacing: .06em; margin-top: 3px; }
-.live-log {
-  background: #0a0a0e; border: 1px solid var(--bdr);
-  border-radius: var(--r); padding: 12px;
-  font-family: 'Consolas', monospace; font-size: 11px;
-  height: 200px; overflow-y: auto; color: var(--t2); line-height: 1.7;
-}
-.live-log .log-ok { color: var(--green); }
-.live-log .log-err { color: var(--red); font-weight: 700; }
-.live-log .log-warn { color: var(--amber); }
-.live-log .log-info { color: var(--blue); }
-
+/* R6: .live-log styles gone — the #liveLog console left the markup in v1.3.4. */
 .s-ok { color: var(--green); font-weight: 700; }
 .s-err { color: var(--red); font-weight: 700; }
 
@@ -1024,19 +966,11 @@ textarea { resize: vertical; min-height: 60px; }
   <div class="card run-panel">
     <div class="card-hd" style="margin-bottom:6px">
       <div id="runStatusMsg" style="font-size:14px;font-weight:700;color:var(--t2)">Idle</div>
-      <div style="display:flex;gap:6px">
-        <button class="btn sm" id="openLogBtn" onclick="openCurrentLog()" style="display:none">Open log file</button>
-      </div>
+      <div style="display:flex;gap:6px"></div>
     </div>
-    <!-- v1.2.8: phase indicator. Only shown when the flow has setup or teardown attached.
-         Pip states: pending (gray), running (blue+pulse), done (green), failed (red), skipped (gray). -->
-    <div class="phase-indicator" id="phaseIndicator" style="display:none;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:var(--t2)">
-      <span class="phase-pip" id="phasePipSetup" data-phase="setup" style="display:none;padding:3px 10px;border-radius:10px;background:var(--bg2);border:1px solid var(--brd)">Setup</span>
-      <span class="phase-arrow" id="phaseArrow1" style="display:none;color:var(--t3)">→</span>
-      <span class="phase-pip" id="phasePipMain" data-phase="main" style="padding:3px 10px;border-radius:10px;background:var(--bg2);border:1px solid var(--brd)">Main</span>
-      <span class="phase-arrow" id="phaseArrow2" style="display:none;color:var(--t3)">→</span>
-      <span class="phase-pip" id="phasePipTeardown" data-phase="teardown" style="display:none;padding:3px 10px;border-radius:10px;background:var(--bg2);border:1px solid var(--brd)">Teardown</span>
-    </div>
+    <!-- R6: dead UI removed — the "Open log file" button (currentLogPath was never set)
+         and the phase-pip indicator (nothing ever drove it; pool-once-flow events feed
+         the status line instead). -->
     <div class="run-prog-wrap"><div class="run-prog-bar" id="runProgBar" style="width:0"></div></div>
     <div class="run-stats">
       <div class="run-stat"><div class="run-stat-val" id="rs-done">0</div><div class="run-stat-lbl">Done</div></div>
@@ -1211,20 +1145,16 @@ let pendingInsertId = null, pendingInsertField = null, pasteFoundSel = '';
 let updInfo = null, headless = false;
 let isRunning = false;
 // v1.3.0 Item 11: isPaused removed. Pause button was vestigial — never wired through to a runner command.
-let currentLogPath = null, runStartTime = null, runRowsDone = 0, runTotal = 0;
-let currentRunId = null;
+// R6: dead run-state cluster deleted — currentLogPath/currentRunId/runRowsDone/runTotal/
+// runOk/runErr/runSkip were declared and never written (single-runner leftovers), and
+// manualRowCursor (the step→pool row handoff) was read at staging but never set anywhere.
+let runStartTime = null; // live: drives the elapsed ticker + rate/ETA
 let currentRunMode = 'run-all'; // tracks runner's current mode for UI; updated by 'mode' / 'pause-*' events
 // v2.2.2 Session 2C: when set, the currently-shown pause panel was triggered by a POOL
 // worker (not the single-runner). The Next-step / Next-row / Run-All / Stop button handlers
 // check this flag and route to poolRunControl instead of runControl. Cleared by hidePause
 // and by the button handlers themselves.
 let currentPoolPause = null;
-// v2.1.0 (#5) step-by-step -> pool handoff: tracks the NEXT row to process while the user is
-// stepping manually in the single-runner. When they switch to the pool, poolStageCurrent passes
-// this as resumeFromRow so the pool picks up where the stepping left off. null = no handoff (pool
-// starts at row 1, the normal case).
-let manualRowCursor = null;
-let runOk = 0, runErr = 0, runSkip = 0;
 // v1.2.5 item 2.12: track failed source-row indexes for the in-progress / just-completed run.
 // Uncapped (uncapped) - we need every failed row to
 // build the retry list. Each entry is just an integer (the source-row number, 1-based).
@@ -1263,8 +1193,6 @@ window.addEventListener('DOMContentLoaded', async () => {
       });
     }
     await loadProfiles();
-    // v2.2.7: restore the persistent "Write Frankware scrape to CSV" run-setting (default on).
-    try { if (API.getConfig) { const _c = await API.getConfig(); const _chk = document.getElementById('scrapeCsvChk'); if (_chk) _chk.checked = (_c.scrapeCsvEnabled !== false); } } catch(e){}
     seedExampleSteps();
     // v1.2.8: initialize flow-meta UI. Default to per-row, populate dropdowns.
     setRunMode('per-row', true); // v3.0.2: boot sync, not a user edit
@@ -1403,22 +1331,7 @@ function renderColChips() {
     cols.map(c => '<span class="col-ref">{{' + c + '}}</span>').join(' ') +
     '</div>';
 }
-function removeCol(c) { cols = cols.filter(x => x !== c); renderColChips(); }
-function copyToken(col) {
-  const token = '{{' + col + '}}';
-  if (pendingInsertId !== null) {
-    const inp = document.getElementById('fi-' + pendingInsertId + '-' + pendingInsertField);
-    if (inp) {
-      const pos = inp.selectionStart || inp.value.length;
-      inp.value = inp.value.slice(0, pos) + token + inp.value.slice(pos);
-      const s = steps.find(x => x.id === pendingInsertId);
-      if (s) s[pendingInsertField] = inp.value;
-      inp.focus(); inp.setSelectionRange(pos + token.length, pos + token.length);
-      return;
-    }
-  }
-  navigator.clipboard && navigator.clipboard.writeText(token);
-}
+// R6: removeCol + copyToken deleted — zero callers (chips are drag-only since v1.2.5).
 function renderPreview() {
   if (!ssRows.length) return;
   let html = '<table class="tbl"><thead><tr>' + ssHeaders.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>';
@@ -1844,21 +1757,7 @@ function tokenBar(sid, field) {
     '<div class="chips">' + sysChips + cols.map(c => chip(c, false)).join('') + readTokens.map(c => chip(c, true)).join('') + '</div>' +
     '</div>';
 }
-function _tokenBar_OLD(sid, field) {
-  // the function signature so existing callers don't need to change.
-  if(!cols.length){
-    return '<div style="margin-bottom:10px">' +
-      '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert column token</div>' +
-      '<div class="chips" style="font-size:11px;color:var(--t3);font-style:italic;padding:4px 0">Load a spreadsheet to see column tokens you can drag.</div>' +
-      '</div>';
-  }
-  return '<div style="margin-bottom:10px">' +
-    '<div style="font-size:10px;font-weight:700;color:var(--t3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em">Insert column token <span style="font-weight:500;text-transform:none;letter-spacing:0;color:var(--t3)">— drag onto any field below</span></div>' +
-    '<div class="chips">' + cols.map(c =>
-      '<span class="chip" draggable="true" data-token="{{' + esc(c) + '}}" title="Drag onto any field below"><span class="tok">{{' + c + '}}</span></span>'
-    ).join('') + '</div>' +
-    '</div>';
-}
+// R6: _tokenBar_OLD deleted — a dead prior revision shadowing the live tokenBar.
 
 // R3: shared dialog-checkbox fragment for action steps (click/type/select/checkbox/navigate).
 // Mutually exclusive; armed before the action; chained dialogs during the step are handled.
@@ -1913,7 +1812,7 @@ function bodyHTML(s) {
 }
 
 function esc(v) { return (v||'').toString().replace(/"/g,'&quot;'); }
-function esc2(v) { return (v||'').toString().replace(/'/g,"\\'"); }
+// R6: esc2 deleted — zero callers.
 function toggleStep(id) { const s=steps.find(x=>x.id===id); if(s){s.open=!s.open;renderSteps();} }
 function u(id,f,v) { const s=steps.find(x=>x.id===id); if(s){ s[f]=v; markFlowDirty(); } scheduleValidationRefresh(); }
 function delStep(e,id) { e.stopPropagation(); steps=steps.filter(s=>s.id!==id); markFlowDirty(); renderSteps(); }
@@ -1976,9 +1875,8 @@ function validateBracePairs(text){
 function runValidation() {
   const items=[],all=allSteps();
   let errs=0,warns=0;
-  // v1.2.8: run-context token allowlist for once-flows. These are resolved by the runner
-  // at run time from a runContext object, not from spreadsheet rows.
-  const RUN_CONTEXT_TOKENS = ['TODAY','RUNID','PROFILE_USERNAME'];
+  // v1.2.8 → R2b: the run-context token allowlist moved into engine/tokens.js
+  // (BUUTokens.isBuiltinToken — one rule, incl. {{RUNDATE}} and ±N day forms).
   // v1.2.8: top-level flow checks branch on runMode.
   if(runMode === 'once'){
     // Once-flows have no spreadsheet, no profile-relevance-to-URL check, and cannot
@@ -2034,18 +1932,16 @@ function runValidation() {
     (function(){
       const readDefs = all.filter(x=>x.type==='readfield'&&(x.colName||'').trim()).map(x=>({name:(x.colName||'').trim(),idx:all.indexOf(x)}));
       if(!readDefs.length) return;
-      const fields=[s.url,s.value,s.selector,s.matchText,s.containerSel,s.waitFor,s.waitSel,s.condCol,s.expected,s.pathColumn,s.fileNameColumn,s.baseFolder,s.searchVal,s.replaceVal];
-      const used=new Set();
-      fields.forEach(f=>{ if(typeof f!=='string')return; let m; const re=/{{\s*([^}]+?)\s*}}/g; while((m=re.exec(f))){ used.add(m[1].trim()); } });
+      const used=new Set(BUUTokens.scanStepTokens(s)); // R2b: THE scanner — one field list, one rule
       used.forEach(tok=>{
         const def=readDefs.find(d=>d.name===tok);
         if(def && def.idx>=i){ issues.push({t:'err',msg:'Uses {{'+tok+'}} but that value is read at a later step (#'+(def.idx+1)+'). Move the Read field step above this one.'});errs++; }
       });
     })();
-    // v1.3.0 Item 8: brace-pair validation on all token-accepting fields. Runs before the
-    // token-in-spreadsheet check below. Catches malformed braces ("{{Name}", "{{}}", "{{{")
-    // tokens too, so they're included here even though they're not in the substitution check.
-    [s.value,s.url,s.condCol,s.searchVal,s.replaceVal].filter(v=>typeof v==='string'&&v.length).forEach(v=>{
+    // v1.3.0 Item 8: brace-pair validation on token-accepting fields. Runs before the
+    // token-in-spreadsheet check below. Catches malformed braces ("{{Name}", "{{}}", "{{{").
+    // R5: searchVal/replaceVal dropped — textedit ghost fields, purged with the type.
+    [s.value,s.url,s.condCol].filter(v=>typeof v==='string'&&v.length).forEach(v=>{
       validateBracePairs(v).forEach(bi=>{
         issues.push(bi);
         if(bi.t==='err') errs++; else warns++;
@@ -2071,22 +1967,23 @@ function runValidation() {
     // errors if one is referenced too early, so here we just treat any read-field column name as
     // an allowed token to avoid a false "not in spreadsheet" error.
     const readFieldNames = all.filter(x=>x.type==='readfield'&&(x.colName||'').trim()).map(x=>(x.colName||'').trim());
-    [s.value,s.url,s.condCol,s.matchText].filter(Boolean).forEach(v=>{
-      [...v.matchAll(/\{\{([^}]+)\}\}/g)].forEach(m=>{
-        const ref = m[1];
-        if(ref.startsWith('CRED:')) return;  // credential refs always allowed
-        if(RUN_CONTEXT_TOKENS.includes(ref)) return;  // run-context tokens always allowed
-        if(readFieldNames.includes(ref.trim())) return; // read-field token (ordering checked above)
-        if(runMode === 'once'){
-          // Once-flows cannot reference spreadsheet columns.
-          issues.push({t:'err',msg:'{{' + ref + '}} is a spreadsheet column reference, which is not allowed in once-flows. Use a static value or a run-context token (TODAY, RUNID, PROFILE_USERNAME).'});
+    // R2b: THE scanner + runner-exact rules (engine/tokens.js). CRED:* and builtins are
+    // excluded by the scanner — including {{RUNDATE}} and ±N forms like {{TODAY-1}},
+    // which the old inline allowlist FALSE-FLAGGED as missing columns. Column match is
+    // EXACT and case-sensitive because the runner's row lookup is: a wrong-case token
+    // types an EMPTY value at run time — so it gets flagged here, not discovered mid-run.
+    BUUTokens.scanStepTokens(s).forEach(ref=>{
+      if(readFieldNames.includes(ref)) return; // read-field token (ordering checked above)
+      if(runMode === 'once'){
+        issues.push({t:'err',msg:'{{' + ref + '}} is a spreadsheet column reference, which is not allowed in once-flows. Use a static value or a run-context token (TODAY, RUNID, PROFILE_USERNAME).'});
+        errs++;
+      } else {
+        if(!cols.includes(ref)){
+          const near = cols.find(c => c.toLowerCase() === ref.toLowerCase());
+          issues.push({t:'err',msg:'{{' + ref + '}} not in spreadsheet' + (near ? ' — did you mean {{' + near + '}}? (column names are case-sensitive)' : '.')});
           errs++;
-        } else {
-          // Per-row flow: must match a column name from the spreadsheet.
-          const colMatch = cols.find(c => c.toLowerCase() === ref.toLowerCase());
-          if(!colMatch){ issues.push({t:'err',msg:'{{' + ref + '}} not in spreadsheet.'}); errs++; }
         }
-      });
+      }
     });
     const worst=issues.length?(issues.some(x=>x.t==='err')?'err':issues.some(x=>x.t==='warn')?'warn':'ok'):'ok';
     const smEntry=SM[s.type]||{label:s.type,badge:'bd-nav',desc:()=>s._label||s.type};items.push({isStep:true,stepId:s.id,stepNum:n,type:s.type,label:smEntry.label,desc:smEntry.desc(s),issues,worst});
@@ -2121,42 +2018,9 @@ function applyValidationHighlights(items){
   });
 }
 
-// v1.2.5 item 2.6: scroll to first flagged step and apply highlights. Used by
-// the pre-run "Show me" path. Returns true if there was a step to scroll to.
-function scrollToFirstFlaggedStep(items){
-  applyValidationHighlights(items);
-  const first=items.find(x=>x.isStep && x.issues.length && (x.worst==='err' || x.worst==='warn'));
-  if(!first) return false;
-  go('builder');  // make sure we're on the Build steps page
-  // Defer the scroll slightly so the panel-switch settles first.
-  setTimeout(()=>{
-    const card=document.querySelector('.step-card[data-step-id="'+first.stepId+'"]');
-    if(card) card.scrollIntoView({behavior:'smooth',block:'center'});
-  },50);
-  return true;
-}
-
-// v1.2.5 item 2.6: pre-run validation gate. Non-blocking — user can override.
-// Returns true if the run should proceed, false if it should abort.
-// 'Show me' aborts the run AND highlights+scrolls to the first issue.
-function preRunValidationGate(){
-  const result=runValidation();
-  if(!result || (result.errs===0 && result.warns===0)){
-    // No issues - clear any stale highlights and proceed silently.
-    applyValidationHighlights(null);
-    return true;
-  }
-  const total=result.errs+result.warns;
-  const summary='Validation found '+result.errs+' error'+(result.errs===1?'':'s')+' and '+result.warns+' warning'+(result.warns===1?'':'s')+'. Run anyway?';
-  // Ordering matters: 'Show me' is the safe middle option. confirm() only gives
-  // OK/Cancel, so we use a 3-state via a sequenced prompt.
-  const choice=confirm(summary+'\n\nOK = Run anyway\nCancel = Show me where (or stop)');
-  if(choice) return true;  // Run anyway
-  // User chose Cancel - now ask: "Show me" or just stop?
-  const showMe=confirm('Show me where the issues are?\n\nOK = Highlight flagged steps and scroll to the first one\nCancel = Just close this dialog');
-  if(showMe) scrollToFirstFlaggedStep(result.items);
-  return false;
-}
+// R6: scrollToFirstFlaggedStep + preRunValidationGate deleted — the gate had zero
+// callers (the pool path does its own fresh-read validation in poolRunClick), and the
+// scroller's only caller was the gate. Live-revalidation highlights remain below.
 
 // v1.2.5 item 2.6: live re-validation. Runs validation and re-applies highlights
 // after any step edit. Debounced 200ms to keep keystroke typing smooth.
@@ -2190,10 +2054,7 @@ function updateStartModeHint(){
   else hint.textContent='Fire-and-forget through every row. No pauses. Use this once your flow is verified.';
 }
 
-// R11: the single-runner start path is gone with the shim. ONE run path: stage the
-// current flow as a pool job and run it (fresh-read, validation, confirm — all in
-// poolRunClick/poolStageCurrent).
-async function startRun(){ return poolRunClick(); }
+// R6: startRun alias deleted — zero callers; poolRunClick IS the one run path (R11).
 
 // R11: retryFailedRows died with the single-runner. Rerun-file + journal reconciliation
 // is the real retry workflow; the R12 error strip surfaces failures live.
@@ -2283,7 +2144,7 @@ let stepPaneSticky = false;
 let lastSubmittedDataJson = null; // R5b: DATA steps as submitted — live-reload diff baseline
 let lastPauseEvt = null;
 let _paneExecTimer = null, _paneExecStart = 0, _paneExecMsg = '';
-const PANE_BTN_IDS = ['paneNextStepBtn','paneRedoStepBtn','paneLastStepBtn','paneSkipStepBtn','paneRestartRowBtn','paneNextRowBtn','paneRunAllBtn'];
+const PANE_BTN_IDS = ['paneNextStepBtn','paneRedoStepBtn','paneLastStepBtn','paneSkipStepBtn','paneRestartRowBtn','paneNextRowBtn']; // R6: ghost paneRunAllBtn removed (no such element)
 function paneButtonsEnabled(on){
   for(const id of PANE_BTN_IDS){ const b=document.getElementById(id); if(b){ b.disabled=!on; b.style.opacity=on?'':'0.45'; } }
 }
@@ -2342,7 +2203,6 @@ async function maybePushFlowUpdate(p){
     if(aboveChanged){
       const pick = prompt('Flow shape changed above the current step.\nContinue from step N (1-'+dataNow.length+')?', String(Math.min(cur+1, dataNow.length)));
       if(pick === null){
-        addLiveLog('Flow edits NOT pushed (cancelled) — the worker keeps running the old flow.','warn');
         return;
       }
       const n = Math.max(1, Math.min(dataNow.length, parseInt(pick)||cur+1));
@@ -2353,7 +2213,6 @@ async function maybePushFlowUpdate(p){
     } else {
       lastSubmittedDataJson = nowJson;
       await API.poolRunControl({cmd:'flow-update', steps: steps});
-      addLiveLog('Flow updated live — edits apply from the current step forward.','info');
     }
   }catch(e){}
 }
@@ -2393,11 +2252,11 @@ async function paneRunAll(){
   currentRunMode='run-all';
   currentPoolPause = null;
   forceHidePause(); // R5: Release ends the step session — the sticky pane goes away
-  addLiveLog('Released — running through to end','info');
 }
 // Note: paneStop is defined earlier (it routes to requestStop per v1.2.5 item 2.4).
 
-function addLiveLog(msg,type){const log=document.getElementById('liveLog');if(!log)return;/* v1.3.4: live-output console removed; calls are now no-ops */const cls=type==='ok'?'log-ok':type==='err'?'log-err':type==='warn'?'log-warn':'log-info';const time=new Date().toLocaleTimeString();log.innerHTML+='<span class="' + cls + '">[' + time + '] ' + msg + '</span>\n';log.scrollTop=log.scrollHeight;const lines=log.innerHTML.split('\n');if(lines.length>220)log.innerHTML=lines.slice(-200).join('\n');}
+// R6: addLiveLog deleted — the #liveLog console left the markup in v1.3.4, so every
+// call was a no-op; all call sites pruned with it.
 // Elapsed-time ticker — refreshes the elapsed display every second while a run is active.
 // Reads runStartTime locally; doesn't depend on runner events, so it stays accurate during
 // silent phases (login, navigation, slow waits).
@@ -2405,7 +2264,7 @@ let elapsedTicker=null;
 function fmtElapsed(ms){const sec=Math.floor(ms/1000);const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h>0?(h+'h '+m+'m'):(m>0?(m+'m '+s+'s'):(s+'s'));}
 function startElapsedTicker(){stopElapsedTicker();const el=document.getElementById('rs-elapsed');if(!el)return;elapsedTicker=setInterval(function(){if(!runStartTime){el.textContent='-';return;}el.textContent=fmtElapsed(Date.now()-runStartTime);},1000);}
 function stopElapsedTicker(){if(elapsedTicker){clearInterval(elapsedTicker);elapsedTicker=null;}}
-function openCurrentLog(){if(currentLogPath&&API.openFile)API.openFile(currentLogPath);}
+// R6: openCurrentLog deleted with its never-shown button and never-set currentLogPath.
 
 // v2.0.0: true while the elastic coordinator pool is running (drives Stop routing).
 // (Survivor of the v1.3.4 parallel-runner block removed in the Phase 2 teardown.)
@@ -2559,59 +2418,20 @@ async function poolLaunchCurrent(){
   return { ok:true };
 }
 
-// v2.1.1: extract every {{column}} token the flow references and check them against the loaded
-// sheet's headers. Built-in run-context tokens are NOT columns and are excluded. Matching is
-// case-sensitive to mirror the runner's row[ref] lookup. Returns {referenced, missing, allMissing}.
+// v2.1.1 → R2b: token extraction + header matching live in engine/tokens.js now (THE
+// scanner: one field list, one builtin rule incl. {{RUNDATE}}/±N, correct CRED:
+// exclusion, runner-exact case-sensitive matching). Shape unchanged for callers:
+// {referenced, missing, allMissing}.
 function checkFlowColumnsAgainstSheet(){
-  const BUILTINS = new Set(['TODAY','RUNID','PROFILE_USERNAME']);
-  const refs = new Set();
-  const scan = v => {
-    if(!v || typeof v !== 'string') return;
-    let m; const re=/{{\s*([^}]+?)\s*}}/g;
-    while((m=re.exec(v))){
-      let t = m[1].trim();
-      if(t.startsWith('CRED:')) continue;     // credential tokens, not columns
-      if(BUILTINS.has(t)) continue;           // run-context tokens, not columns
-      if(/^(TODAY|RUNDATE)([+-]\d+)?$/.test(t)) continue; // R6 system date tokens (±N forms too)
-      refs.add(t);
-    }
-  };
-  // Scan every field of every step that can carry a token.
-  (steps||[]).forEach(s => {
-    scan(s.url); scan(s.value); scan(s.selector); scan(s.matchText);
-    scan(s.containerSel); scan(s.waitFor); scan(s.waitSel); scan(s.condCol);
-    scan(s.expected); scan(s.pathColumn); scan(s.fileNameColumn); scan(s.baseFolder);
-  });
-  const referenced = Array.from(refs);
-  // v3.0.2: refs are trimmed above, so the sheet side must be too — otherwise a header
-  // with a stray space reported "column missing" no matter what the user typed.
-  const have = new Set((ssHeaders||[]).map(h => String(h).trim()));
-  const missing = referenced.filter(r => !have.has(r));
-  return { referenced, missing, allMissing: referenced.length > 0 && missing.length === referenced.length };
+  return BUUTokens.matchTokensToHeaders(BUUTokens.scanFlowTokens(steps), ssHeaders);
 }
 
 // Stage the currently loaded flow+sheet+profile as one pool job.
-// R15: raw column-token collector — every {{token}} the DATA steps reference that is
-// NOT a system/credential token. Used to block spreadsheet-free launches with a list.
+// R15 → R2b: THE scanner (engine/tokens.js). Locked steps are scanned too — their CRED
+// tokens are excluded by RULE now, not by skipping the step — and the old holes are
+// gone (pathCol ghost field, `CRED\.` dot-regex, missing fileupload/afterSelector fields).
 function collectColumnTokensInFlow(){
-  const refs = new Set();
-  const scan = function(v){
-    if(typeof v !== 'string') return;
-    const mm = v.match(/\{\{([^}]+)\}\}/g) || [];
-    for(const t0 of mm){
-      const t = t0.slice(2,-2).trim();
-      if(/^CRED\./.test(t)) continue;
-      if(/^(TODAY|RUNDATE)([+-]\d+)?$/.test(t)) continue;
-      if(t==='RUNID' || t==='PROFILE_USERNAME') continue;
-      refs.add(t);
-    }
-  };
-  for(const s of steps){
-    if(s.locked) continue;
-    scan(s.url); scan(s.value); scan(s.selector); scan(s.matchText); scan(s.containerSel);
-    scan(s.waitFor); scan(s.afterSelector); scan(s.waitSel); scan(s.condCol); scan(s.expected); scan(s.pathCol);
-  }
-  return Array.from(refs);
+  return BUUTokens.scanFlowTokens(steps);
 }
 
 async function poolStageCurrent(){
@@ -2655,7 +2475,7 @@ async function poolStageCurrent(){
   const _teardownFlowId = (typeof teardownFlowId!=='undefined') ? teardownFlowId : null;
   // v2.1.0 (#5): if the user was stepping this sheet manually and stopped partway, hand the
   // row cursor to the pool so it resumes where stepping left off instead of restarting at row 1.
-  const _resumeFromRow = (Number.isFinite(manualRowCursor) && manualRowCursor > 1) ? manualRowCursor : 0;
+  const _resumeFromRow = 0; // R6: the manualRowCursor handoff was dead — never written anywhere
   // R5b Tier 1: the pool runs the SAVED flow file, read fresh at every launch — disk
   // wins, deterministically, with a loud warn when in-memory edits differed (save first
   // if you meant them; the R10 unsaved-changes prompt lands later). Flows never saved
@@ -2671,10 +2491,9 @@ async function poolStageCurrent(){
           if (JSON.stringify(_mig) !== _memJson) {
             steps = _mig;
             renderSteps();
-            addLiveLog('Flow "'+flowName+'" re-read from disk for this launch — unsaved in-memory edits were NOT used (save first if you meant them).','warn');
           }
         }
-        if (_fr.mtime) addLiveLog('Flow last saved: ' + new Date(_fr.mtime).toLocaleString(), 'info');
+
       }
     } catch (e) {}
   }
@@ -2692,7 +2511,6 @@ async function poolStageCurrent(){
   });
   if(res && res.ok===false){ alert('Could not stage job: '+(res.error||'unknown')); return false; }
   if(res && res.startRow && res.startRow > 1){
-    addLiveLog('Staged "'+((flowName||'flow')+' · '+ssName)+'" — pool will resume at row '+res.startRow+' (carried over from step-by-step).','info');
   }
   return true;
 }
@@ -2867,7 +2685,6 @@ async function poolArchiveJob(jobId){
   try {
     const res = await API.archiveSpreadsheet({ spreadsheetPath: job.spreadsheetPath });
     if(res && res.ok){
-      addLiveLog('Archived to '+res.archivedTo, 'info');
       // Remove the job from the staged list since its source is gone.
       if(API.poolRemoveJob) await API.poolRemoveJob({ jobId });
       if(API.poolGetStatus) await API.poolGetStatus();
@@ -2889,7 +2706,6 @@ async function poolLogoutSweepClick(){
   try{
     await API.poolLogoutSweep();
     go('run'); // so the sweep progress shows in the live log
-    addLiveLog('Manual logout sweep requested — logging out any BUU sessions on the License Manager.','info');
   }catch(e){ alert('Could not start logout sweep: '+(e&&e.message||e)); }
   setTimeout(()=>{ if(btn){ btn.disabled=false; btn.textContent='Log out stuck sessions'; } }, 8000);
 }
@@ -2901,7 +2717,6 @@ async function poolStopWorkerClick(workerId){
   try{
     const res = await API.poolStopWorker({ workerId });
     if(res && res.ok===false){ alert('Could not stop worker: '+(res.error||'unknown')); return; }
-    addLiveLog('Stopping worker '+String(workerId).slice(-6)+' — finishing its current row, then logging out. Remaining rows requeued.','info');
   }catch(e){ alert('Could not stop worker: '+(e&&e.message||e)); }
 }
 
@@ -2930,7 +2745,6 @@ if(API.onPoolPause) API.onPoolPause(function(p){
     showPause('step', evt);
     paneSetPaused();
     maybePushFlowUpdate(p);
-    addLiveLog('Pool: paused before step '+(p.stepIndex+1)+'/'+p.totalSteps+' on row '+p.row, 'warn');
   } else if (p.kind === 'row') {
     currentRunMode = 'step-row';
     const evt = {
@@ -2943,7 +2757,6 @@ if(API.onPoolPause) API.onPoolPause(function(p){
     lastPauseEvt = evt;
     showPause('step-row', evt);
     paneSetPaused();
-    addLiveLog('Pool: paused after row '+p.row, 'warn');
   }
 });
 // R11: direct per-row ERROR feed (ok rows stay counter-only — the D3 flood lesson).
@@ -3130,7 +2943,6 @@ if(API.onScheduleFire) API.onScheduleFire(async function(d){
     await applyLoadedFlow(JSON.parse(fr.json));
     const r = await poolLaunchCurrent();
     if(!r || r.ok === false){ API.scheduleResult({ id: d.scheduleId, ok: false, error: (r&&r.error)||'launch failed' }); return; }
-    addLiveLog('\u23f0 Scheduled run started: '+d.flowName,'info');
   }catch(e){ API.scheduleResult({ id: d.scheduleId, ok: false, error: e.message }); }
 });
 if(API.onSchedulesMissed) API.onSchedulesMissed(async function(list){
@@ -3169,14 +2981,12 @@ if(API.onPoolRowError) API.onPoolRowError(function(d){
   _errStrip.unshift({ row:d.row, step:d.step, reason:d.reason, error:d.error, workerId:d.workerId, ts:new Date().toLocaleTimeString() });
   if(_errStrip.length>25) _errStrip.length=25;
   renderErrorStrip();
-  addLiveLog('\u2717 Row '+d.row+' FAILED'+(d.reason?' ['+d.reason+']':'')+': '+(d.error||''),'err');
 });
 if(API.onPoolComplete) API.onPoolComplete(function(d){
   document.getElementById('runStatusMsg').textContent='Pool complete';
   forceHidePause(); // R5: step session over
   // Phase 3: end-of-run license-leak summary.
   if(d && Array.isArray(d.possibleLeaks) && d.possibleLeaks.length){
-    addLiveLog('WARNING: '+d.possibleLeaks.length+' worker(s) exited without verified logout - possible PestPac license leak: '+d.possibleLeaks.map(function(x){return String(x).slice(-6);}).join(', ')+'. The logout sweep is the failsafe; check License Manager if it reports lingering sessions.','warn');
   }
   poolUIActive(false); stopElapsedTicker();
   const grid=document.getElementById('workerGrid'); if(grid) setTimeout(()=>{grid.style.display='none';document.getElementById('workerGridHd').style.display='none';},1500);
@@ -3186,21 +2996,16 @@ if(API.onPoolComplete) API.onPoolComplete(function(d){
 // that logout was enforced (the whole point: no stuck sessions consuming licenses).
 if(API.onPoolSweepStart) API.onPoolSweepStart(function(d){
   const el=document.getElementById('runStatusMsg'); if(el){ el.textContent='Verifying logout — sweeping License Manager…'; el.style.color='var(--t2)'; }
-  addLiveLog('Logout sweep started ('+(d&&d.reason||'')+') — checking for any BUU sessions still logged in.','info');
 });
-if(API.onPoolSweepProgress) API.onPoolSweepProgress(function(d){
-  if(!d||!d.type) return;
-  if(d.type==='sweep-pass') addLiveLog('Logout sweep pass '+d.pass+': '+d.before+' BUU session(s) found, '+d.loggedOut+' logged out, '+d.after+' remaining.', d.after>0?'warn':'ok');
-  else if(d.type==='sweep-error'||d.type==='sweep-fatal') addLiveLog('Logout sweep issue: '+(d.error||'unknown'),'warn');
-});
+// R6: the sweep-progress listener removed — its only body was dead addLiveLog no-ops
+// (the #liveLog console left in v1.3.4). Sweep start/RESULT drive runStatusMsg and
+// remain the live surface for logout verification.
 if(API.onPoolSweepResult) API.onPoolSweepResult(function(d){
   const el=document.getElementById('runStatusMsg');
   if(d&&d.ok&&(d.remaining===0||d.remaining==null)){
     if(el){ el.textContent='Pool complete — all sessions logged out ✓'; el.style.color='var(--green)'; }
-    addLiveLog('Logout verified: no BUU sessions remain logged in'+(d.loggedOut?(' ('+d.loggedOut+' cleaned up by the sweep)'):'')+'.','ok');
   } else {
     if(el){ el.textContent='Pool complete — '+(d&&d.remaining!=null?d.remaining:'some')+' session(s) may still be logged in'; el.style.color='var(--red)'; }
-    addLiveLog('WARNING: logout sweep could not confirm all sessions are out'+(d&&d.error?(' ('+d.error+')'):'')+'. Use "Log out stuck sessions" to retry, or check the License Manager.','err');
   }
 });
 if(API.onPoolLicenseUpdate) API.onPoolLicenseUpdate(function(d){
@@ -3208,16 +3013,19 @@ if(API.onPoolLicenseUpdate) API.onPoolLicenseUpdate(function(d){
   console.log('[pool] license update: free='+d.freeLicenses+' newTarget='+d.newTarget);
 });
 // v2.1.1 (#8): surface coordinator-run setup/teardown once-flows (per-job / global scope).
+// R6: this listener's old body was dead addLiveLog no-ops — which meant a FAILED
+// setup/teardown flow was INVISIBLE in the UI. Minimal live surface now: the run
+// status line (the same element the sweep events use), including the error detail
+// the R1 rework added to the pool-once-flow 'done' event.
 if(API.onPoolOnceFlow) API.onPoolOnceFlow(function(d){
   if(!d) return;
-  if(d.state==='phase-start') addLiveLog('Running '+d.phase+' once ('+(d.scope||'')+' scope) before/after the pool…','info');
-  else if(d.state==='start') addLiveLog('  '+d.phase+' running for job "'+(d.job||'')+'"…','info');
-  else if(d.state==='done') addLiveLog('  '+d.phase+' for "'+(d.job||'')+'" '+(d.ok?'completed':'finished with errors')+'.', d.ok?'ok':'warn');
+  const el=document.getElementById('runStatusMsg'); if(!el) return;
+  if(d.state==='start'){ el.textContent=(d.phase==='setup'?'Setup':'Teardown')+' flow running'+(d.job?(' — '+d.job):'')+'…'; el.style.color='var(--t2)'; }
+  else if(d.state==='done' && d.ok===false){ el.textContent=(d.phase==='setup'?'Setup':'Teardown')+' flow FAILED'+(d.error?(': '+d.error):''); el.style.color='var(--red)'; }
 });
 // v2.2.0: read-field results written to a dedicated spreadsheet.
 if(API.onPoolReadResults) API.onPoolReadResults(function(d){
   if(!d||!d.path) return;
-  addLiveLog('Read-field results saved: '+d.path+' ('+d.rows+' rows · columns: '+(d.columns||[]).join(', ')+')','ok');
 });
 
 // ── legacy static-pool stubs (no longer used; kept as no-ops to avoid reference errors) ──
@@ -3301,57 +3109,8 @@ function setSetupFlow(name){
 function setTeardownFlow(name){
   teardownFlowId = name || null;
 }
-// v1.2.8: Run Progress phase indicator helpers. The indicator is hidden by default and
-// shown when a run starts with a setup or teardown attached. Pips state-transition as
-// phase-start/phase-end events arrive.
-function showPhaseIndicator(hasSetup, hasTeardown){
-  const ind = document.getElementById('phaseIndicator');
-  if(!ind) return;
-  if(!hasSetup && !hasTeardown){ ind.style.display = 'none'; return; }
-  ind.style.display = 'flex';
-  document.getElementById('phasePipSetup').style.display = hasSetup ? '' : 'none';
-  document.getElementById('phaseArrow1').style.display = hasSetup ? '' : 'none';
-  document.getElementById('phasePipTeardown').style.display = hasTeardown ? '' : 'none';
-  document.getElementById('phaseArrow2').style.display = hasTeardown ? '' : 'none';
-  // Reset all pips to pending state.
-  ['Setup','Main','Teardown'].forEach(p => {
-    const pip = document.getElementById('phasePip'+p);
-    if(pip){
-      pip.style.background = 'var(--bg2)';
-      pip.style.borderColor = 'var(--brd)';
-      pip.style.color = '';
-      pip.style.fontWeight = '';
-    }
-  });
-}
-function updatePhaseIndicator(phase, state){
-  // phase: 'setup' | 'main' | 'teardown'.   state: 'running' | 'done' | 'failed' | 'skipped'.
-  const pipId = 'phasePip' + phase.charAt(0).toUpperCase() + phase.slice(1);
-  const pip = document.getElementById(pipId);
-  if(!pip) return;
-  if(state === 'running'){
-    pip.style.background = 'rgba(95,160,220,0.18)';
-    pip.style.borderColor = 'var(--blue)';
-    pip.style.color = 'var(--blue)';
-    pip.style.fontWeight = '700';
-  } else if(state === 'done'){
-    pip.style.background = 'rgba(95,181,111,0.18)';
-    pip.style.borderColor = '#5fb56f';
-    pip.style.color = '#5fb56f';
-    pip.style.fontWeight = '700';
-  } else if(state === 'failed'){
-    pip.style.background = 'rgba(220,80,80,0.18)';
-    pip.style.borderColor = 'var(--red)';
-    pip.style.color = 'var(--red)';
-    pip.style.fontWeight = '700';
-  } else if(state === 'skipped'){
-    pip.style.background = 'var(--bg2)';
-    pip.style.borderColor = 'var(--brd)';
-    pip.style.color = 'var(--t3)';
-    pip.style.fontWeight = '';
-    pip.style.opacity = '0.6';
-  }
-}
+// R6: showPhaseIndicator/updatePhaseIndicator deleted — zero callers; their pip markup
+// left with them. The pool-once-flow status line is the live setup/teardown surface.
 // v1.2.8: populate the setup/teardown dropdowns from saved once-flows.
 // Called on app init and after any flow save (so newly-saved once-flows appear).
 async function refreshOnceFlowDropdowns(){

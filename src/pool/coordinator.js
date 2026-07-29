@@ -5,7 +5,6 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const https = require('https');
 const { app } = require('electron');
 const { spawn } = require('child_process');
 
@@ -19,7 +18,7 @@ function coordPidfileAdd(pid){ if(!pid) return; const p = coordPidfileRead(); if
 function coordPidfileRemove(pid){ if(!pid) return; coordPidfileWrite(coordPidfileRead().filter(x => x !== pid)); }
 
 module.exports = function wireCoordinator(ctx) {
-const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, getFlowsDir, encStore, readAllProfiles, readConfig, getBundledChromiumPath, licenseReaderLogout, loginToPestPacInPage, logoutFromInPage, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper, buildOnceFlowRunner } = ctx;
+const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, getFlowsDir, encStore, readAllProfiles, readConfig, getBundledChromiumPath, licenseReaderLogout, loginToPestPacInPage, logoutFromInPage, readLicensePage, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper } = ctx;
 
 // ════════════════════════════════════════════════════════════════════════════
 // v2.0.0 — ELASTIC POOL COORDINATOR (main-process owned)
@@ -223,7 +222,7 @@ function _coordEmitStatusNow(){
   }
   _send('pool-status', {
     active: COORD.active,
-    desiredWorkers: COORD.desiredWorkers, pressure: COORD.pressure, capReason: COORD.capReason, manualTarget: COORD.manualTarget,
+    desiredWorkers: COORD.desiredWorkers, pressure: COORD.pressure, capReason: COORD.capReason,
     licenseCap: Number.isFinite(COORD.licenseCap) ? COORD.licenseCap : null,
     liveWorkers: COORD.workers.size,
     liveSessions: COORD.workers.size + _checkerLive,   // 3.x: total real PestPac sessions BUU holds (workers + checker)
@@ -248,6 +247,67 @@ function coordPickJobForWorker(){
   return null;
 }
 
+// ── R4 (3.2.0): THE child-spawn scaffold ─────────────────────────────────────
+// Every spawned BUU child (pool worker, logout sweeper, per-job/global once-flow
+// worker) needs the same six steps, which used to be three hand-rolled copies (plus a
+// fourth cred-triplet in coordLicenseScale): resolve profile creds, write the
+// encrypted cred temp + generated runner temp, build the NODE_PATH env, spawn node,
+// parse NDJSON stdout, clean the temps up on close. ONE implementation now.
+
+// Profile credentials: vault triplet with stored-field fallback. The ONE cred resolver.
+async function coordResolveProfileCreds(profileId){
+  const all = readAllProfiles();
+  const prof = all.find(p => p.id === profileId) || {};
+  if (ctx.keytar) {
+    prof.companyKey = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
+    prof.username   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
+    prof.password   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
+  }
+  return prof;
+}
+
+// Child env: packaged vs dev node_modules on NODE_PATH, run-as-node. The ONE env block.
+function coordChildEnv(){
+  const env = { ...process.env };
+  const nodeModulesPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+    : path.join(__dirname, '..', 'node_modules');
+  env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
+  return env;
+}
+
+// Spawn a BUU child: writes buu2-<kind>-<id>.enc (encrypted [prof]) and .js (script) to
+// tmp, spawns `node runner <extraArgv...> credPath` with piped stdio, routes stdout
+// NDJSON to onMessage(msg, proc) and raw chunks to onRaw(text, 'out'|'err'), tracks the
+// pidfile when asked (pool workers only — the crash sweeper must not kill a sweep), and
+// ALWAYS unlinks both temps on close before calling onClose(code).
+function coordSpawnBuuChild({ kind, id, script, prof, extraArgv = [], trackPid = false, onMessage = null, onRaw = null, onClose = null }){
+  const credPath = path.join(os.tmpdir(), `buu2-${kind}-${id}.enc`);
+  fs.writeFileSync(credPath, encStore([prof]));
+  const runnerPath = path.join(os.tmpdir(), `buu2-${kind}-${id}.js`);
+  fs.writeFileSync(runnerPath, script);
+  const proc = spawn(process.execPath, [runnerPath, ...extraArgv, credPath], { stdio: ['pipe','pipe','pipe'], env: coordChildEnv() });
+  if (trackPid) coordPidfileAdd(proc.pid);
+  proc.stdout.on('data', d => {
+    const s = String(d);
+    if (onRaw) { try { onRaw(s, 'out'); } catch (e) {} }
+    if (!onMessage) return;
+    for (const line of s.split('\n')) {
+      const t = line.trim(); if (!t) continue;
+      let m; try { m = JSON.parse(t); } catch (e) { continue; }
+      try { onMessage(m, proc); } catch (e) {}
+    }
+  });
+  proc.stderr.on('data', d => { if (onRaw) { try { onRaw(String(d), 'err'); } catch (e) {} } });
+  proc.on('close', code => {
+    if (trackPid) coordPidfileRemove(proc.pid);
+    try { fs.unlinkSync(runnerPath); } catch (e) {}
+    try { fs.unlinkSync(credPath); } catch (e) {}
+    if (onClose) { try { onClose(code); } catch (e) {} }
+  });
+  return { proc, credPath, runnerPath };
+}
+
 // Spawn one persistent batch-pulling worker, assigned to a job. The worker logs in once,
 // then pulls batches via stdin/stdout until told to drain/retire. Returns the workerId.
 async function coordSpawnWorker(){
@@ -267,18 +327,9 @@ async function coordSpawnWorker(){
   const setupSteps = (_runOwnOnce && job.setupFlowId) ? ((resolveOnceFlowByName(job.setupFlowId)||{}).steps || []) : [];
   const teardownSteps = (_runOwnOnce && job.teardownFlowId) ? ((resolveOnceFlowByName(job.teardownFlowId)||{}).steps || []) : [];
 
-  // Credentials for this job's profile.
-  const all = readAllProfiles();
-  const prof = all.find(p => p.id === job.profileId) || {};
-  if (ctx.keytar) {
-    prof.companyKey = await ctx.keytar.getPassword(SERVICE_NAME, `${job.profileId}:companyKey`) || prof.companyKey || '';
-    prof.username   = await ctx.keytar.getPassword(SERVICE_NAME, `${job.profileId}:username`)   || prof.username   || '';
-    prof.password   = await ctx.keytar.getPassword(SERVICE_NAME, `${job.profileId}:password`)   || prof.password   || '';
-  }
-  const credPath = path.join(os.tmpdir(), `buu2-cred-${workerId}.enc`);
-  fs.writeFileSync(credPath, encStore([prof]));
+  // R4: credentials via the ONE resolver (vault triplet + stored-field fallback).
+  const prof = await coordResolveProfileCreds(job.profileId);
 
-  const runnerPath = path.join(os.tmpdir(), `buu2-worker-${workerId}.js`);
   const logPath = path.join(getLogsDir(), `BUU2-log-${new Date().toISOString().slice(0,10)}-${workerId}.xlsx`);
   const runnerLogPath = path.join(getLogsDir(), `buu2-worker-${workerId}.log`);
   const runnerLogStream = fs.createWriteStream(runnerLogPath, { flags: 'a' });
@@ -312,31 +363,17 @@ async function coordSpawnWorker(){
     captureBucketCap: COORD.captureBucketCap || 10,
     runContext: { runId: workerId, poolId: COORD.poolId, jobId, userDataDir: app.getPath('userData'), runStartTs: parseInt(String(COORD.poolId||'').replace(/^pool/,''), 10) || Date.now() /* R6: {{RUNDATE}} base - pool start */, profileUsername: prof.username || '' },
   });
-  fs.writeFileSync(runnerPath, script);
-
-  const env = { ...process.env };
-  const nodeModulesPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
-    : path.join(__dirname, '..', 'node_modules');
-  env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
-
-  const entry = { workerId, jobId, process: null, status: 'starting', batch: [], done:0, ok:0, err:0, startedAt: Date.now(), lastActivity: Date.now(), runnerLogStream, runnerPath, credPath, logPath };
+  const entry = { workerId, jobId, process: null, status: 'starting', batch: [], done:0, ok:0, err:0, startedAt: Date.now(), lastActivity: Date.now(), runnerLogStream, runnerPath: null, credPath: null, logPath };
   COORD.workers.set(workerId, entry);
 
-  const proc = spawn(process.execPath, [runnerPath, job.spreadsheetPath || '__none__', credPath], { stdio:['pipe','pipe','pipe'], env });
-  coordPidfileAdd(proc.pid);
-  entry.process = proc;
-
-  proc.stderr.on('data', d => runnerLogStream.write(`[STDERR] ${String(d)}\n`));
-  proc.stdout.on('data', d => {
-    runnerLogStream.write(`[STDOUT] ${String(d)}\n`);
-    String(d).split('\n').filter(Boolean).forEach(line => {
-      let msg; try { msg = JSON.parse(line); } catch { return; }
-      coordHandleWorkerMessage(workerId, msg);
-    });
-  });
-  proc.on('close', code => {
-    coordPidfileRemove(proc.pid);
+  // R4: ONE spawn scaffold (tmp cred+runner, env, pidfile, NDJSON parse, tmp cleanup).
+  const child = coordSpawnBuuChild({
+    kind: 'worker', id: workerId, script, prof,
+    extraArgv: [job.spreadsheetPath || '__none__'],
+    trackPid: true,
+    onRaw: (s, ch) => runnerLogStream.write((ch === 'err' ? '[STDERR] ' : '[STDOUT] ') + s + '\n'),
+    onMessage: (msg) => coordHandleWorkerMessage(workerId, msg),
+    onClose: (code) => {
     runnerLogStream.write(`[${new Date().toISOString()}] worker exited code=${code}\n`);
     runnerLogStream.end();
     const w = COORD.workers.get(workerId);
@@ -378,9 +415,7 @@ async function coordSpawnWorker(){
       }
     }
     COORD.workers.delete(workerId);
-    try { fs.unlinkSync(runnerPath); } catch {}
-    try { fs.unlinkSync(credPath); } catch {}
-    coordEmitStatus();
+    coordEmitStatus(); // R4: tmp cleanup + pidfile removal live in the spawn scaffold now
     // Phase 3 (D2): when the pool is stopping, fire the logout sweep PROMPTLY once the
     // last worker is gone instead of on the old fixed 184s clock. sweepRunning +
     // _stopSweepFired guard doubles with the fuse-path backstop in pool-stop.
@@ -418,7 +453,10 @@ async function coordSpawnWorker(){
       coordSpawnWorker().catch(e => { try{ console.error('[coord] stall-guard respawn failed:', e.message); }catch(_){} });
     }
     coordCheckComplete();
+    },
   });
+  entry.process = child.proc;
+  entry.runnerPath = child.runnerPath; entry.credPath = child.credPath;
 
   coordEmitStatus();
   return workerId;
@@ -439,7 +477,6 @@ function coordStepLabel(s){
     case 'checkbox': return 'Checkbox' + (s.selector ? ' ' + shorten(s.selector) : '');
     case 'wait': return 'Wait';
     case 'readfield': return 'Read field' + (s.selector ? ' ' + shorten(s.selector) : '');
-    case 'textedit': return 'Edit text' + (s.selector ? ' ' + shorten(s.selector) : '');
     case 'fileupload': return 'Upload file';
     case 'fieldwork-cancel-scrape': return 'Scrape cancellations';
     default: return s.type || 'Step';
@@ -668,8 +705,11 @@ function coordSaveLastGoodW(){
     if(typeof getFlowsDir !== 'function') return;
     const safe = String(Array.from(names)[0]).replace(/[\\/:*?"<>|]/g, '_');
     if(!safe) return;
-    // Same search order as read-flow-by-name: flat root first (dev saves flat), then subdirs.
-    for(const sub of ['', 'general', 'automation', 'once']){
+    // R3: SAME search order as resolveFlowByName — subfolders first, flat root LAST.
+    // The old flat-first order here (under a comment claiming it matched read-flow-by-name)
+    // wrote lastGoodWorkers into the stale flat duplicate that nothing reads, so the
+    // learned optimum silently never took effect on any machine with flat dups.
+    for(const sub of ['automation', 'once', 'general', '']){
       const fp = path.join(getFlowsDir(), sub, safe + '.json');
       if(!fs.existsSync(fp)) continue;
       const obj = JSON.parse(fs.readFileSync(fp, 'utf8'));
@@ -877,49 +917,30 @@ async function coordRunLogoutSweep(reason){
     const anyJob = Array.from(COORD.jobs.values()).find(j => Array.isArray(j.flowSteps) && j.flowSteps.length) || {};
     const loginSteps = (anyJob.flowSteps || []).filter(s => s.locked || s.type === 'pestpac-login');
 
-    // Resolve creds for that profile (ctx.keytar with profile fallback), mirror of coordSpawnWorker.
-    const all = readAllProfiles();
-    const prof = all.find(p => p.id === profileId) || {};
-    if (ctx.keytar) {
-      prof.companyKey = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
-      prof.username   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
-      prof.password   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
-    }
+    // R4: creds + spawn via the ONE resolver/scaffold (was a hand-rolled mirror of coordSpawnWorker).
+    const prof = await coordResolveProfileCreds(profileId);
     const sweepId = 'sweep' + Date.now();
-    const credPath = path.join(os.tmpdir(), `buu2-sweep-${sweepId}.enc`);
-    fs.writeFileSync(credPath, encStore([prof]));
-    const runnerPath = path.join(os.tmpdir(), `buu2-sweep-${sweepId}.js`);
-    fs.writeFileSync(runnerPath, buildLogoutSweeper({ chromiumExePath: chromiumExe, loginSteps, runContext: { runId: sweepId } }));
-
-    const env = { ...process.env };
-    const nodeModulesPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
-      : path.join(__dirname, '..', 'node_modules');
-    env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
-
     const sweepLogPath = path.join(getLogsDir(), `buu2-sweep-${sweepId}.log`);
     const sweepLog = fs.createWriteStream(sweepLogPath, { flags: 'a' });
     sweepLog.write(`[${new Date().toISOString()}] logout sweep start (reason=${reason}, profile=${profileId})\n`);
     if(ctx.mainWindow) _send('pool-sweep-start', { reason });
 
-    const proc = spawn(process.execPath, [runnerPath, credPath], { stdio:['ignore','pipe','pipe'], env });
     let lastResult = null;
-    proc.stdout.on('data', d => {
-      String(d).split('\n').filter(Boolean).forEach(line => {
-        sweepLog.write(`[OUT] ${line}\n`);
-        let msg; try{ msg = JSON.parse(line); }catch{ return; }
+    coordSpawnBuuChild({
+      kind: 'sweep', id: sweepId,
+      script: buildLogoutSweeper({ chromiumExePath: chromiumExe, loginSteps, runContext: { runId: sweepId } }),
+      prof,
+      onRaw: (s, ch) => sweepLog.write((ch === 'err' ? '[ERR] ' : '[OUT] ') + s + '\n'),
+      onMessage: (msg) => {
         if(msg.type === 'sweep-pass' || msg.type === 'sweep-done') lastResult = msg;
         if(ctx.mainWindow) _send('pool-sweep-progress', msg);
-      });
-    });
-    proc.stderr.on('data', d => sweepLog.write(`[ERR] ${String(d)}\n`));
-    proc.on('close', code => {
-      sweepLog.write(`[${new Date().toISOString()}] sweep exited code=${code}\n`); sweepLog.end();
-      try { fs.unlinkSync(runnerPath); } catch {}
-      try { fs.unlinkSync(credPath); } catch {}
-      COORD.sweepRunning = false;
-      const remaining = lastResult && lastResult.remaining != null ? lastResult.remaining : (code===0?0:null);
-      if(ctx.mainWindow) _send('pool-sweep-result', { ok: code===0, remaining, loggedOut: lastResult && lastResult.loggedOut });
+      },
+      onClose: (code) => {
+        sweepLog.write(`[${new Date().toISOString()}] sweep exited code=${code}\n`); sweepLog.end();
+        COORD.sweepRunning = false;
+        const remaining = lastResult && lastResult.remaining != null ? lastResult.remaining : (code===0?0:null);
+        if(ctx.mainWindow) _send('pool-sweep-result', { ok: code===0, remaining, loggedOut: lastResult && lastResult.loggedOut });
+      },
     });
   }catch(e){
     COORD.sweepRunning = false;
@@ -975,7 +996,7 @@ async function coordScaleTo(target){
 
 // Elastic license scaling: re-scrape free licenses and scale workers to (free - buffer),
 // also bounded by hardware. Runs on a timer when elastic mode is enabled.
-function _median(a){ if(!a || !a.length) return null; const s2=[...a].sort((x,y)=>x-y); const m=Math.floor(s2.length/2); return s2.length%2 ? s2[m] : (s2[m-1]+s2[m])/2; }
+// R6: _median deleted — orphaned by the v3.0.3 removal of the latency/pressure scaler.
 
 // R4: the ONE evaluation path — composes license cap (elastic), PestPac pressure, and
 // the manual slider. Manual wins over auto: auto only ever reduces below the slider.
@@ -1088,13 +1109,8 @@ async function coordLicenseScale(profileId, buffer, hwCap){
   const BUF = (buffer != null) ? Math.max(0, parseInt(buffer)) : 10;
   const chromiumExe = getBundledChromiumPath();
   if (!chromiumExe) return;
-  const all = readAllProfiles();
-  const prof = all.find(p => p.id === profileId) || {};
-  if (ctx.keytar) {
-    prof.companyKey = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
-    prof.username   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
-    prof.password   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
-  }
+  // R4: the fourth and final copy of the cred triplet — now the ONE resolver.
+  const prof = await coordResolveProfileCreds(profileId);
   // 3.x: the checker is a REAL logged-in PestPac session for its whole lifetime — mark it
   // ACTIVE so it is COUNTED and shown as a card (coordEmitStatus). Never an invisible seat.
   COORD.licenseChecker = { active: true, status: 'logging-in', startedAt: Date.now() };
@@ -1111,21 +1127,9 @@ async function coordLicenseScale(profileId, buffer, hwCap){
       await loginToPestPacInPage(page, { loginUrl: prof.loginUrl, companyKey: prof.companyKey, username: prof.username, password: prof.password, platform: prof.platform });
       loginOk = true;
       COORD.licenseChecker.status = 'reading'; coordEmitStatus();
-      await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
-      // v2.2.1: read the PestPac FREE value from the #div_PestPac panel with an EXACT label match
-      // (avoids the old startsWith bug that could read used/total or a Mobile/RouteOp table).
-      // 3.x: read all three PestPac numbers from the #div_PestPac panel — TOTAL, USED (in use),
-      // and FREE (available) — so the UI can show "in use / available / total", not just free.
-      const lic = await page.evaluate(() => {
-        const scope = document.querySelector('#div_PestPac') || document;
-        const tds = Array.from(scope.querySelectorAll('td'));
-        const read = (labels) => { for (const td of tds){ const l=(td.textContent||'').trim().toLowerCase().replace(/\s+/g,' '); if(labels.indexOf(l)>=0){ const s=td.nextElementSibling; if(s) return (s.textContent||'').trim(); } } return null; };
-        return {
-          free:  read(['number of free licenses:','number of free licenses']),
-          used:  read(['number of used licenses:','number of used licenses']),
-          total: read(['number of licenses:','number of licenses']),
-        };
-      });
+      // R5: THE license-page reader (engine/login.js, via ctx) — one DOM scraper shared
+      // with the check-license-cap IPC; exact-label/#div_PestPac rules preserved there.
+      const lic = await readLicensePage(page);
       const _num = (t) => { if (t == null) return NaN; const n = parseInt(String(t).replace(/[^0-9]/g,'')); return isNaN(n) ? NaN : n; };
       const free  = _num(lic && lic.free);
       const used  = _num(lic && lic.used);
@@ -1213,47 +1217,72 @@ function coordRunOnceFlow(job, phase){
     try{
       const flowId = phase === 'setup' ? job.setupFlowId : job.teardownFlowId;
       if(!flowId){ return resolve({ ok:true, skipped:true }); }
-      const onceSteps = (resolveOnceFlowByName(flowId)||{}).steps || [];
+      const onceFlow = resolveOnceFlowByName(flowId) || {};
+      const onceSteps = onceFlow.steps || [];
       if(!onceSteps.length){ return resolve({ ok:true, skipped:true }); }
       const chromiumExe = getBundledChromiumPath();
       if(!chromiumExe){ return resolve({ ok:false, error:'chromium not found' }); }
-      const anyJob = job;
-      const loginSteps = (anyJob.flowSteps || []).filter(s => s.locked || s.type === 'pestpac-login');
       const profileId = job.profileId;
-      const all = readAllProfiles();
-      const prof = all.find(p => p.id === profileId) || {};
       const finish = async () => {
-        if (ctx.keytar) {
-          prof.companyKey = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:companyKey`) || prof.companyKey || '';
-          prof.username   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:username`)   || prof.username   || '';
-          prof.password   = await ctx.keytar.getPassword(SERVICE_NAME, `${profileId}:password`)   || prof.password   || '';
-        }
+        // R4: creds via the ONE resolver; spawn via the ONE scaffold below.
+        const prof = await coordResolveProfileCreds(profileId);
         const onceId = 'once' + Date.now() + '-' + Math.floor(Math.random()*1000);
-        const credPath = path.join(os.tmpdir(), `buu2-once-${onceId}.enc`);
-        fs.writeFileSync(credPath, encStore([prof]));
-        const runnerPath = path.join(os.tmpdir(), `buu2-once-${onceId}.js`);
-        fs.writeFileSync(runnerPath, buildOnceFlowRunner({
-          chromiumExePath: chromiumExe, loginSteps, onceSteps,
-          runContext: { runId: onceId, phase, runStartTs: parseInt(String(COORD.poolId||'').replace(/^pool/,''), 10) || Date.now() /* R6: {{RUNDATE}} base - pool start */, profileUsername: prof.username || '' },
-        }));
-        const env = { ...process.env };
-        const nodeModulesPath = app.isPackaged
-          ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
-          : path.join(__dirname, '..', 'node_modules');
-        env.NODE_PATH = nodeModulesPath; env.BUU_NODE_MODULES = nodeModulesPath; env.ELECTRON_RUN_AS_NODE = '1';
+        // R1 (3.2.0): the once-runner template is RETIRED. A per-job/global once-flow now
+        // runs through the ONE engine — the pool worker template — as a synthetic one-row,
+        // sheet-free job in its own dedicated session (login → steps → VERIFIED logout),
+        // exactly like a user-launched once-flow. The once-flow's OWN locked steps provide
+        // login (the worker splits LOGIN/DATA/LOGOUT itself); tokens resolve for real
+        // (live {{TODAY}}, {{RUNDATE}}±N); locators walk iframes. NO retry by design:
+        // errHandle 'skip' + retryCount 0 — setup like "Open Empty Batch" is not
+        // idempotent, so a failed phase must report, never silently re-run.
+        const workerLogPath = path.join(getLogsDir(), `BUU2-log-once-${onceId}.xlsx`);
+        const script = buildPoolWorker({
+          flowSteps: onceSteps,
+          setupSteps: [], teardownSteps: [],
+          spreadsheetPath: '__none__',
+          logPath: workerLogPath,
+          chromiumExePath: chromiumExe,
+          errHandle: 'skip', retryCount: 0, reauthIntervalMin: 0,
+          selectorTimeout: 30, pageLoadMode: 'domcontentloaded',
+          startMode: 'run-all',
+          diagnosticCapture: false, captureDir: null,
+          runContext: {
+            runId: onceId, poolId: COORD.poolId, jobId: job.jobId, phase,
+            userDataDir: app.getPath('userData'),
+            runStartTs: parseInt(String(COORD.poolId||'').replace(/^pool/,''), 10) || Date.now() /* R6: {{RUNDATE}} base - pool start */,
+            profileUsername: prof.username || '',
+          },
+        });
         const logPath = path.join(getLogsDir(), `buu2-once-${onceId}.log`);
         const logStream = fs.createWriteStream(logPath, { flags: 'a' });
         logStream.write(`[${new Date().toISOString()}] ${phase} once-flow start (job=${job.label})\n`);
         if(ctx.mainWindow) _send('pool-once-flow', { phase, job: job.label, state: 'start' });
-        const proc = spawn(process.execPath, [runnerPath, credPath], { stdio:['ignore','pipe','pipe'], env });
-        proc.stdout.on('data', d => logStream.write(`[OUT] ${String(d)}`));
-        proc.stderr.on('data', d => logStream.write(`[ERR] ${String(d)}`));
-        proc.on('close', code => {
-          logStream.write(`[${new Date().toISOString()}] ${phase} once-flow exit code=${code}\n`); logStream.end();
-          try { fs.unlinkSync(runnerPath); } catch {}
-          try { fs.unlinkSync(credPath); } catch {}
-          if(ctx.mainWindow) _send('pool-once-flow', { phase, job: job.label, state: 'done', ok: code===0 });
-          resolve({ ok: code===0 });
+        // Minimal batch handshake (the coordinator's queue is not involved for a once job):
+        // first request-batch → hand out the one synthetic row; next request-batch → drain.
+        // Success = the row-result reported ok AND the child exited 0 (worker exits 0 even
+        // after a row error, so the exit code alone is NOT the phase verdict).
+        let handedOut = false, rowOk = null, phaseErr = '';
+        coordSpawnBuuChild({
+          kind: 'once', id: onceId, script, prof,
+          extraArgv: ['__none__'],
+          onRaw: (s, ch) => logStream.write((ch === 'err' ? '[ERR] ' : '[OUT] ') + s),
+          onMessage: (m, proc) => {
+            if (m.type === 'request-batch') {
+              try { proc.stdin.write(JSON.stringify(handedOut ? { cmd:'drain' } : { cmd:'batch', rows:[1] }) + '\n'); } catch (e) {}
+              handedOut = true;
+            } else if (m.type === 'row-result') {
+              rowOk = String(m.status || '').indexOf('ok') === 0;
+              if (!rowOk && !phaseErr) phaseErr = m.error || 'step failed';
+            } else if (m.type === 'fatal') {
+              if (!phaseErr) phaseErr = m.error || 'fatal';
+            }
+          },
+          onClose: (code) => {
+            const ok = code === 0 && rowOk === true;
+            logStream.write(`[${new Date().toISOString()}] ${phase} once-flow exit code=${code} rowOk=${rowOk} ${phaseErr ? 'err=' + phaseErr : ''}\n`); logStream.end();
+            if(ctx.mainWindow) _send('pool-once-flow', { phase, job: job.label, state: 'done', ok, error: phaseErr || undefined });
+            resolve({ ok, error: phaseErr || undefined });
+          },
         });
       };
       finish();

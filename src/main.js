@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '3.1.7';
+const CURRENT_VERSION = '3.2.0';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -84,42 +84,13 @@ function getMaxConcurrentRuns() {
 }
 
 // Phase 2: coordinator (COORD + coord*) lives in src/pool/coordinator.js; wired at EOF.
-function countRowsSync(spreadsheetPath){
-  try{
-    const probe = require('xlsx');
-    const ext = path.extname(spreadsheetPath).toLowerCase();
-    if (ext === '.csv') {
-      return Math.max(0, fs.readFileSync(spreadsheetPath,'utf8').split('\n').filter(Boolean).length - 1);
-    }
-    const wb = probe.readFile(spreadsheetPath);
-    return probe.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]).length;
-  }catch(e){ return 0; }
-}
-
-// v3.0.2: HEADER WHITESPACE. A header entered as "Account Number " became the literal
-// row key "Account Number ", so the {{Account Number}} anyone would actually type
-// resolved to blank — silently, no error. Trim every key once at load.
-// Paired with a matching trim of the token ref at resolution (engine/steps.js + worker
-// resolvePreview), which makes the pair a STRICT SUPERSET: a flow built against the
-// untrimmed header ({{Account Number }}) still resolves after this change.
-// Clean sheets pay nothing — the remap only runs when a header is actually dirty.
-function trimRowKeys(rows){
-  if(!Array.isArray(rows) || !rows.length) return rows;
-  let dirty = false;
-  for(const k in rows[0]){ if(k !== String(k).trim()){ dirty = true; break; } }
-  if(!dirty) return rows;
-  return rows.map(function(r){ const o = {}; for(const k in r) o[String(k).trim()] = r[k]; return o; });
-}
-function loadRowsForJob(spreadsheetPath){
-  const XLSX = require('xlsx');
-  const ext = path.extname(spreadsheetPath).toLowerCase();
-  if(ext === '.csv'){
-    const wb = XLSX.readFile(spreadsheetPath, { raw:false });
-    return trimRowKeys(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' }));
-  }
-  const wb = XLSX.readFile(spreadsheetPath);
-  return trimRowKeys(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' }));
-}
+// R6: THE rows module (engine/rows.js) — one loader/counter/header-reader for the main
+// process AND the worker (spliced via ${ROWS_SRC}). The v3.0.2 header-trim contract and
+// the CSV-via-xlsx rule live there; countRowsSync's old raw line-split could disagree
+// with the worker about the same CSV (quoted commas, blank-ish lines) — no longer possible.
+const { buuLoadRows, buuCountRows, buuReadHeaders } = require('./engine/rows');
+function countRowsSync(spreadsheetPath){ return buuCountRows(spreadsheetPath); }
+function loadRowsForJob(spreadsheetPath){ return buuLoadRows(spreadsheetPath); }
 
 let keytar = null;
 try { keytar = require('keytar'); } catch(e) {}
@@ -159,13 +130,27 @@ function seedBundledFlows(destDir) {
     if (!app.isPackaged) return; // dev runs never seed
     const bundle = path.join(process.resourcesPath, 'flows-bundle');
     if (!fs.existsSync(bundle)) return;
+    // R3 (3.2.0): NAME-AWARE seeding. A flow counts as already-present if its FILENAME
+    // exists in ANY location the resolver searches (automation/once/general/flat root) —
+    // the resolver's own rule. The old exact-path check re-copied the bundle's flat-root
+    // duplicates right after migrateFlowsIntoFolders() deleted them, which is why "the
+    // flows not in folders" kept coming back on every machine. Matthew's intent is
+    // unchanged: flows ride the installer to other computers; local files ALWAYS win
+    // (seeding only ADDS, never overwrites); deleting a flow from every folder still
+    // forces a re-seed on next launch.
+    const have = new Set();
+    const noteDir = (d) => { try { for (const f of fs.readdirSync(d)) { if (f.toLowerCase().endsWith('.json')) have.add(f.toLowerCase()); } } catch (e) {} };
+    noteDir(destDir);
+    for (const sub of FLOW_SUBS) noteDir(path.join(destDir, sub));
     let seeded = 0;
     const walk = (srcDir, dstDir) => {
       for (const e of fs.readdirSync(srcDir, { withFileTypes: true })) {
         const s = path.join(srcDir, e.name);
         const d = path.join(dstDir, e.name);
         if (e.isDirectory()) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); walk(s, d); }
-        else if (e.name.toLowerCase().endsWith('.json') && !fs.existsSync(d)) { fs.copyFileSync(s, d); seeded++; }
+        else if (e.name.toLowerCase().endsWith('.json') && !have.has(e.name.toLowerCase()) && !fs.existsSync(d)) {
+          fs.copyFileSync(s, d); have.add(e.name.toLowerCase()); seeded++;
+        }
       }
     };
     walk(bundle, destDir);
@@ -389,8 +374,10 @@ ipcMain.handle('get-worker-caps', async () => {
 // interpolation and require()'d for main-process use; alias preserves call sites.
 const LOGIN_TO_PESTPAC_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'login.js'), 'utf8');
 const LOCATE_STACK_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'locate.js'), 'utf8');
+const TOKENS_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'tokens.js'), 'utf8'); // R2: THE token module (resolveToken/stampVal/buuSystemToken)
+const ROWS_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'rows.js'), 'utf8'); // R6: THE rows module (buuLoadRows/buuCountRows/buuReadHeaders)
 const STEPS_SRC = fs.readFileSync(path.join(__dirname, 'engine', 'steps.js'), 'utf8');
-const { loginToPestPac: loginToPestPacInPage, logoutFromPestPac: logoutFromPestPacInPage, logoutFrom: logoutFromInPage } = require('./engine/login');
+const { loginToPestPac: loginToPestPacInPage, logoutFromPestPac: logoutFromPestPacInPage, logoutFrom: logoutFromInPage, readLicensePage: readLicensePageInPage } = require('./engine/login');
 const mailer = require('./mailer'); // 3.x: MS Graph run-notification email (config in the vault)
 
 // 3.x EMAIL CONFIG IPC — status/save/test for the Settings panel. Secrets go to the Windows
@@ -425,8 +412,9 @@ function _fmtNowTimeLabel() { try { return new Intl.DateTimeFormat('en-US', { ho
 // v2.2.2 (Session 2A) — SHARED RUNTIME HELPERS (drift-proof, template-interpolated)
 // ────────────────────────────────────────────────────────────────────────────
 // Each constant below is the canonical source of a helper that previously lived
-// duplicated across multiple spawned-child templates (buildRunner / buildPoolWorker /
-// buildLogoutSweeper / buildOnceFlowRunner). Each template now interpolates the
+// duplicated across multiple spawned-child templates (today only buildPoolWorker and
+// buildLogoutSweeper remain — buildRunner and buildOnceFlowRunner are retired). Each
+// template interpolates the
 // constant via ${NAME} instead of carrying its own copy. Same pattern as
 // LOGIN_TO_PESTPAC_SRC above. Helpers chosen for extraction are the substantive
 // shared ones (selector resolution, find-by-text); trivial one-liners like dec,
@@ -581,27 +569,9 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
     // fallback to button[data-testid="LoginForm-loginBtn"] that the inline copy here
     // was missing (the sweeper/once-flow templates had it; this didn't).
     await loginToPestPacInPage(page, { loginUrl: prof.loginUrl, companyKey: prof.companyKey, username: prof.username, password: prof.password });
-    // Navigate to the license page and read the free-licenses cell.
-    await page.goto('https://app.pestpac.com/license.asp?Mode=View', { waitUntil: 'load', timeout: 30000 });
-    // v2.2.1: read the PestPac FREE-licenses value robustly. The page has MULTIPLE license
-    // tables (PestPac, Mobile App, RouteOp), each with its own "Number of free ... licenses:"
-    // row, AND a "Number of licenses:" (total) and "Number of used licenses:" row. The old
-    // startsWith('number of free licenses') match was returning the wrong cell (used/total).
-    // Fix: scan ONLY the PestPac panel (#div_PestPac), require the label to match EXACTLY
-    // "number of free licenses:" (so it can't hit "used", the bare total, or Mobile/RouteOp),
-    // and read that row's value cell.
-    const freeText = await page.evaluate(() => {
-      const scope = document.querySelector('#div_PestPac') || document;
-      const tds = Array.from(scope.querySelectorAll('td'));
-      for (const td of tds) {
-        const label = (td.textContent || '').trim().toLowerCase().replace(/\s+/g, ' ');
-        if (label === 'number of free licenses:' || label === 'number of free licenses') {
-          const sib = td.nextElementSibling;
-          if (sib) return (sib.textContent || '').trim();
-        }
-      }
-      return null;
-    });
+    // R5: THE license-page reader (engine/login.js) — the v2.2.1 exact-label/#div_PestPac
+    // rules live there now, shared with the coordinator's elastic checker.
+    const freeText = (await readLicensePageInPage(page) || {}).free;
     await licenseReaderLogout(page); // v2.2.1: a read session is still a consumed license — log out before closing.
     await browser.close();
     if (freeText == null) return { ok: false, error: 'Could not find "Number of free licenses" on the license page.' };
@@ -1100,7 +1070,7 @@ function resolveOnceFlowByName(name) { const r = resolveFlowByName(name); return
 // locators, find-by-text, retry). Each processed row is reported via {type:'row-result'}.
 // ════════════════════════════════════════════════════════════════════════════
 
-const __POOL_INLINE_SRC = { REQUIRE_FN_SRC, LOGIN_TO_PESTPAC_SRC, LOCATE_STACK_SRC, STEPS_SRC, PROBE_NETWORK_FN_SRC, WAIT_FOR_NETWORK_FN_SRC, CLASSIFY_ERROR_FN_SRC, CLASSIFY_PHASE_FN_SRC };
+const __POOL_INLINE_SRC = { REQUIRE_FN_SRC, LOGIN_TO_PESTPAC_SRC, LOCATE_STACK_SRC, TOKENS_SRC, ROWS_SRC, STEPS_SRC, PROBE_NETWORK_FN_SRC, WAIT_FOR_NETWORK_FN_SRC, CLASSIFY_ERROR_FN_SRC, CLASSIFY_PHASE_FN_SRC };
 function buildPoolWorker(cfg){
   const {
     flowSteps, setupSteps = [], teardownSteps = [], spreadsheetPath, logPath,
@@ -1169,9 +1139,11 @@ function ms(s){return Math.round(parseFloat(s||1)*1000);}
 
 // v2.2.2 (Session 2A): sweeper uses the stripped (no-iframe) minimal variant.
 ${FIND_LOCATOR_MINIMAL_SRC}
+// R2: THE token resolver (engine/tokens.js) — login steps only ever carry CRED tokens.
+${TOKENS_SRC}
 // Minimal step engine — only the step types login uses (navigate/type/click/select/wait).
 async function runStep(page, step, creds){
-  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||''); };
+  const r=v=>resolveToken(v,{ creds });
   switch(step.type){
     case 'navigate':{const u=r(step.url); if(u){ await page.goto(u,{waitUntil:'domcontentloaded',timeout:30000}); } break;}
     case 'type':{ const loc=await findLocator(page,step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().fill(''); await loc.first().fill(r(step.value)); break; }
@@ -1238,62 +1210,12 @@ main().catch(e=>{ emit({type:'sweep-fatal',error:e.message}); process.exit(1); }
 `;
 }
 
-// ── ONCE-FLOW RUNNER (v2.1.1 #8) ──────────────────────────────────────────────
-// Runs a setup OR teardown once-flow a single time in its own headless session, for the
-// 'per-job' / 'global' setup-scope modes (where workers do NOT run the once-flows themselves).
-// Logs in, runs the steps with the given RUN_CONTEXT, then VERIFIES logout (same as workers).
-function buildOnceFlowRunner({ chromiumExePath, loginSteps, onceSteps, runContext }) {
-  return `
-const { chromium } = require('playwright-core');
-const fs = require('fs');
-const crypto = require('crypto');
-const CHROMIUM_EXE = ${JSON.stringify(chromiumExePath)};
-const LOGIN_STEPS = ${JSON.stringify(loginSteps || [])};
-const ONCE_STEPS = ${JSON.stringify(onceSteps || [])};
-const RUN_CONTEXT = ${JSON.stringify(runContext || {})};
-const CRED_PATH = process.argv[2];
-const CRED_KEY = crypto.scryptSync('better-update-utility-v1','buu-salt-2024',32);
-function dec(raw){const{iv,d}=JSON.parse(raw);const dc=crypto.createDecipheriv('aes-256-cbc',CRED_KEY,Buffer.from(iv,'hex'));return JSON.parse(Buffer.concat([dc.update(Buffer.from(d,'hex')),dc.final()]).toString('utf8'));}
-function emit(o){process.stdout.write(JSON.stringify(o)+'\\n');}
-function ms(s){return Math.round(parseFloat(s||1)*1000);}
-// v2.2.2: shared canonical login (was the 4th and final inline copy; now sourced from LOGIN_TO_PESTPAC_SRC).
-${LOGIN_TO_PESTPAC_SRC}
-async function runStep(page, step, creds){
-  const r=v=>{ if(!v)return''; return v.replace(/{{CRED:companyKey}}/g,creds.companyKey||'').replace(/{{CRED:username}}/g,creds.username||'').replace(/{{CRED:password}}/g,creds.password||'').replace(/{{([^}]+)}}/g,function(_,ref){ if(ref==='TODAY')return RUN_CONTEXT.today||''; if(ref==='RUNID')return RUN_CONTEXT.runId||''; if(ref==='PROFILE_USERNAME')return RUN_CONTEXT.profileUsername||''; return ''; }); };
-  switch(step.type){
-    case 'navigate':{const u=r(step.url); if(!u) throw new Error('Navigate URL empty'); await page.goto(u,{waitUntil:'domcontentloaded',timeout:60000}); break;}
-    case 'click':{ const loc=page.locator(step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().click(); break; }
-    case 'type':{ const loc=page.locator(step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().fill(''); await loc.first().fill(r(step.value)); break; }
-    case 'select':{ const loc=page.locator(step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); await loc.first().selectOption({label:r(step.value)}); break; }
-    case 'checkbox':{ const loc=page.locator(step.selector); await loc.first().waitFor({state:'visible',timeout:30000}); if(step.checkAction==='uncheck')await loc.first().uncheck(); else await loc.first().check(); break; }
-    case 'wait':{ if(step.waitType==='element'){ await page.locator(step.waitSel||'').first().waitFor({state:'visible',timeout:30000}); } else { await page.waitForTimeout(ms(step.waitSec||1)); } break; }
-    case 'pestpac-login':{ await loginToPestPac(page,creds); break; }
-    case 'pestpac-logout':{ break; } // logout handled centrally below
-  }
-}
-async function main(){
-  const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
-  const browser = await chromium.launch({ headless:true, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage'] });
-  const page = await (await browser.newContext()).newPage();
-  page.on('dialog', async d=>{ try{ await d.accept(); }catch(_){} });
-  emit({type:'once-login', phase:RUN_CONTEXT.phase});
-  try{
-    if(LOGIN_STEPS && LOGIN_STEPS.length){ for(const s of LOGIN_STEPS){ await runStep(page,s,creds); } }
-    else { await loginToPestPac(page,creds); }
-  }catch(e){ emit({type:'once-fatal',error:'login failed: '+e.message}); try{await browser.close();}catch(_){} process.exit(1); }
-  let _ok=true, _err='';
-  for(let i=0;i<ONCE_STEPS.length;i++){ try{ await runStep(page,ONCE_STEPS[i],creds); }catch(e){ _ok=false; _err='step '+(i+1)+': '+e.message; break; } }
-  emit({type:'once-steps-done', ok:_ok, error:_err, phase:RUN_CONTEXT.phase});
-  // Verified logout via the ONE canonical routine (engine/login.js), platform-aware.
-  let _out=false;
-  try{ const _r = await logoutFrom(page, creds); _out = !!(_r && _r.ok); }catch(e){ _out=false; }
-  emit({type:'once-done', ok:_ok, loggedOut:_out, phase:RUN_CONTEXT.phase});
-  try{ await browser.close(); }catch(e){}
-  process.exit(_ok?0:2);
-}
-main().catch(e=>{ emit({type:'once-fatal',error:e.message}); process.exit(1); });
-`;
-}
+// ── ONCE-FLOW RUNNER — RETIRED (R1, 3.2.0) ────────────────────────────────────
+// The separate once-flow child template is gone. Per-job/global setup-teardown
+// once-flows now run through buildPoolWorker as a synthetic one-row, sheet-free job
+// (coordinator.js coordRunOnceFlow): ONE engine, real tokens ({{TODAY}} was silently
+// blank here — RUN_CONTEXT.today was never set anywhere), iframe-aware locators,
+// dedicated session + verified logout preserved.
 
 function fetchJSON(url, redirects) {
   redirects = redirects || 0;
@@ -1438,27 +1360,43 @@ ipcMain.handle('install-update', async (_, { downloadUrl }) => {
     // v3.0.3: forceClosing MUST be set before quitting, or the R10 close gate blocks
     // the update restart. This one missing line made the in-app updater unusable.
     forceClosing = true;
-    // 3.x FIX: the installer launch was fire-and-forget. shell.openPath() returns an ERROR
-    // STRING (it does not throw) and that return was ignored, so a failed launch still let
-    // the app quit 2s later — leaving the user with the app closed and NO installer running
-    // (the "downloads but never installs" bug). Launch as a DETACHED child so the installer
-    // survives this app quitting, VERIFY it started, and only quit on a confirmed launch.
+    // R4 (3.2.0): VERIFIED launch, for real this time. Node's spawn() reports launch
+    // failure ASYNCHRONOUSLY via the child's 'error' event — the 3.1.4 "verify" set
+    // launched=true unconditionally right after the call and swallowed that event, so a
+    // blocked installer (AV, policy, broken association) still returned {ok:true}: the
+    // openPath fallback was unreachable dead code, the renderer's alert never fired, and
+    // the app quit 2s later with NO installer running and NO trail (the 4:32 PM 07-28
+    // incident: a valid 217MB installer sat in updates\, downloaded, never executed).
+    // Now: await the actual spawn/error verdict, fall back to the shell association only
+    // on a REAL failure, and write updates\update.log either way — the app quits seconds
+    // after success, so the log is the only forensic trail an update leaves behind.
+    const _updLog = (line) => { try { fs.appendFileSync(path.join(updateDir, 'update.log'), '[' + new Date().toISOString() + '] ' + line + '\n'); } catch (e) {} };
+    let _dlBytes = 0; try { _dlBytes = fs.statSync(tmp).size; } catch (e) {}
+    _updLog('downloaded ' + downloadUrl + ' -> ' + tmp + ' (' + _dlBytes + ' bytes)');
     let launched = false, launchErr = '';
     try {
-      const child = spawn(tmp, [], { detached: true, stdio: 'ignore' });
-      child.on('error', () => {}); // never let a spawn error bubble as an unhandled rejection
-      child.unref();
-      launched = true;
+      launched = await new Promise((res) => {
+        const child = spawn(tmp, [], { detached: true, stdio: 'ignore' });
+        let settled = false;
+        child.once('spawn', () => { if (settled) return; settled = true; try { child.unref(); } catch (e) {} res(true); });
+        child.once('error', (e) => { if (settled) return; settled = true; launchErr = e.message; res(false); });
+        // Backstop: neither event within 10s (shouldn't happen) — count it as failed
+        // rather than hanging the updater forever.
+        setTimeout(() => { if (settled) return; settled = true; launchErr = 'no spawn/error event within 10s'; res(false); }, 10000);
+      });
     } catch (e) { launchErr = e.message; }
     if (!launched) {
+      _updLog('spawn failed: ' + launchErr + ' — trying shell association');
       // Fallback to the shell association; openPath returns '' on success, else an error string.
       const openErr = await shell.openPath(tmp);
-      if (openErr) { launchErr = openErr; } else { launched = true; }
+      if (openErr) { launchErr = openErr; } else { launched = true; launchErr = ''; }
     }
     if (!launched) {
       forceClosing = false; // stand down — do NOT quit; the update did not start
+      _updLog('LAUNCH FAILED: ' + launchErr + ' — installer left at ' + tmp + '; app NOT quitting');
       return { ok: false, error: 'Downloaded, but could not launch the installer: ' + (launchErr || 'unknown') + '. It is saved at ' + tmp };
     }
+    _updLog('installer launched OK — quitting in 2s');
     setTimeout(() => app.quit(), 2000);
     return { ok: true };
   }
@@ -1477,25 +1415,13 @@ ipcMain.handle('open-spreadsheet', async () => {
   if (r.canceled) return null;
   const fp = r.filePaths[0];
   try { writeConfig({ lastSpreadsheetDir: path.dirname(fp) }); } catch {}
-  const XLSX = require('xlsx');
-  const ext = fp.split('.').pop().toLowerCase();
-  let headers = [], previewRows = [], totalRows = 0;
-  if (ext === 'csv') {
-    const lines = fs.readFileSync(fp, 'utf8').split('\n').filter(Boolean);
-    headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-    previewRows = lines.slice(1, 9).map(l => l.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
-    totalRows = lines.length - 1;
-  } else {
-    const wb = XLSX.readFile(fp, { sheetRows: 10 });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    // v3.0.2: trim BEFORE these headers become chips/tokens. The CSV branch above
-    // already trimmed; XLSX never did, so the two disagreed.
-    headers = (raw[0] || []).map(h => String(h).trim()).filter(Boolean);
-    previewRows = raw.slice(1).filter(r => r.some(c => c !== ''));
-    const wb2 = XLSX.readFile(fp);
-    totalRows = XLSX.utils.sheet_to_json(wb2.Sheets[wb2.SheetNames[0]]).length;
-  }
+  // R6: THE rows module — the preview now parses with the SAME rules the run will use
+  // (CSV via xlsx, quoted commas handled, headers trimmed once). The old CSV branch here
+  // was a third hand-rolled parser that could show a preview the worker would not match.
+  const rows = buuLoadRows(fp);
+  const headers = buuReadHeaders(fp);
+  const previewRows = rows.slice(0, 8).map(r => headers.map(h => (r[h] !== undefined ? String(r[h]) : '')));
+  const totalRows = rows.length;
   return { filePath: fp, name: path.basename(fp), headers, previewRows, totalRows };
 });
 
@@ -2032,10 +1958,10 @@ const __coordCtx = {
   // to the hardware/max limit). Wiring it restores the license cap.
   loginToPestPacInPage,
   logoutFromInPage,
+  readLicensePage: readLicensePageInPage, // R5: THE license-page reader (engine/login.js)
   resolveOnceFlowByName,
   buildPoolWorker,
   buildLogoutSweeper,
-  buildOnceFlowRunner,
   get mainWindow() { return mainWindow; },
   get keytar() { return keytar; },
 };

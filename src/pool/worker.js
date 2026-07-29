@@ -181,27 +181,15 @@ function waitForCommand(){
   if(currentMode === 'run-all' || currentMode === 'stop') return Promise.resolve('auto');
   return new Promise(function(r){ _pendingPauseResolve = r; });
 }
-// v2.2.2 Session 2C: substitution preview for the step-mode pause panel. Mirrors the r()
-// resolver in runStep but doesn't touch the page; the renderer displays what's about to
-// happen so the user can verify before clicking Next-step.
+// v2.2.2 Session 2C: substitution preview for the step-mode pause panel. Doesn't touch
+// the page; the renderer displays what's about to happen so the user can verify before
+// clicking Next-step. R2: uses THE resolver (engine/tokens.js, inlined below — function
+// declarations hoist), so the preview is BY CONSTRUCTION what runStep will substitute.
 function resolvePreview(step, row, creds){
-  const r = function(v){
-    if(!v) return '';
-    return v.replace(/{{CRED:companyKey}}/g, creds.companyKey||'')
-            .replace(/{{CRED:username}}/g, creds.username||'')
-            .replace(/{{CRED:password}}/g, creds.password||'')
-            .replace(/{{([^}]+)}}/g, function(_, ref){
-              ref = String(ref).trim(); // v3.0.2: {{ Foo }} and {{Foo}} are the same token
-              const _sys = buuSystemToken(ref, RUN_CONTEXT); if(_sys !== null) return _sys; // R6 (hoisted decl from the inlined steps source)
-              if(ref === 'RUNID') return RUN_CONTEXT.runId || '';
-              if(ref === 'PROFILE_USERNAME') return RUN_CONTEXT.profileUsername || '';
-              return row[ref] !== undefined ? String(row[ref]) : '';
-            });
-  };
+  const r = function(v){ return resolveToken(v, { row, creds, runContext: RUN_CONTEXT }); };
   let value = '';
   if(step.type === 'type' || step.type === 'select') value = r(step.value || '');
   else if(step.type === 'navigate') value = r(step.url || '');
-  else if(step.type === 'textedit') value = '(textedit: ' + (step.editMode || 'find-replace') + ')';
   else if(step.type === 'checkbox') value = '(' + (step.checkAction || 'check') + ')';
   else if(step.type === 'ifclick') value = '(click if present within ' + (step.presenceSec || 1) + 's, else continue)';
   else if(step.type === 'wait') value = '(' + (step.waitType || 'fixed') + ')';
@@ -228,31 +216,12 @@ function flush(){
 }
 
 // ── load all rows into memory once (workers index into this by 1-based row number) ──
-function loadAllRows(fp){
-  const ext=path.extname(fp).toLowerCase();
-  if(ext==='.csv'){
-    const lines=fs.readFileSync(fp,'utf8').split('\n').filter(Boolean);
-    const headers=lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''));
-    const out=[];
-    for(let i=1;i<lines.length;i++){ const vals=lines[i].split(',').map(v=>v.trim().replace(/^"|"$/g,'')); const row={}; headers.forEach((h,j)=>row[h]=vals[j]||''); out.push(row); }
-    return out;
-  }
-  const wb=XLSX.readFile(fp);
-  const ws=wb.Sheets[wb.SheetNames[0]];
-  // v3.0.2: header whitespace — trim the row KEYS so {{Token}} matches a header that
-  // carries a stray space. The CSV branch above always trimmed; XLSX never did, which
-  // is why tokens went blank on sheets with "Account Number ". Read JUST the header row
-  // to decide, so a clean sheet never pays for the remap (these runs hit 25k+ rows).
-  let _dirty=false;
-  try{
-    const _rg=XLSX.utils.decode_range(ws['!ref']);
-    const _hdr=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',range:{s:{r:_rg.s.r,c:_rg.s.c},e:{r:_rg.s.r,c:_rg.e.c}}})[0]||[];
-    _dirty=_hdr.some(function(h){ return String(h)!==String(h).trim(); });
-  }catch(e){ _dirty=true; } // probe failed: remap rather than risk a silent blank
-  const _rows=XLSX.utils.sheet_to_json(ws);
-  if(!_dirty) return _rows;
-  return _rows.map(function(r){ const o={}; for(const k in r) o[String(k).trim()]=r[k]; return o; });
-}
+// R6: THE rows module (engine/rows.js) — the SAME loader the coordinator counts with,
+// so staging and the worker can never disagree about a file's rows again. The old
+// hand-rolled CSV split (broke on quoted commas) and the local header-trim probe are gone.
+
+/*__BUU_INLINE ROWS_SRC__*/
+
 
 // v2.2.2: shared canonical login (was a 4th copy here; see LOGIN_TO_PESTPAC_SRC at top of main.js).
 
@@ -280,6 +249,11 @@ function loadAllRows(fp){
 
 
 /*__BUU_INLINE CLASSIFY_PHASE_FN_SRC__*/
+
+
+// R2: ALL token logic (resolveToken / stampVal / buuSystemToken) lives in src/engine/tokens.js
+
+/*__BUU_INLINE TOKENS_SRC__*/
 
 
 // Phase 2: step handlers (runStep) now live in src/engine/steps.js
@@ -363,19 +337,7 @@ async function processRow(page, row, creds, rowNum){
   // timeouts, every scheduled run 07-16/07-17) before the OUTER recovery even probed.
   // Probe after EVERY failed attempt (URL + login-field presence, no navigation); if
   // logged out, stop retrying now and hand straight back to the outer re-login.
-  const _loginScreenProbe = async () => {
-    try{
-      const _u = page.url();
-      const _plat=(creds.platform||'pestpac');
-      if(/login\.pestpac\.com/i.test(_u)) return true;
-      if(_plat==='frankware' && /\/login/i.test(_u)) return true;
-      if(_plat==='fieldwork' && /\/sign_in\b/i.test(_u)) return true;
-      if(_plat==='fieldwork' && await page.$('#sign-in-password')) return true;
-      if(await page.$('input[name="uid"]')) return true;
-      if(await page.$('input[name="username"]')) return true;
-    }catch(e){}
-    return false;
-  };
+  const _loginScreenProbe = () => isLoginScreen(page, (creds.platform||'pestpac')); // R5: THE probe (engine/login.js)
   try{ await attempt(); return {status:'ok', fieldsWritten:done.join(' | ')}; }
   catch(e){
     // v2.2.2 Session 2C: step-mode sentinels short-circuit retry — they're user actions,
@@ -526,7 +488,7 @@ async function captureRowDiagnostic(page, row, rowNum, res, durationMs){
 async function main(){
   const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
   // R15: spreadsheet-free once-flow — one synthetic empty row = one pass of the steps.
-  const ALL_ROWS = SPREADSHEET === '__none__' ? [{}] : loadAllRows(SPREADSHEET);
+  const ALL_ROWS = SPREADSHEET === '__none__' ? [{}] : buuLoadRows(SPREADSHEET); // R6: THE rows module
   // 3.x: step-through for once-flows. A sheet-free once-flow has exactly ONE synthetic row,
   // so 'step-row' (which only pauses AFTER each row) would run the ENTIRE flow with no
   // per-step pause and then stop once at the very end — the user sees "everything happens but
@@ -686,17 +648,8 @@ async function main(){
       // navigating (current URL + login-field presence). If logged out: re-login and
       // retry this row ONCE.
       if(res && res.status==='error'){
-        let _authDead=false;
-        try{
-          const _u=page.url();
-          const _plat=(creds.platform||'pestpac');
-          if(/login\.pestpac\.com/i.test(_u)) _authDead=true;
-          else if(_plat==='frankware' && /\/login/i.test(_u)) _authDead=true;
-          else if(_plat==='fieldwork' && /\/sign_in\b/i.test(_u)) _authDead=true; // Fieldwork login page
-          else if(_plat==='fieldwork' && await page.$('#sign-in-password')) _authDead=true;
-          else if(await page.$('input[name="uid"]')) _authDead=true;
-          else if(await page.$('input[name="username"]')) _authDead=true;
-        }catch(e){}
+        // R5: THE probe (engine/login.js) — was a second hand-written copy of the same checks.
+        const _authDead = await isLoginScreen(page, (creds.platform||'pestpac'));
         if(_authDead){
           emit({type:'log', message:'Row '+rowNum+' failed on a dead session (login screen detected). Re-logging in and retrying the row once.'});
           try{
