@@ -504,6 +504,21 @@ async function main(){
   const browser = await chromium.launch({ headless: !_isStepMode, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage','--disable-background-timer-throttling'] });
   const page = await (await browser.newContext()).newPage();
 
+  // 3.2.1: page-crash / dead-browser signatures. A crashed renderer can NEVER navigate again,
+  // so re-login/retry on the same page is futile — that was the 07-29 cascade (8,207 rows lost
+  // when a worker kept reusing a dead page). Design decision (Matthew): do NOT recreate the
+  // page in-worker. On a crash we hand the in-flight row back and EXIT; the coordinator's
+  // lossless-reclaim requeues that row (we never emit a row-result for it, so it's not marked
+  // done), and the elastic eval commissions a fresh worker if the host can afford it.
+  const _CRASH_RE = /crashed|Target closed|Session closed|has been closed/i;
+  const _pageCrashExit = async (crashRow, errMsg, t0) => {
+    try{ emit({ type:'page-crash', row:crashRow, error:String(errMsg||'').slice(0,300), durationMs:(t0?Date.now()-t0:0) }); }catch(e){}
+    _currentRowNum = null; _currentRow = null;
+    try{ await browser.close(); }catch(e){}   // frees local Chromium; the PestPac seat is reclaimed by the end-of-run logout sweep, same as any crash
+    try{ flush(); }catch(e){}
+    process.exit(3);   // distinct exit code; the coordinator close handler requeues this worker's in-flight row
+  };
+
   // v2.2.3 Session 3A (A3): blanket dialog listener. Logs every dialog (PestPac validation
   // popups, confirmation dialogs, alerts) regardless of whether a Handle Dialog step is
   // registered. Multiple page.on('dialog') listeners are all called by Playwright — the
@@ -639,6 +654,8 @@ async function main(){
           _currentRowNum = null; _currentRow = null;
           break;
         }
+        // 3.2.1: a crash can THROW out of processRow too — intercept before the fatal path.
+        if(_CRASH_RE.test(String((e&&e.message)||e))){ await _pageCrashExit(rowNum, (e&&e.message)||e, t0); }
         _currentRowNum = null; _currentRow = null;
         throw e;
       }
@@ -648,6 +665,10 @@ async function main(){
       // navigating (current URL + login-field presence). If logged out: re-login and
       // retry this row ONCE.
       if(res && res.status==='error'){
+        // 3.2.1: PAGE CRASH takes priority over session recovery — a crashed page can't be
+        // re-logged-in (that was the 07-29 cascade). Hand the row back and exit; do NOT emit
+        // a row-result for it, so the coordinator requeues it onto a fresh worker.
+        if(_CRASH_RE.test(String(res.error||''))){ await _pageCrashExit(rowNum, res.error, t0); }
         // R5: THE probe (engine/login.js) — was a second hand-written copy of the same checks.
         const _authDead = await isLoginScreen(page, (creds.platform||'pestpac'));
         if(_authDead){

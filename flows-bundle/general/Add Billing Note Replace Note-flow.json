@@ -1,18 +1,18 @@
 {
   "version": "1.1",
-  "name": "Add Billing Note-flow",
+  "name": "Add Billing Note Replace Note-flow",
   "runMode": "per-row",
   "automation": false,
   "poolSettings": {
-    "maxWorkers": 20,
-    "startWorkers": 9,
+    "maxWorkers": 12,
+    "startWorkers": 1,
     "hwSlider": 4,
     "ppSlider": 4,
     "evalMin": 2,
-    "elastic": false,
+    "elastic": true,
     "diag": false,
     "diagCap": 10,
-    "startMode": "run-all"
+    "startMode": "step"
   },
   "setupFlowId": null,
   "teardownFlowId": null,
@@ -22,14 +22,14 @@
       "type": "navigate",
       "url": "{{BT URL}}",
       "waitAfter": "load",
-      "open": true,
+      "open": false,
       "dialogAccept": true,
       "dialogDecline": false
     },
     {
       "id": 2,
       "type": "click",
-      "open": true,
+      "open": false,
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "button[name=\"butNotes\"]",
@@ -40,39 +40,31 @@
     {
       "id": 3,
       "type": "click",
-      "open": true,
+      "open": false,
       "checkAction": "check",
       "waitType": "fixed",
-      "selector": "button[name=\"butAdd\"]",
+      "selector": "//tr[td[contains(normalize-space(), '07/15/2026')] and td[normalize-space()='BUU'] and td[normalize-space()='BILLG/COLL'] and following-sibling::tr[1]/td[contains(., 'Sent Renewal Notice') and contains(., '07/15/2026')]]//a[normalize-space()='Edit']",
       "waitFor": "button[name=\"butSaveNote\"]",
+      "afterSelector": "button[name=\"butDelete\"]",
       "dialogAccept": true,
       "dialogDecline": false
     },
     {
       "id": 5,
       "type": "type",
-      "open": true,
+      "open": false,
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "textarea[name=\"Note\"]",
-      "value": "{{Note}}"
-    },
-    {
-      "id": 9,
-      "type": "type",
-      "open": true,
-      "checkAction": "check",
-      "waitType": "fixed",
-      "value": "BILLG/COLL",
-      "selector": "input[name=\"NoteCode\"]"
+      "value": "{{New Note}}"
     },
     {
       "id": 6,
       "type": "click",
-      "open": true,
+      "open": false,
       "checkAction": "check",
       "waitType": "fixed",
-      "selector": "button[name=\"butSaveNote\"]",
+      "selector": "button[name=\"butSave\"]",
       "waitFor": "button[name=\"butAdd\"]",
       "dialogAccept": true,
       "dialogDecline": false
@@ -89,5 +81,5 @@
     "flowNotes": "",
     "headless": false
   },
-  "lastGoodWorkers": 3
+  "lastGoodWorkers": 8
 }

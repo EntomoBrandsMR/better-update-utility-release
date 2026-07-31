@@ -16,6 +16,9 @@ function coordJournalMetaPath(poolId){ return path.join(app.getPath('userData'),
 // resume can reconstruct queues without the renderer re-staging them.
 function coordOpenJournal(){
   COORD.poolId = 'pool' + Date.now();
+  // 3.2.1: reset the crash governor's run-scoped state so a fresh run starts with a clean
+  // ceiling (the ratchet holds only for the run that tripped it) and no stale crash counts.
+  COORD._crashCeiling = Infinity; COORD._youngCrashTimes = []; COORD._crashRowCounts = {};
   try{
     // Meta: enough to rebuild each job (label, sheet, profile, flow, total). flowSteps included
     // so resume is fully self-contained even if the user changed the in-app flow since.

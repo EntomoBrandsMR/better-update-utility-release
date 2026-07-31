@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '3.2.0';
+const CURRENT_VERSION = '3.2.1';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -512,6 +512,7 @@ const WAIT_FOR_NETWORK_FN_SRC = `async function waitForNetwork(){
 
 const CLASSIFY_ERROR_FN_SRC = `function classifyError(errMsg){
   const m = String(errMsg || '');
+  if (/crashed|Target closed|Session closed|has been closed/i.test(m)) return 'page-crash'; // 3.2.1: renderer/browser death — checked first so it never hides under 'unknown'
   if (/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ERR_NAME_NOT_RESOLVED|ENOTFOUND|getaddrinfo/i.test(m)) return 'internet-down';
   if (/ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ECONNREFUSED|ECONNRESET/i.test(m)) return 'pestpac-down';
   if (/ERR_|net::/i.test(m)) return 'unknown-network';
@@ -1949,6 +1950,7 @@ const __coordCtx = {
   encStore,
   readAllProfiles,
   readConfig,
+  computeHardwareCap, // 3.2.1: the eval recomputes the hardware cap LIVE each cycle (free RAM changes as workers bloat) instead of trusting the launch snapshot
   getBundledChromiumPath,
   licenseReaderLogout,
   // 3.x CRITICAL: the coordinator's elastic license checker (coordLicenseScale) needs the

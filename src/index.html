@@ -2943,6 +2943,10 @@ if(API.onScheduleFire) API.onScheduleFire(async function(d){
     await applyLoadedFlow(JSON.parse(fr.json));
     const r = await poolLaunchCurrent();
     if(!r || r.ok === false){ API.scheduleResult({ id: d.scheduleId, ok: false, error: (r&&r.error)||'launch failed' }); return; }
+    // 3.2.1: tell the scheduler the pool STARTED (not the run result — completion arrives via
+    // the in-process pool-complete hook). This lets the block-end backstop tell a real run
+    // apart from a launch that never happened, so it only flags TRUE never-starts.
+    API.scheduleResult({ id: d.scheduleId, ok: true, launched: true });
   }catch(e){ API.scheduleResult({ id: d.scheduleId, ok: false, error: e.message }); }
 });
 if(API.onSchedulesMissed) API.onSchedulesMissed(async function(list){

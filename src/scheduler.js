@@ -9,6 +9,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const CM = require('./pool/crashmem'); // 3.2.1: shared est-left-time formula (also used by the coordinator's backstop re-arm)
 
 const DAY_MS = 86400000;
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -132,7 +133,7 @@ function initScheduler(deps) {
   // deps: { app, ipcMain, buuRoot, COORD, getWindow, readFlowByName, keytar }
   const { app, ipcMain, buuRoot, COORD, getWindow, readFlowByName, keytar } = deps;
   const dir = () => { const d = path.join(buuRoot(), 'schedules'); try { fs.mkdirSync(d, { recursive: true }); } catch (e) {} return d; };
-  let watch = null; // { id, firedAt, sawActive }
+  let watch = null; // 3.2.1: { id, firedAt, blockMs, launched, done, emailed, rearms, timer } — the in-flight fired run
 
   function loadAll() {
     const out = [];
@@ -180,13 +181,91 @@ function initScheduler(deps) {
     return Object.assign({}, s, { nextFireTs: nf, nextFireLocal: nf ? new Date(nf).toLocaleString() : null });
   }
 
+  // ── 3.2.1 EVENT-DRIVEN COMPLETION + BLOCK-END BACKSTOP ──────────────────────
+  // The old design polled COORD.active every 30s to detect completion. A run that
+  // STARTED and FINISHED inside one 30s gap was never observed active, so it got a false
+  // never-started error and NO email went out — while a slower FAILING run WAS observed
+  // and emailed (the exact 07-29 VM symptom). Completion is now event-driven off the real
+  // pool-complete signal (COORD.onPoolComplete, wired below, fired in-process the instant
+  // the pool drains), so run DURATION no longer decides whether the email fires. A
+  // self-scheduling block-end backstop guarantees we ALWAYS reconcile even if that signal
+  // is somehow missed, and re-arms with the run's own est-left-time while it is still going.
+
+  // Est. time left (ms) for the live run, from the same rows/min + remaining the UI shows.
+  // 0 when unknown (e.g. a once-flow with no per-row throughput) — caller falls back.
+  function estLeftMs(){
+    try {
+      let remaining = 0;
+      for (const j of COORD.jobs.values()) remaining += Math.max(0, (j.totalRows||0) - Math.max(0,(j.nextRow||1)-1)) + (j.requeue ? j.requeue.length : 0);
+      return CM.estLeftMs(remaining, Number(COORD.throughput) || 0); // rows + rows/min -> ms (0 = unknown; caller falls back to the block length)
+    } catch (e) {}
+    return 0;
+  }
+
+  // Reconcile ONCE per fire: record the result and send the email if it hasn't gone yet.
+  // Idempotent — whichever of {pool-complete hook, backstop} reaches it first wins; the
+  // other no-ops (watch.done). `j` is the run's job (may be null on the never-started path).
+  function finalize(nowTs, resultObj, j){
+    if (!watch || watch.done) return;
+    watch.done = true;
+    if (watch.timer) { try { clearTimeout(watch.timer); } catch (e) {} watch.timer = null; }
+    const s = loadAll().find(x => x.id === watch.id);
+    if (s) {
+      s.lastResult = resultObj; saveOne(s); send('schedules-changed', {});
+      // "if the run is done it checks to see if the worker emailed, if not then it does":
+      if (!watch.emailed) { watch.emailed = true; maybeSendEmail(s, j, watch.firedAt, nowTs); }
+    }
+    watch = null;
+  }
+
+  // THE real completion signal. The coordinator calls this in-process the moment the pool
+  // drains (see coordinator.js pool-complete). Duration-independent — this is the fix.
+  function onPoolCompleteInternal(){
+    if (!watch || watch.done) return; // no scheduled run in flight (e.g. a human Run) — ignore
+    const now = Date.now();
+    const j = Array.from(COORD.jobs.values())[0];
+    finalize(now, { ts: now, status: (j && j.err) ? 'errors' : 'ok', ok: (j && j.ok) || 0, err: (j && j.err) || 0 }, j);
+  }
+
+  // Block-end backstop. The FIRST check is mandatory at the reserved block length (there is
+  // no est-left-time at the very start). If the run is still going, re-arm with est-left + 60s
+  // grace and check again — a fork loop that "always checks" until the run is done.
+  function armBackstop(waitMs){
+    if (!watch) return;
+    try { if (watch.timer) clearTimeout(watch.timer); } catch (e) {}
+    watch.timer = setTimeout(() => {
+      if (!watch || watch.done) return;
+      if (COORD.active) {
+        // still running — re-arm off the live ETA (+60s), with a stall ceiling so a run that
+        // never reports done can't spin timers forever.
+        if ((watch.rearms = (watch.rearms||0) + 1) > 120) {
+          finalize(Date.now(), { ts: Date.now(), status: 'error', error: 'run exceeded its maximum wait window (see live log)' }, Array.from(COORD.jobs.values())[0]);
+          return;
+        }
+        armBackstop(Math.min(3600000, (estLeftMs() || watch.blockMs) + 60000));
+        return;
+      }
+      // Not active. If the run launched, it FINISHED and the pool-complete hook was somehow
+      // missed — reconcile from the job (belt-and-suspenders). If it never launched, it truly
+      // did not start (renderer never confirmed launch): record it (not a run outcome to email).
+      if (watch.launched) {
+        const j = Array.from(COORD.jobs.values())[0];
+        finalize(Date.now(), { ts: Date.now(), status: (j && j.err) ? 'errors' : 'ok', ok: (j && j.ok) || 0, err: (j && j.err) || 0 }, j);
+      } else {
+        const s = loadAll().find(x => x.id === watch.id);
+        if (s) { s.lastResult = { ts: Date.now(), status: 'error', error: 'run did not start within its reserved block (see live log)' }; saveOne(s); send('schedules-changed', {}); }
+        watch = null;
+      }
+    }, Math.max(1000, waitMs|0));
+  }
+
   function fire(s, dueTs, manual) {
     s.lastFiredAt = dueTs || Date.now(); // advance FIRST — a crash mid-fire must not double-fire
     saveOne(s);
     const fr = readFlowByName(s.flowName);
     if (!fr) { s.lastResult = { ts: Date.now(), status: 'error', error: 'flow "' + s.flowName + '" not found' }; saveOne(s); send('schedules-changed', {}); return; }
     let flow; try { flow = JSON.parse(fr.json); } catch (e) { s.lastResult = { ts: Date.now(), status: 'error', error: 'flow unreadable' }; saveOne(s); return; }
-    watch = { id: s.id, firedAt: Date.now(), sawActive: false };
+    watch = { id: s.id, firedAt: Date.now(), blockMs: Math.max(1, parseInt(s.blockMin, 10) || 15) * 60000, launched: false, done: false, emailed: false, rearms: 0, timer: null };
     // 3.0.4 SINGLE CODE PATH: the scheduler no longer builds a launch payload. It names
     // the flow and the renderer runs it through the EXACT same functions as a human run
     // (applyLoadedFlow + poolLaunchCurrent): locked login/logout steps, the flow's saved
@@ -199,29 +278,19 @@ function initScheduler(deps) {
       profileId: s.profileId,
       manual: !!manual,
     });
+    // 3.2.1: arm the mandatory block-end backstop. Completion normally arrives first via the
+    // in-process pool-complete hook; this guarantees we still reconcile + email if that signal
+    // is missed, and re-arms with est-left-time if the run outlasts its reserved block.
+    armBackstop(watch.blockMs);
     send('schedules-changed', {});
   }
 
   function tick() {
     const now = Date.now();
-    // completion watch: record the result once the pool finishes (or never starts)
-    if (watch) {
-      if (COORD.active) watch.sawActive = true;
-      else if (watch.sawActive) {
-        const j = Array.from(COORD.jobs.values())[0];
-        const s = loadAll().find(x => x.id === watch.id);
-        if (s) {
-          s.lastResult = { ts: now, status: j && j.err ? 'errors' : 'ok', ok: (j && j.ok) || 0, err: (j && j.err) || 0 };
-          saveOne(s); send('schedules-changed', {});
-          maybeSendEmail(s, j, watch.firedAt, now); // 3.x run-notification email
-        }
-        watch = null;
-      } else if (now - watch.firedAt > 120000) {
-        const s = loadAll().find(x => x.id === watch.id);
-        if (s) { s.lastResult = { ts: now, status: 'error', error: 'run never started (see live log)' }; saveOne(s); send('schedules-changed', {}); }
-        watch = null;
-      }
-    }
+    // 3.2.1: completion detection is EVENT-DRIVEN (onPoolCompleteInternal, fired by the
+    // coordinator in-process, + the block-end backstop armed in fire()) — NOT polled here.
+    // A run that started AND finished between 30s ticks used to be missed by this poll and
+    // given a false never-started error with no email. tick() now ONLY launches due schedules.
     for (const s of loadAll()) {
       if (s.enabled === false) continue;
       const after = Math.max(s.lastFiredAt || 0, s.createdAt || 0);
@@ -293,12 +362,23 @@ function initScheduler(deps) {
     saveOne(s);
     return { ok: true };
   });
+  // The renderer reports the LAUNCH outcome of a fired schedule here (NOT the run result —
+  // that comes from the pool-complete hook). ok = the pool started, so we just note it and
+  // wait for completion. !ok = the launch failed/was skipped (bad flow, no profile, unsaved
+  // edits): terminal, so record it and drop the watch (+ its backstop timer) immediately
+  // rather than waiting out the whole reserved block for a run that will never happen.
   ipcMain.on('schedule-result', (_, d) => {
-    if (!d) return;
+    if (!d || !watch || watch.id !== d.id) return;
+    if (d.ok) { watch.launched = true; return; }
+    if (watch.timer) { try { clearTimeout(watch.timer); } catch (e) {} watch.timer = null; }
     const s = loadAll().find(x => x.id === d.id);
-    if (s) { s.lastResult = { ts: Date.now(), status: d.ok ? 'ok' : 'error', error: d.error || undefined }; saveOne(s); send('schedules-changed', {}); }
-    if (!d.ok) watch = null;
+    if (s) { s.lastResult = { ts: Date.now(), status: 'error', error: d.error || 'launch failed' }; saveOne(s); send('schedules-changed', {}); }
+    watch = null;
   });
+
+  // 3.2.1: the coordinator calls this in-process the instant a pool run finishes — the
+  // authoritative, duration-independent completion signal that replaces the old 30s poll.
+  COORD.onPoolComplete = onPoolCompleteInternal;
 
   setInterval(tick, 30000);
   // Offer missed schedules shortly after the window exists.

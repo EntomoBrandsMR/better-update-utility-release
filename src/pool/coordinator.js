@@ -7,6 +7,9 @@ const fs = require('fs');
 const os = require('os');
 const { app } = require('electron');
 const { spawn } = require('child_process');
+// 3.2.1 page-crash + memory governor: pure decision logic and the single source of truth for
+// the thresholds. Kept in ./crashmem (no electron) so the offline test exercises them directly.
+const { CRASH_POISON_CAP, CRASH_RATCHET_N, CRASH_RATCHET_WINDOW_MS, CRASH_YOUNG_ROWS, CRASH_YOUNG_MS, DEFAULT_WORKER_MEM_MB, isYoungCrash, isPoisonRow, shouldRatchet, recentCrashTimes, coordSumProcessTree } = require('./crashmem');
 
 // Phase 3 CRASH SAFETY: pidfile of live worker processes. If the coordinator dies
 // (crash, force-close), the next launch reads this file and kills any survivors whose
@@ -18,7 +21,12 @@ function coordPidfileAdd(pid){ if(!pid) return; const p = coordPidfileRead(); if
 function coordPidfileRemove(pid){ if(!pid) return; coordPidfileWrite(coordPidfileRead().filter(x => x !== pid)); }
 
 module.exports = function wireCoordinator(ctx) {
-const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, getFlowsDir, encStore, readAllProfiles, readConfig, getBundledChromiumPath, licenseReaderLogout, loginToPestPacInPage, logoutFromInPage, readLicensePage, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper } = ctx;
+const { SERVICE_NAME, MAX_WORKERS_HARD_CEILING, loadRowsForJob, getLogsDir, getFlowsDir, encStore, readAllProfiles, readConfig, computeHardwareCap, getBundledChromiumPath, licenseReaderLogout, loginToPestPacInPage, logoutFromInPage, readLicensePage, resolveOnceFlowByName, buildPoolWorker, buildLogoutSweeper } = ctx;
+
+// 3.2.1 crash-governor tuning + decision logic now live in ./crashmem (required at top of file)
+// so the thresholds have ONE source of truth and the offline test can exercise them directly.
+// Run-scoped crash state (COORD._crashCeiling / _youngCrashTimes / _crashRowCounts) resets in
+// coordOpenJournal.
 
 // ════════════════════════════════════════════════════════════════════════════
 // v2.0.0 — ELASTIC POOL COORDINATOR (main-process owned)
@@ -210,6 +218,7 @@ function _coordEmitStatusNow(){
     // v2.1.0 live detail: current row, position in batch, step in flow, logout result
     currentRow: w.currentRow,
     step: w.step, totalSteps: w.totalSteps, loggedOut: w.loggedOut, logoutAttempts: w.logoutAttempts||0,
+    rssMB: (w.rssMB != null ? w.rssMB : null), // 3.2.1: live process-tree footprint from the memory governor's per-cycle sample
   }));
   // 3.x: the elastic license-checker is a REAL logged-in PestPac session (a consumed seat).
   // Surface it as its own card and count it toward live sessions, so it is never an
@@ -378,6 +387,7 @@ async function coordSpawnWorker(){
     runnerLogStream.end();
     const w = COORD.workers.get(workerId);
     if(w){ w.status = (code===0?'done':'error'); }
+    const _wasCrash = !!(w && w._crashReason === 'page-crash'); // 3.2.1: renderer crash exit (see worker _pageCrashExit)
     // 3.0.4 (2b): instant-exit accounting for the crash-loop breaker. A worker that
     // died in under 15s having completed ZERO rows is a crash, not a retirement —
     // three in a row means the next respawn will die the same way.
@@ -405,11 +415,22 @@ async function coordSpawnWorker(){
         for(const r of w.batch){
           if(cjob.completedRows && cjob.completedRows.has(r)) continue;
           if(alreadyRequeued.has(r)) continue;
+          // 3.2.1 POISON-ROW QUARANTINE: if THIS row has already crashed CRASH_POISON_CAP
+          // workers, stop feeding it to fresh ones — mark it a terminal page-crash error and
+          // move on, so one bad account can't take the pool down a worker at a time.
+          const _rowCrashes = (COORD._crashRowCounts && COORD._crashRowCounts[r]) || 0;
+          if(_wasCrash && r === w._crashRow && isPoisonRow(_rowCrashes)){
+            if(cjob.completedRows) cjob.completedRows.add(r);
+            cjob.err = (cjob.err||0) + 1;
+            coordJournalAppend(w.jobId, r, 'error', { reason: 'page-crash', error: 'row quarantined after '+_rowCrashes+' renderer crashes', workerId: w.workerId });
+            try { _send('pool-row-error', { workerId: w.workerId, jobId: w.jobId, row: r, error: 'Row '+r+' quarantined after '+_rowCrashes+' page crashes — skipped to protect the pool', reason: 'page-crash' }); } catch (e) {}
+            continue;
+          }
           cjob.requeue.push(r);
           // R1: every row is guaranteed a terminal journal line — a crash can no longer
           // leave silence. When the row re-runs, its later line wins (requeued is not a
           // completion for the reader).
-          coordJournalAppend(w.jobId, r, 'error', { reason: 'requeued', error: 'worker died mid-row; row returned to the queue', workerId: w.workerId });
+          coordJournalAppend(w.jobId, r, 'error', { reason: 'requeued', error: (_wasCrash ? 'renderer page crash; row requeued' : 'worker died mid-row; row returned to the queue'), workerId: w.workerId });
         }
         if(cjob.requeue.length) cjob.finished = false;
       }
@@ -443,6 +464,26 @@ async function coordSpawnWorker(){
       for (const job of COORD.jobs.values()) { job.nextRow = job.totalRows + 1; job.finished = true; }
       try { _send('pool-row-error', { workerId: workerId, jobId: null, row: '-', reason: 'fatal', error: 'POOL STOPPED: 3 workers in a row died instantly with zero rows done. Last fatal: ' + why }); } catch (e) {}
       if(!COORD._stopSweepFired){ COORD._stopSweepFired = true; setTimeout(() => coordRunLogoutSweep('fatal-loop'), 1500); }
+    }
+    // 3.2.1 CRASH-CLUSTER RATCHET: repeated YOUNG crashes (workers dying with little progress)
+    // mean the host can't sustain this worker count — memory pressure, not one bad row. Lower
+    // the ceiling to the level we've fallen to and HOLD it for the run, so the eval stops
+    // refilling into the same wall (Matthew: "after X crashes, cap it and call it there").
+    // A worker that ran thousands of rows then died is normal bloat and is NOT counted here.
+    if(_wasCrash){
+      const _lifeMs = Date.now() - ((w && w.startedAt) || Date.now());
+      const _young = isYoungCrash((w && w.done) || 0, _lifeMs);
+      if(_young){
+        COORD._youngCrashTimes = recentCrashTimes(COORD._youngCrashTimes || [], Date.now());
+        COORD._youngCrashTimes.push(Date.now());
+        if(shouldRatchet(COORD._youngCrashTimes.length)){
+          const _newCeil = Math.max(1, COORD.workers.size); // live count AFTER this crashed worker was removed
+          COORD._crashCeiling = Math.min((COORD._crashCeiling == null ? Infinity : COORD._crashCeiling), _newCeil);
+          COORD.capReason = 'crash-ratchet';
+          try { _send('pool-row-error', { workerId, jobId: (w&&w.jobId)||null, row: '-', error: 'Repeated renderer crashes — holding the pool at '+COORD._crashCeiling+' worker(s) for the rest of this run to stop the churn.', reason: 'page-crash' }); } catch (e) {}
+          COORD._youngCrashTimes = []; // reset the window; the ceiling now does the work
+        }
+      }
     }
     // 3.x: do NOT respawn when the license cap is intentionally holding the pool at 0 (free
     // seats hit the buffer / saturation). The always-on eval timer re-checks licenses and
@@ -666,6 +707,17 @@ function coordHandleWorkerMessage(workerId, msg){
       }
       break;
     }
+    case 'page-crash': {
+      // 3.2.1: the worker's renderer crashed; it handed the in-flight row back and is exiting
+      // (worker.js _pageCrashExit). We do NOT mark the row done — the close handler requeues it
+      // (or quarantines it past CRASH_POISON_CAP). Tag the worker so the close handler treats
+      // this exit as a crash (ratchet + poison attribution), count the crashed row, surface it.
+      w._crashReason = 'page-crash';
+      w._crashRow = msg.row;
+      if(msg.row != null){ COORD._crashRowCounts = COORD._crashRowCounts || {}; COORD._crashRowCounts[msg.row] = (COORD._crashRowCounts[msg.row]||0) + 1; }
+      try { _send('pool-row-error', { workerId, jobId: w.jobId, row: msg.row, error: 'Page crashed (renderer) — worker retiring, row requeued: ' + (msg.error||''), reason: 'page-crash' }); } catch (e) {}
+      break;
+    }
     case 'fatal':
       // 3.0.4 (2b): a worker died before/outside row processing (spreadsheet ENOENT,
       // login failure, ...). This message was SILENTLY IGNORED for versions — the
@@ -760,6 +812,12 @@ function coordCheckComplete(){
       possibleLeaks: COORD.possibleLeaks.slice(),
       jobs: Array.from(COORD.jobs.values()).map(j => ({ jobId:j.jobId, label:j.label, totalRows:j.totalRows, ok:j.ok, err:j.err })),
     });
+    // 3.2.1: notify the scheduler IN-PROCESS the instant the pool drains. The scheduler used
+    // to poll COORD.active every 30s to detect completion; a run that finished between polls
+    // was misread as "run never started" and skipped its completion email. This fires the
+    // moment the run ends, regardless of duration. Outside the mainWindow guard (the scheduler
+    // must be told even with no window) and fully guarded so it never touches pool teardown.
+    try { if (typeof COORD.onPoolComplete === 'function') COORD.onPoolComplete(); } catch(e){}
     // v2.1.1 (#8): for per-job/global scope, run teardown ONCE now (coordinator-driven), THEN
     // sweep. v2.1.1 logout sweep is the authoritative backstop and runs regardless of scope.
     (async () => {
@@ -1051,6 +1109,67 @@ function coordThroughputTarget(){
   return Math.max(1, W + dir);
 }
 
+// 3.2.1 MEMORY GOVERNOR. The hardware cap is a static "how many fresh workers fit" estimate;
+// it can't see a Chromium renderer BLOATING over a 6-hour worker lifetime — which is what
+// caused the 07-29 OOM cascade. So on every eval cycle we measure each worker's REAL footprint
+// and recycle the fat ones before they crash. "Footprint" = the worker's whole process tree
+// (the node worker + the Chromium browser it launched + that browser's renderer children) —
+// the bloat lives in the renderer, not the little node process. One OS snapshot per cycle.
+// DEFAULT_WORKER_MEM_MB is imported from ./crashmem (one source of truth for the tunables).
+function coordWorkerMemThresholdMB(){
+  try { const c = readConfig(); const v = parseInt(c && c.workerMemThresholdMB); if (Number.isFinite(v)) return v; } catch(e){}
+  return DEFAULT_WORKER_MEM_MB;
+}
+// Sample every live worker's process-tree working-set (bytes) via ONE Win32_Process snapshot.
+// Resolves { workerId -> bytes } (or null if the query failed — the caller then no-ops).
+function coordSampleWorkerTreeRSS(){
+  return new Promise((resolve) => {
+    const pids = [];
+    for (const w of COORD.workers.values()) { const pid = w.process && w.process.pid; if (pid) pids.push([w.workerId, pid]); }
+    if (!pids.length) { resolve({}); return; }
+    let cp; try { cp = require('child_process'); } catch (e) { resolve(null); return; }
+    cp.exec('powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,WorkingSetSize | ConvertTo-Json -Compress"',
+      { windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: 15000 },
+      (err, stdout) => {
+        if (err) { resolve(null); return; }
+        let arr; try { arr = JSON.parse(stdout); } catch (e) { resolve(null); return; }
+        if (!Array.isArray(arr)) arr = [arr];
+        const out = {};
+        for (const [wid, pid] of pids) out[wid] = coordSumProcessTree(arr, pid); // ./crashmem: whole-subtree working-set sum
+        resolve(out);
+      });
+  });
+}
+// Drain the fattest over-threshold workers (staggered — at most MAX_PER_CYCLE per pass so
+// throughput never drops to zero). A drained worker finishes its current row, logs out
+// (frees the seat), and exits; the eval refills toward target on a later cycle IF the live
+// caps allow — so under real RAM pressure the count simply falls (retire-without-replace),
+// and when there's headroom a fresh, small worker takes its place. Records per-worker MB on
+// the worker record for the status readout / threshold tuning.
+async function coordRecycleBloatedWorkers(){
+  const thresholdMB = coordWorkerMemThresholdMB();
+  let sizes = null; try { sizes = await coordSampleWorkerTreeRSS(); } catch (e) { sizes = null; }
+  if (!sizes) return;
+  for (const w of COORD.workers.values()) { if (sizes[w.workerId] != null) w.rssMB = Math.round(sizes[w.workerId] / 1048576); }
+  if (!thresholdMB || thresholdMB <= 0) return; // 0 = recycling disabled
+  const thresholdBytes = thresholdMB * 1024 * 1024;
+  const candidates = [];
+  for (const w of COORD.workers.values()) {
+    if (w.status !== 'running') continue; // never touch a worker mid-login/drain
+    const b = sizes[w.workerId] || 0;
+    if (b >= thresholdBytes) candidates.push({ w, b });
+  }
+  if (!candidates.length) return;
+  candidates.sort((a, b) => b.b - a.b); // fattest first
+  const MAX_PER_CYCLE = 2;
+  for (let i = 0; i < candidates.length && i < MAX_PER_CYCLE; i++) {
+    const { w, b } = candidates[i];
+    try { w.process.stdin.write(JSON.stringify({ cmd: 'drain' }) + '\n'); } catch (e) {}
+    w.status = 'draining'; w._recycledForMem = true;
+    try { _send('pool-row-error', { workerId: w.workerId, jobId: w.jobId, row: '-', error: 'Recycling worker at ' + Math.round(b / 1048576) + 'MB (over ' + thresholdMB + 'MB) — draining it and bringing up a fresh one.', reason: 'mem-recycle' }); } catch (e) {}
+  }
+}
+
 async function coordEvalScale(){
   if(!COORD.active || COORD.stopping) return;
   if(_evalInFlight){ _evalPending = true; return; }
@@ -1059,6 +1178,14 @@ async function coordEvalScale(){
   if(COORD.elasticParams){
     try{ await coordLicenseScale(COORD.elasticParams.licenseProfileId, COORD.elasticParams.licenseBuffer, COORD.elasticParams.hwCap); }catch(e){}
   } else COORD.licenseCap = Infinity;
+
+  // 3.2.1 MEMORY GOVERNOR runs on the SAME cadence as the license check (the user's rule:
+  // "check every time the login check happens" — recheck EVERYTHING live each cycle). It measures
+  // every worker's real process-tree footprint and drains the fattest over-threshold ones so a
+  // bloated renderer is retired+recommissioned (its memory resets) BEFORE it OOM-crashes. Never
+  // throws into the scale math below; the free RAM it reclaims also feeds the hardware recompute.
+  try { await coordRecycleBloatedWorkers(); } catch(e){}
+
   // v3.0.3: HEURISTICS DECIDE, MAX CLAMPS. The old line was
   //   target = min(manualTarget, CEILING)  ... then only ever reduced
   // which made auto incapable of EVER adding a worker — all the scaling code could only
@@ -1075,7 +1202,15 @@ async function coordEvalScale(){
 
   // Hardware heuristic: slider 1-5, 4 = 100% of the comfortable cap, 5 = 125% overdrive.
   const _hwSlider = Math.max(1, Math.min(5, parseInt(COORD.hwSlider) || 4));
-  const _hwBase = COORD.hwCapAdvisory || MAX_WORKERS_HARD_CEILING;
+  // 3.2.1: recompute the hardware cap LIVE from CURRENT free RAM every cycle. Workers bloat over
+  // a multi-hour run, so the launch-time snapshot (the old COORD.hwCapAdvisory) went stale and
+  // blind — that staleness is what let the pool sit at a count the machine could no longer feed,
+  // feeding the 07-29 OOM cascade. computeHardwareCap reads os.freemem() now, so as RAM tightens
+  // the cap falls on its own. Fall back to the stored advisory only if the live probe is missing.
+  const _hwBase = (typeof computeHardwareCap === 'function')
+    ? (computeHardwareCap(COORD.scaleMultiplier) || COORD.hwCapAdvisory || MAX_WORKERS_HARD_CEILING)
+    : (COORD.hwCapAdvisory || MAX_WORKERS_HARD_CEILING);
+  COORD.hwCapAdvisory = _hwBase; // keep the advisory in sync so the readout shows the LIVE cap
   const _hwEff = Math.max(1, Math.round(_hwBase * (_hwSlider / 4)));
   if (_hwEff < target) { target = _hwEff; reason = 'hardware'; }
 
@@ -1086,6 +1221,12 @@ async function coordEvalScale(){
   // It is a clamp, never the target — that distinction is the whole point of this rewrite.
   const _max = Math.max(1, Math.min(parseInt(COORD.maxWorkers) || MAX_WORKERS_HARD_CEILING, MAX_WORKERS_HARD_CEILING));
   if (_max < target) { target = _max; reason = 'max'; }
+
+  // 3.2.1 CRASH RATCHET: after a cluster of YOUNG worker crashes (host memory pressure, not the
+  // normal end-of-life bloat of a worker that already ran thousands of rows) the close handler
+  // lowers COORD._crashCeiling for the REST of the run, so the eval stops refilling into the same
+  // wall (crash -> tear down -> respawn -> crash ...). Reset per run in coordOpenJournal.
+  if (Number.isFinite(COORD._crashCeiling) && COORD._crashCeiling < target) { target = COORD._crashCeiling; reason = 'crash-ratchet'; }
 
   // 3.x: the license cap is an ABSOLUTE floor protecting the free-seat buffer for people —
   // it MAY drive the target to 0 (a true hard-stop / pause) when free seats hit the buffer or
