@@ -21,6 +21,11 @@ const inline = {
   REQUIRE_FN_SRC: constValue('REQUIRE_FN_SRC'),
   LOGIN_TO_PESTPAC_SRC: fs.readFileSync(path.join(root, 'src', 'engine', 'login.js'), 'utf8'),
   LOCATE_STACK_SRC: fs.readFileSync(path.join(root, 'src', 'engine', 'locate.js'), 'utf8'),
+  // 3.2.4: the 3.2.x worker splices two more engine modules the validator never learned —
+  // tokens.js (TOKENS_SRC) and rows.js (ROWS_SRC). Missing entries made the validator FAIL
+  // on a marker the runtime substitutes fine (main.js __POOL_INLINE_SRC has both).
+  TOKENS_SRC: fs.readFileSync(path.join(root, 'src', 'engine', 'tokens.js'), 'utf8'),
+  ROWS_SRC: fs.readFileSync(path.join(root, 'src', 'engine', 'rows.js'), 'utf8'),
   STEPS_SRC: fs.readFileSync(path.join(root, 'src', 'engine', 'steps.js'), 'utf8'),
   PROBE_NETWORK_FN_SRC: constValue('PROBE_NETWORK_FN_SRC'),
   WAIT_FOR_NETWORK_FN_SRC: constValue('WAIT_FOR_NETWORK_FN_SRC'),

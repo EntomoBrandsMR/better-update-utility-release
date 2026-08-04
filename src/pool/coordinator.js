@@ -1252,6 +1252,19 @@ async function coordLicenseScale(profileId, buffer, hwCap){
   if (!chromiumExe) return;
   // R4: the fourth and final copy of the cred triplet — now the ONE resolver.
   const prof = await coordResolveProfileCreds(profileId);
+  // 3.2.4: PestPac seat protection only makes sense for PestPac. A Fieldwork/Frankware
+  // license profile can never read #div_PestPac; its login attempt was misread by the
+  // catch path as SATURATION, shedding a worker per eval and permanently parking
+  // non-PestPac pools at cap 0 ("no licenses" on the 08/03 Fieldwork scrape: 1 worker
+  // -> one failed check -> instant 0). Non-PestPac profile => no license machinery at
+  // all: no headless browser, no login, no cap. Platform defaults to 'pestpac' to match
+  // engine/login.js, so existing PestPac profiles (platform unset) are unaffected.
+  if (((prof && prof.platform) || 'pestpac') !== 'pestpac') {
+    COORD.licenseCap = Infinity;
+    COORD._lastFreeLicenses = null; COORD._lastUsedLicenses = null; COORD._lastTotalLicenses = null;
+    COORD.licenseChecker = { active: false };
+    return;
+  }
   // 3.x: the checker is a REAL logged-in PestPac session for its whole lifetime — mark it
   // ACTIVE so it is COUNTED and shown as a card (coordEmitStatus). Never an invisible seat.
   COORD.licenseChecker = { active: true, status: 'logging-in', startedAt: Date.now() };
