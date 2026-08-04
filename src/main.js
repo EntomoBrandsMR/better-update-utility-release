@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '3.2.4';
+const CURRENT_VERSION = '3.2.5';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -582,7 +582,7 @@ ipcMain.handle('check-license-cap', async (_, { profileId, buffer }) => {
   try {
     const { chromium } = require('playwright-core');
     browser = await chromium.launch({ headless: true, executablePath: chromiumExe, args: ['--disable-gpu','--disable-dev-shm-usage'] });
-    const page = await (await browser.newContext()).newPage();
+    const page = await (await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' })).newPage();
     // v2.2.2: login via the shared canonical helper. Behavior identical to the inline
     // sequence this replaces, including the v2.1.1a MUI-backdrop wait and force-click
     // fallback for both the company-key and credential buttons, plus the v2.2.2 third
@@ -1204,7 +1204,7 @@ async function sweepOnce(page){
 async function main(){
   const creds=dec(fs.readFileSync(CRED_PATH,'utf8'))[0]||{};
   const browser = await chromium.launch({ headless:true, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage'] });
-  const page = await (await browser.newContext()).newPage();
+  const page = await (await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' })).newPage();
   page.on('dialog', async d=>{ try{ await d.accept(); }catch(_){} });
   emit({type:'sweep-login'});
   try{

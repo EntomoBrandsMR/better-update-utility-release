@@ -1273,7 +1273,7 @@ async function coordLicenseScale(profileId, buffer, hwCap){
   try {
     const { chromium } = require('playwright-core');
     browser = await chromium.launch({ headless: true, executablePath: chromiumExe, args: ['--disable-gpu','--disable-dev-shm-usage'] });
-    const page = await (await browser.newContext()).newPage();
+    const page = await (await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' })).newPage();
     try {
       // Login via the shared canonical helper (drift-proof; platform-aware). NOTE: this
       // helper is now wired through ctx — before 3.x it was undefined here and this whole

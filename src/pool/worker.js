@@ -502,7 +502,11 @@ async function main(){
   // stays headless for performance (a normal pool run with 10 workers can't open 10 windows).
   const _isStepMode = (START_MODE === 'step' || START_MODE === 'step-row');
   const browser = await chromium.launch({ headless: !_isStepMode, executablePath:CHROMIUM_EXE, args:['--disable-gpu','--disable-dev-shm-usage','--disable-background-timer-throttling'] });
-  const page = await (await browser.newContext()).newPage();
+  // 3.2.5: real-Chrome UA on every context. Headless Chromium's default UA says
+  // "HeadlessChrome", and on 08/04 Fieldwork's server began 403-ing that UA outright -
+  // the worker then sat on a bare "403 Forbidden" page and login died waiting for #email.
+  // A normal UA gets the real sign-in page. Harmless for PestPac/Frankware.
+  const page = await (await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' })).newPage();
 
   // 3.2.1: page-crash / dead-browser signatures. A crashed renderer can NEVER navigate again,
   // so re-login/retry on the same page is futile — that was the 07-29 cascade (8,207 rows lost
