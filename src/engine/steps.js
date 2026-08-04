@@ -192,29 +192,44 @@ async function runStep(page, step, row, creds){
       // 3.1.3 FIX: cancellations are AJAX-loaded into div.agreement-container AFTER the
       // server HTML renders. The prior wait keyed on .panel-heading (server-rendered) and
       // resolved instantly -> we scanned an EMPTY container and missed live cancellations
-      // (1264/1289 locations). Now poll until the agreement AJAX has actually settled:
-      //   populated -> stop once the cancellation-link count stabilizes or the net goes idle
-      //   empty      -> stop once the net goes idle (or a 7s floor) with service panels present
-      //   login page -> break fast; the session-expiry guard below handles it
-      // Bounded at 20s hard cap so a hung location can't stall the whole run.
+      // (1264/1289 locations).
+      // 3.2.3 FIX: the cancel_history panels arrive in MORE THAN ONE AJAX wave. The 3.1.3
+      // exit ("links>0 and stable 1.2s, or momentary net-idle") fired after the FIRST wave,
+      // so late panels were missed DETERMINISTICALLY (Liggons 17601/2173853: caught 2 of 3
+      // links, missed the $120 record — proven live 2026-08-03; ~169 of the 247 unmatched
+      // Mares rows fit the same shape). Now: scroll-drain one viewport per pass (fires any
+      // lazy loaders), reset the stability clock whenever the link count OR page height
+      // changes, and only exit once drained AND still: populated path 10s floor + 4s
+      // stillness; empty path floor 7s -> 12s. Hard cap 20s -> 35s. If the page scrolls in
+      // a nonstandard container, "drained" is assumed after 20s so the cap can't eat every
+      // location.
       try{
-        const HARD_MS=20000, start=Date.now();
+        const HARD_MS=35000, start=Date.now();
         let netIdle=false;
         page.waitForLoadState('networkidle',{timeout:HARD_MS}).then(()=>{netIdle=true;}).catch(()=>{});
-        let lastCount=-1, stableSince=Date.now();
+        let lastCount=-1, lastHeight=-1, stableSince=Date.now();
         while(Date.now()-start<HARD_MS){
-          const s=await page.evaluate(()=>({
-            login:!!document.querySelector('#sign-in-password, #email'),
-            links:document.querySelectorAll('a.edit_cancellation_details').length,
-            panels:document.querySelectorAll('.panel-heading').length
-          }));
+          const s=await page.evaluate(()=>{
+            const se=document.scrollingElement||document.documentElement;
+            return {
+              login:!!document.querySelector('#sign-in-password, #email'),
+              links:document.querySelectorAll('a.edit_cancellation_details').length,
+              panels:document.querySelectorAll('.panel-heading').length,
+              height:se?se.scrollHeight:0,
+              atBottom:!se||(se.scrollTop+se.clientHeight>=se.scrollHeight-60)
+            };
+          });
           if(s.login) break;                                            // login screen
           if(s.links!==lastCount){ lastCount=s.links; stableSince=Date.now(); }
+          if(s.height!==lastHeight){ lastHeight=s.height; stableSince=Date.now(); }
           const stableMs=Date.now()-stableSince, elapsed=Date.now()-start;
-          if(s.links>0 && (netIdle || stableMs>=1200)) break;           // cancels loaded & settled
-          if(s.links===0 && s.panels>0 && (netIdle || elapsed>=7000)) break; // loaded, none found
+          const drained=s.atBottom||elapsed>=20000;
+          if(s.links>0 && drained && elapsed>=10000 && stableMs>=4000) break;   // populated, drained, still
+          if(s.links===0 && s.panels>0 && drained && (netIdle||elapsed>=12000) && stableMs>=4000) break; // drained, none found
+          if(!s.atBottom){ try{ await page.evaluate(()=>{ const se=document.scrollingElement||document.documentElement; if(se) se.scrollTop=se.scrollTop+Math.max(500,Math.floor(se.clientHeight*0.8)); }); }catch(e){} }
           await page.waitForTimeout(250);
         }
+        try{ await page.evaluate(()=>{ const se=document.scrollingElement||document.documentElement; if(se) se.scrollTop=0; }); }catch(e){}
       }catch(e){}
       const scan = await page.evaluate(() => {
         const onLogin = !!document.querySelector('#sign-in-password, #email') || /\/sign_in\b/i.test(location.pathname);

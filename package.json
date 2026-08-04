@@ -1,6 +1,6 @@
 {
   "name": "buu-2",
-  "version": "3.2.1",
+  "version": "3.2.3",
   "description": "BUU 2.0 — PestPac automation with elastic worker pool",
   "author": "Entomo Brands",
   "main": "src/main.js",
@@ -30,7 +30,7 @@
     },
     "nsis": {
       "oneClick": true,
-      "perMachine": false,
+      "perMachine": true,
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,

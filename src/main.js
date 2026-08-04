@@ -7,7 +7,7 @@ const { execFile, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const CURRENT_VERSION = '3.2.1';
+const CURRENT_VERSION = '3.2.3';
 const SERVICE_NAME = 'BUU2';
 // v2.0.0: BUU 2.0 is a SEPARATE installed app from BUU Legacy. It must not share data with
 // Legacy — different credentials store, checkpoints, logs, config. We force a distinct
@@ -100,8 +100,27 @@ try { keytar = require('keytar'); } catch(e) {}
 // (C:\BUU when packaged): flows\, logs\, failures\. Internal state — journals,
 // spill files, pidfile, config, credentials — stays in userData. Dev mode keeps
 // userData for everything so repo runs never touch C:\.
+// 3.2.2: user DATA lives OUTSIDE the install dir at a FIXED path, so no install/update/
+// uninstall can ever touch it. Pre-3.2.2 this returned path.dirname(process.execPath) — data
+// sat NEXT TO the .exe, inside the install folder, so every reinstall could wipe flows/
+// schedules/logs (the 07-31 loss). Prefer the visible C:\BUU-Data (the per-machine installer
+// creates it elevated with user-writable ACLs); if C:\ isn't writable — locked-down box, or a
+// dev run — fall back to a per-user dir that is ALSO outside any install dir, so data is safe
+// either way. Cached so the root can never flip mid-run. Dev (unpackaged) is unchanged.
+let _dataRootCache = null;
 function buuRoot() {
-  return app.isPackaged ? path.dirname(process.execPath) : app.getPath('userData');
+  if (!app.isPackaged) return app.getPath('userData');
+  if (_dataRootCache) return _dataRootCache;
+  const primary = 'C:\\BUU-Data';
+  try {
+    fs.mkdirSync(primary, { recursive: true });
+    fs.accessSync(primary, fs.constants.W_OK); // must be writable at runtime (non-elevated)
+    _dataRootCache = primary; return primary;
+  } catch (e) {
+    const fb = path.join(app.getPath('appData'), 'BUU 2.0-Data'); // %APPDATA%\BUU 2.0-Data
+    try { fs.mkdirSync(fb, { recursive: true }); } catch (_) {}
+    _dataRootCache = fb; return fb;
+  }
 }
 function getLogsDir() {
   const dir = path.join(buuRoot(), 'logs');
@@ -1374,30 +1393,59 @@ ipcMain.handle('install-update', async (_, { downloadUrl }) => {
     const _updLog = (line) => { try { fs.appendFileSync(path.join(updateDir, 'update.log'), '[' + new Date().toISOString() + '] ' + line + '\n'); } catch (e) {} };
     let _dlBytes = 0; try { _dlBytes = fs.statSync(tmp).size; } catch (e) {}
     _updLog('downloaded ' + downloadUrl + ' -> ' + tmp + ' (' + _dlBytes + ' bytes)');
+    // 3.2.2 UPDATE HANDOFF — do NOT spawn the installer directly and quit. That made the
+    // installer a CHILD of "BUU 2.0.exe", and installer.nsh's customInit `taskkill /T` then
+    // tree-killed the installer along with the app — the "downloads, closes, nothing installs"
+    // bug we chased for versions. Instead we write a tiny detached PowerShell helper that (1)
+    // WAITS for BUU to fully exit, (2) runs the installer elevated (per-machine C:\BUU needs
+    // admin) and waits for it, (3) relaunches BUU. The helper is powershell.exe, not
+    // "BUU 2.0.exe", so nothing targets it; and because BUU is already gone when the installer
+    // starts, customInit finds nothing to kill. No self-kill, no 2s race.
+    const appExe = process.execPath;
+    const logPath = path.join(updateDir, 'update.log');
+    const helperPath = path.join(updateDir, 'buu-apply-update.ps1');
+    const psEsc = (s) => String(s).replace(/'/g, "''"); // escape single quotes for PS literals
+    const helper = [
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      "$log = '" + psEsc(logPath) + "'",
+      "function L($m){ Add-Content -LiteralPath $log -Value ('[' + (Get-Date).ToString('o') + '] helper: ' + $m) }",
+      "L 'started; waiting for BUU to exit'",
+      "$deadline = (Get-Date).AddMinutes(2)",
+      "while (Get-Process -Name 'BUU 2.0' -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 400; if ((Get-Date) -gt $deadline) { L 'timeout waiting for exit; proceeding'; break } }",
+      "L 'launching installer (elevated)'",
+      "try { $p = Start-Process -FilePath '" + psEsc(tmp) + "' -Verb RunAs -PassThru -Wait; L ('installer exit code=' + $p.ExitCode) } catch { L ('installer launch failed: ' + $_.Exception.Message) }",
+      "L 'relaunching BUU'",
+      "try { Start-Process -FilePath '" + psEsc(appExe) + "' } catch { L ('relaunch failed: ' + $_.Exception.Message) }",
+      "L 'done'",
+      "",
+    ].join("\r\n");
+    try { fs.writeFileSync(helperPath, helper, 'utf8'); } catch (e) { _updLog('failed to write update helper: ' + e.message); }
+
     let launched = false, launchErr = '';
     try {
       launched = await new Promise((res) => {
-        const child = spawn(tmp, [], { detached: true, stdio: 'ignore' });
+        const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', helperPath], { detached: true, stdio: 'ignore' });
         let settled = false;
         child.once('spawn', () => { if (settled) return; settled = true; try { child.unref(); } catch (e) {} res(true); });
         child.once('error', (e) => { if (settled) return; settled = true; launchErr = e.message; res(false); });
-        // Backstop: neither event within 10s (shouldn't happen) — count it as failed
-        // rather than hanging the updater forever.
+        // Backstop: neither event within 10s (shouldn't happen) — count it failed, don't hang.
         setTimeout(() => { if (settled) return; settled = true; launchErr = 'no spawn/error event within 10s'; res(false); }, 10000);
       });
     } catch (e) { launchErr = e.message; }
     if (!launched) {
-      _updLog('spawn failed: ' + launchErr + ' — trying shell association');
-      // Fallback to the shell association; openPath returns '' on success, else an error string.
+      // Fallback: launch the installer directly via the shell association. installer.nsh's
+      // customInit taskkill is non-tree now (no /T), so even as a child this no longer
+      // self-kills — the helper is just the cleaner, race-free path.
+      _updLog('helper spawn failed: ' + launchErr + ' — falling back to shell.openPath(installer)');
       const openErr = await shell.openPath(tmp);
       if (openErr) { launchErr = openErr; } else { launched = true; launchErr = ''; }
     }
     if (!launched) {
       forceClosing = false; // stand down — do NOT quit; the update did not start
       _updLog('LAUNCH FAILED: ' + launchErr + ' — installer left at ' + tmp + '; app NOT quitting');
-      return { ok: false, error: 'Downloaded, but could not launch the installer: ' + (launchErr || 'unknown') + '. It is saved at ' + tmp };
+      return { ok: false, error: 'Downloaded, but could not launch the updater: ' + (launchErr || 'unknown') + '. The installer is saved at ' + tmp };
     }
-    _updLog('installer launched OK — quitting in 2s');
+    _updLog('update helper launched OK — quitting in 2s so it can install');
     setTimeout(() => app.quit(), 2000);
     return { ok: true };
   }
@@ -1855,21 +1903,32 @@ function migrateFlowsIntoFolders() {
   } catch (e) {}
 }
 
-// R8: one-time migration from the old %APPDATA%\buu-2 layout into the install root.
-// Copy (not move) so a rollback to a pre-R8 build still finds its data.
-function migrateAppDataToBuuRoot() {
+// 3.2.2: migrate user data INTO the fixed data root (buuRoot = C:\BUU-Data) from every legacy
+// location, exactly once and always safely (copy, never move; never overwrite an existing
+// file — local data always wins). This REPLACES R8's migrateAppDataToBuuRoot, which pushed data
+// the OTHER way (into the install dir) — the arrangement that caused the 07-31 loss. Sources,
+// in priority order:
+//   1. path.dirname(process.execPath) — where data used to live (e.g. C:\BUU\flows).
+//   2. C:\BUU-preserved — where the OLD (<=3.2.1) uninstaller parks data during the upgrade.
+//   3. <userData>\update-backup — the in-app updater's pre-update backup.
+//   4. userData itself — the pre-R8 %APPDATA% layout (flows/logs).
+// See src/datamigrate.js for the copy logic (pure + unit-tested).
+function migrateUserDataToDataRoot() {
   try {
     if (!app.isPackaged) return;
-    const rootDir = buuRoot();
+    const dest = buuRoot();
     const ud = app.getPath('userData');
-    if (path.resolve(rootDir) === path.resolve(ud)) return;
-    for (const d of ['flows', 'logs']) {
-      const src = path.join(ud, d), dst = path.join(rootDir, d);
-      if (fs.existsSync(src) && !fs.existsSync(dst)) {
-        try { fs.cpSync(src, dst, { recursive: true }); console.log('[r8] migrated ' + d + ' -> ' + dst); } catch (e) { console.warn('[r8] migration of ' + d + ' failed: ' + e.message); }
-      }
-    }
-  } catch (e) {}
+    const sources = [
+      path.dirname(process.execPath),
+      'C:\\BUU-preserved',
+      path.join(ud, 'update-backup'),
+      ud,
+    ];
+    const { migrateInto } = require('./datamigrate');
+    const res = migrateInto(dest, sources, {});
+    if (res.copied) console.log('[3.2.2] migrated ' + res.copied + ' data file(s) into ' + dest + ' ' + JSON.stringify(res.bySource));
+    try { fs.writeFileSync(path.join(dest, '.data-root'), 'BUU data root — do not delete. Created ' + new Date().toISOString() + '\n'); } catch (e) {}
+  } catch (e) { console.warn('[3.2.2] data migration failed (continuing): ' + e.message); }
 }
 
 function sweepOrphanWorkers() {
@@ -1900,7 +1959,7 @@ function sweepOrphanWorkers() {
 }
 
 app.whenReady().then(() => {
-  migrateAppDataToBuuRoot();
+  migrateUserDataToDataRoot();
   migrateFlowsIntoFolders();
   sweepOrphanWorkers();
   // R16: the scheduler. Fires spreadsheet-free (once) flows at their zone-computed

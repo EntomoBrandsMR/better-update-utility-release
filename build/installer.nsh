@@ -1,85 +1,55 @@
-; Recreated 2026-07-04 on the work machine — the original installer.nsh lived only on the
-; bigma box (swept up by the blanket build/ gitignore) and its contents are unknown. This
-; replacement is intentionally minimal: kill any lingering BUU processes before install and
-; uninstall so a stuck worker/coordinator can't hold files open or the single-instance lock
-; (documented bug: lingering processes block ready-to-show and the update prompt).
-; Now tracked in git (!build/installer.nsh) so every machine can build.
+; ─────────────────────────────────────────────────────────────────────────────
+; installer.nsh — 3.2.2 rewrite.
+;
+; The whole "park user data out and restore it after" dance is GONE. Through 3.2.1,
+; user data (flows/schedules/logs/failures) lived INSIDE the install dir (next to the .exe),
+; so every uninstall/update could wipe it and this script tried to rescue it — fragile, and it
+; broke the moment the install location wasn't exactly where it expected (the 07-31 data loss).
+;
+; 3.2.2: user data lives at C:\BUU-Data, OUTSIDE the install dir (see main.js buuRoot). The
+; uninstaller only ever removes $INSTDIR (C:\BUU), which no longer contains user data — so data
+; survives every install/update/uninstall automatically, with no rescue logic. The installer's
+; only data job is to CREATE C:\BUU-Data once (elevated) with user-writable ACLs so the
+; non-elevated app can read/write it at runtime.
+; ─────────────────────────────────────────────────────────────────────────────
 
+; Kill any lingering BUU before install/uninstall so a stuck worker/coordinator can't hold
+; files open or the single-instance lock. IMPORTANT: NO /T. The /T tree-kill is what broke
+; the in-app updater — the updater's installer ran as a descendant of "BUU 2.0.exe", so a
+; /T kill of the app tree also killed the installer. Killing by IMAGE NAME alone still clears
+; the app AND its workers (they share the "BUU 2.0.exe" image), without reaching the updater.
 !macro customInit
-  nsExec::Exec 'taskkill /F /IM "BUU 2.0.exe" /T'
+  nsExec::Exec 'taskkill /F /IM "BUU 2.0.exe"'
 !macroend
 
 !macro customUnInit
-  nsExec::Exec 'taskkill /F /IM "BUU 2.0.exe" /T'
+  nsExec::Exec 'taskkill /F /IM "BUU 2.0.exe"'
 !macroend
 
-; R8: fixed install root C:\BUU. A stable path means taskbar pins survive updates
-; (the old per-user versioned paths broke pins) and everything BUU lives in one place:
-; app files + flows\ + logs\ + failures\.
+; Force a fixed per-machine install root of C:\BUU. package.json sets perMachine:true, so the
+; installer is elevated and CAN write C:\. Setting $INSTDIR here is what actually relocates the
+; install — the pre-3.2.2 script only wrote the InstallLocation registry value and never set
+; $INSTDIR, so installs silently landed in %LOCALAPPDATA%\Programs while the user launched a
+; hand-moved C:\BUU copy (the install-location drift behind "update downloads but never
+; applies"). A stable C:\BUU\BUU 2.0.exe path also keeps taskbar pins working across updates.
 !macro preInit
   SetRegView 64
+  StrCpy $INSTDIR "C:\BUU"
   WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "C:\BUU"
   WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "C:\BUU"
   SetRegView 32
+  StrCpy $INSTDIR "C:\BUU"
   WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "C:\BUU"
   WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "C:\BUU"
 !macroend
 
-; R8: preserve user data through UPDATES. electron-builder runs the OLD uninstaller
-; first, which removes $INSTDIR recursively — park flows\/logs\/failures\ in %TEMP%
-; on the way down (updates only; a real uninstall leaves nothing parked), then
-; customInstall restores them after the new files land. Rename is same-volume (C:)
-; so this is instant regardless of size.
-; 3.0.5 DATA SAFETY (Matthew, decided 2026-07-17: "uninstaller does not delete those
-; things"): user data — flows\ logs\ failures\ schedules\ — is NEVER deleted, on ANY
-; uninstall path: in-app update, MANUALLY-run installer, or a real uninstall.
-; WHY: on 07-17 a manually-run installer skipped the old ${isUpdated}-gated park and
-; the uninstaller wiped C:\BUU — flows, schedules and a day of logs were lost, then a
-; STALE park in $TEMP silently restored 7/10-era flows over the fresh install.
-; HOW: park UNCONDITIONALLY to C:\BUU-preserved (same-volume Rename = instant; NOT
-; $TEMP, which cleaners purge). Any stale park is shoved to *-prev FIRST so the park
-; can never silently fail on rename-target-exists (the second half of the 07-17 loss).
-; customInstall restores; after a real uninstall the data simply waits in
-; C:\BUU-preserved until the next install (or the user deletes it deliberately).
-!macro customUnInstall
-  CreateDirectory "C:\BUU-preserved"
-  IfFileExists "C:\BUU-preserved\flows" 0 +2
-    Rename "C:\BUU-preserved\flows" "C:\BUU-preserved\flows-prev"
-  Rename "$INSTDIR\flows" "C:\BUU-preserved\flows"
-  IfFileExists "C:\BUU-preserved\logs" 0 +2
-    Rename "C:\BUU-preserved\logs" "C:\BUU-preserved\logs-prev"
-  Rename "$INSTDIR\logs" "C:\BUU-preserved\logs"
-  IfFileExists "C:\BUU-preserved\failures" 0 +2
-    Rename "C:\BUU-preserved\failures" "C:\BUU-preserved\failures-prev"
-  Rename "$INSTDIR\failures" "C:\BUU-preserved\failures"
-  IfFileExists "C:\BUU-preserved\schedules" 0 +2
-    Rename "C:\BUU-preserved\schedules" "C:\BUU-preserved\schedules-prev"
-  Rename "$INSTDIR\schedules" "C:\BUU-preserved\schedules"
-!macroend
-
+; Create the data root ONCE, elevated, and grant the local Users group (well-known SID
+; S-1-5-32-545, locale-independent) Modify rights so the non-elevated app can read/write
+; flows/schedules/logs there at runtime. Inheritance flags (OI)(CI) so future files inherit it.
+; NEVER delete or overwrite C:\BUU-Data — user data lives here. If this grant somehow fails,
+; the app detects C:\BUU-Data isn't writable and falls back to a per-user data dir, so data is
+; still safe outside the install dir either way.
 !macro customInstall
-  ; LEGACY restore first: the 3.0.4 uninstaller (which runs during the update TO
-  ; 3.0.5) still parks flows/logs/failures in $TEMP\buu-preserve. Plain-directory
-  ; IfFileExists (no \*.*) — the old wildcard check missed folders that contain only
-  ; SUBFOLDERS, which is how a park got stranded in $TEMP in the first place.
-  IfFileExists "$TEMP\buu-preserve\flows" 0 +2
-    Rename "$TEMP\buu-preserve\flows" "$INSTDIR\flows"
-  IfFileExists "$TEMP\buu-preserve\logs" 0 +2
-    Rename "$TEMP\buu-preserve\logs" "$INSTDIR\logs"
-  IfFileExists "$TEMP\buu-preserve\failures" 0 +2
-    Rename "$TEMP\buu-preserve\failures" "$INSTDIR\failures"
-  RMDir "$TEMP\buu-preserve"
-  ; 3.0.5 restore from the unconditional park. If a folder already landed from the
-  ; legacy path the Rename is a no-op-on-fail and the parked copy stays in
-  ; C:\BUU-preserved for the *-prev shove next cycle — data is never overwritten,
-  ; never deleted.
-  IfFileExists "C:\BUU-preserved\flows" 0 +2
-    Rename "C:\BUU-preserved\flows" "$INSTDIR\flows"
-  IfFileExists "C:\BUU-preserved\logs" 0 +2
-    Rename "C:\BUU-preserved\logs" "$INSTDIR\logs"
-  IfFileExists "C:\BUU-preserved\failures" 0 +2
-    Rename "C:\BUU-preserved\failures" "$INSTDIR\failures"
-  IfFileExists "C:\BUU-preserved\schedules" 0 +2
-    Rename "C:\BUU-preserved\schedules" "$INSTDIR\schedules"
-  RMDir "C:\BUU-preserved"
+  CreateDirectory "C:\BUU-Data"
+  nsExec::Exec 'icacls "C:\BUU-Data" /grant *S-1-5-32-545:(OI)(CI)M /T'
 !macroend

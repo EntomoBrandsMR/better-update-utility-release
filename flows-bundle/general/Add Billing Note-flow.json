@@ -2,18 +2,6 @@
   "version": "1.1",
   "name": "Add Billing Note-flow",
   "runMode": "per-row",
-  "automation": false,
-  "poolSettings": {
-    "maxWorkers": 20,
-    "startWorkers": 9,
-    "hwSlider": 4,
-    "ppSlider": 4,
-    "evalMin": 2,
-    "elastic": false,
-    "diag": false,
-    "diagCap": 10,
-    "startMode": "run-all"
-  },
   "setupFlowId": null,
   "teardownFlowId": null,
   "steps": [
@@ -22,9 +10,7 @@
       "type": "navigate",
       "url": "{{BT URL}}",
       "waitAfter": "load",
-      "open": true,
-      "dialogAccept": true,
-      "dialogDecline": false
+      "open": true
     },
     {
       "id": 2,
@@ -33,9 +19,7 @@
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "button[name=\"butNotes\"]",
-      "waitFor": "button[name=\"butAdd\"]",
-      "dialogAccept": true,
-      "dialogDecline": false
+      "waitFor": "button[name=\"butAdd\"]"
     },
     {
       "id": 3,
@@ -44,9 +28,7 @@
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "button[name=\"butAdd\"]",
-      "waitFor": "button[name=\"butSaveNote\"]",
-      "dialogAccept": true,
-      "dialogDecline": false
+      "waitFor": "button[name=\"butSaveNote\"]"
     },
     {
       "id": 5,
@@ -73,9 +55,7 @@
       "checkAction": "check",
       "waitType": "fixed",
       "selector": "button[name=\"butSaveNote\"]",
-      "waitFor": "button[name=\"butAdd\"]",
-      "dialogAccept": true,
-      "dialogDecline": false
+      "waitFor": "button[name=\"butAdd\"]"
     }
   ],
   "config": {
@@ -85,9 +65,9 @@
     "selectorTimeout": "30",
     "pageLoadMode": "domcontentloaded",
     "retryCount": "0",
+    "breakerThreshold": "200000",
     "reauthInterval": "120",
     "flowNotes": "",
     "headless": false
-  },
-  "lastGoodWorkers": 3
+  }
 }
