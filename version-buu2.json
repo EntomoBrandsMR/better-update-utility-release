@@ -1,6 +1,6 @@
 {
-  "version": "3.2.4",
-  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.2.4/BUU-2.0-Setup-3.2.4.exe",
-  "url": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.2.4/BUU-2.0-Setup-3.2.4.exe",
+  "version": "3.2.5",
+  "downloadUrl": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.2.5/BUU-2.0-Setup-3.2.5.exe",
+  "url": "https://github.com/EntomoBrandsMR/better-update-utility-release/releases/download/v3.2.5/BUU-2.0-Setup-3.2.5.exe",
   "notes": "License check only runs for PestPac profiles; fixes permanent no-licenses pause on Fieldwork runs."
 }
